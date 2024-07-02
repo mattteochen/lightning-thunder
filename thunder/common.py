@@ -613,6 +613,7 @@ def trace(
 def transform_for_execution(
     trace: TraceCtx,
     executors_list: Sequence[Executor],
+    label = "default",
     *,
     only_execute_prims=False,
     use_rematerialization=True,
@@ -629,7 +630,7 @@ def transform_for_execution(
     # cse_trace = cse(dce_trace)
     # traces.append(cse_trace)
 
-    extrace = executors.passes.transform_for_execution(dce_trace, executors_list)
+    extrace = executors.passes.transform_for_execution(dce_trace, executors_list, label)
 
     traces.append(extrace)
 

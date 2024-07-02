@@ -20,7 +20,9 @@ from thunder.core.transform_common import dce
 from thunder.core.trace import get_tracectx
 from thunder.executors.pythonex import clear_mutable_collection
 
-from thunder.extend import Executor, get_always_executors, OperatorExecutor, FusionExecutor
+from thunder.extend import Executor, get_all_executors, get_always_executors, OperatorExecutor, FusionExecutor
+from thunder.backend_optimizer.optimizer import BackendOptimizer
+from thunder.visualizer.graphviz import create_graphviz_pdf
 
 comment_symbols = {prims.PrimIDs.COMMENT, prims.PrimIDs.UNPACK_TRIVIAL}
 
@@ -57,13 +59,30 @@ def _transform_for_operator_executor_execution(trace: TraceCtx, executors_list: 
     #   If the executor has an execution transform, it's called and True is returned
     #   If no executor can execute the BoundSymbol, False is returned
     def visit_helper_(bsym: BoundSymbol) -> None | bool:
+        import pprint
         if bsym.sym.python_impl is not None:
             return None
 
+        subsymbols = [str(s.sym.id) for s in bsym.subsymbols]
+        subsymbols = " ".join(subsymbols)
+        print(f'\n -> analyzing bsym: {bsym.sym.id} - subsymbols: {subsymbols}')
+        executors_names = [str(n._name) for n in executors_list]
+        executors_names = ' '.join(executors_names)
+        print(f'available executors: {executors_names}')
+        print('what?')
+
         ex: Executor
         for ex in executors_list:
+
             # TODO Consider allowing operator executors to claim portions of operations
             # TODO Should FusionExecutors be allowed to claim bsym with bsym.sym.executor?
+            print(f'testing executor: {ex._name}')
+            if (isinstance(ex, OperatorExecutor) and ex.can_execute(bsym)):
+                print(ex.name, 'CAN execute', bsym.sym.id)
+            else:
+                can_fuse = isinstance(ex, FusionExecutor) and ex.can_fuse(bsym)
+                print(ex.name, 'can NOT execute', bsym.sym.id, 'but can fuse? ', can_fuse)
+
             if (isinstance(ex, OperatorExecutor) and ex.can_execute(bsym)) or (
                 isinstance(ex, FusionExecutor) and ex.can_fuse(bsym)
             ):
@@ -86,11 +105,19 @@ def _transform_for_operator_executor_execution(trace: TraceCtx, executors_list: 
                     raise AssertionError("Unknown executor")
 
                 safe_map_flat(update_swapmap, bsym.output, out)
+
+                # Here is the point were we return the first available one
+                # print('swap_map -> sym swapped, symbol:', bsym.sym.id)
+                # pprint.pprint((swapmap))
                 return True
 
         if bsym.sym.executor is not None:
+            # print('swap_map -> sym.executor is None', bsym.sym.id)
+            # pprint.pprint((swapmap))
             return None
 
+        # print('swap_map -> nothing happened', bsym.sym.id)
+        # pprint.pprint((swapmap))
         return False
 
     def visit_(bsym: BoundSymbol) -> transforms.VISIT_TYPE:
@@ -128,8 +155,14 @@ def _transform_for_operator_executor_execution(trace: TraceCtx, executors_list: 
     return extrace
 
 
-def transform_for_execution(trace: TraceCtx, executors_list: Sequence[Executor]) -> TraceCtx:
+def transform_for_execution(trace: TraceCtx, executors_list: Sequence[Executor], label='default') -> TraceCtx:
     import torch
+    import pprint
+    from thunder.executors.data_dependent_partition import Graph
+
+    print(f'============================================ START: LABEL {label}')
+    print(f'============================================ START: executor_list: {executors_list}')
+    print(f'============================================ START: always_executor_list: {get_all_executors()}')
 
     start_time_ns = time.time_ns()
 
@@ -141,11 +174,43 @@ def transform_for_execution(trace: TraceCtx, executors_list: Sequence[Executor])
 
     trace = dce(trace)
 
+    if (label == 'forward_trc'):
+        print('============================================ START: before _transform_for_operator_executor_execution')
+        pprint.pprint(trace)
+        print('============================================ END: before _transform_for_operator_executor_execution')
+
     #
     # Step 1 Performs execution transforms
     #
+    # print('#### A')
+    # custom_exs = [ex for ex in executors_list if ex._name == 'python' or ex._name == 'torch']
+    # extrace = _transform_for_operator_executor_execution(trace, custom_exs)
+    # if (label == 'forward_trc'):
+    #     print('============================================ START: after _transform_for_operator_executor_execution')
+    #     pprint.pprint(extrace)
+    #     print('============================================ GRAPH: _transform_for_operator_executor_execution')
+    #     g = Graph(trace)
+    #     create_graphviz_pdf(g, label)
+    #     print(g)
+    #     print('============================================ END: after _transform_for_operator_executor_execution')
+    # extrace = dce(extrace)
+
+    print('#### B')
     extrace = _transform_for_operator_executor_execution(trace, executors_list)
+    if (label == 'forward_trc'):
+        print('============================================ START: after _transform_for_operator_executor_execution')
+        pprint.pprint(extrace)
+        print('============================================ GRAPH: _transform_for_operator_executor_execution')
+        g = Graph(trace)
+        create_graphviz_pdf(g, label)
+        print(g)
+        print('============================================ BACKEND_OPTIMIZER')
+        backend_optimizer = BackendOptimizer(extrace, executors_list)
+        backend_optimizer.build_search_space()
+        backend_optimizer.write("backend_optimizer.log")
+        print('============================================ END: after _transform_for_operator_executor_execution')
     extrace = dce(extrace)
+
 
     #
     # Step 2 Fusion executors can transform the trace
@@ -154,6 +219,15 @@ def transform_for_execution(trace: TraceCtx, executors_list: Sequence[Executor])
         if isinstance(ex, FusionExecutor):
             extrace = ex.fusion_pass(extrace)
 
+    if (label == 'forward_trc'):
+        print('============================================ START: after fusion_pass')
+        pprint.pprint(extrace)
+        print('============================================ GRAPH: fusion_pass')
+        g = Graph(extrace)
+        create_graphviz_pdf(g, f'{label}_fusion')
+        print(g)
+        print('============================================ END: after fusion_pass')
+
     #
     # Step 3 "Always" executors are given the opportunity to execute unclaimed symbols
     #
@@ -161,6 +235,15 @@ def transform_for_execution(trace: TraceCtx, executors_list: Sequence[Executor])
     #   (The only exception is that they can produce symbols that the Python executor is expected to execute)
     # NOTE This occurs if a fusion executor declines to execute a symbol after running its fusion pass
     extrace = _transform_for_operator_executor_execution(extrace, get_always_executors())
+
+    if (label == 'forward_trc'):
+        print('============================================ START: after _transform_for_operator_executor_execution (always)')
+        pprint.pprint(extrace)
+        print('============================================ GRAPH: fusion_pass')
+        g = Graph(extrace)
+        create_graphviz_pdf(g, f'{label}_final')
+        print(g)
+        print('============================================ END: after _transform_for_operator_executor_execution (always)')
 
     end_time_ns = time.time_ns()
     elapsed_time_ns = end_time_ns - start_time_ns

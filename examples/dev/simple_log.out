@@ -1,0 +1,132 @@
+Interpretation used: INTERPRETATION_OPTIONS.TRANSLATE_PYTHON
+comp trce before
+import torch
+from thunder.executors.torchex import no_autocast
+
+@torch.no_grad()
+@no_autocast
+# No signature available
+comp trace after
+import thunder
+import thunder.torch as ltorch
+import torch
+from thunder.executors.torchex import no_autocast
+
+@torch.no_grad()
+@no_autocast
+def computation(x):
+  # x: "cuda:0 f32[2, 2]"
+
+  # /workspace/pj/lightning-thunder/examples/dev/simple.py:10: 	        a = x + x
+  result = ltorch.add(x, x, alpha=None)  # result: "cuda:0 f32[2, 2]"
+    # result = prims.add(x, x)  # result: "cuda:0 f32[2, 2]"
+  return result
+import thunder
+import thunder.torch as ltorch
+import torch
+from thunder.executors.torchex import no_autocast
+
+@torch.no_grad()
+@no_autocast
+def computation(x):
+  # x: "cuda:0 f32[2, 2]"
+
+  # /workspace/pj/lightning-thunder/examples/dev/simple.py:10: 	        a = x + x
+  result = ltorch.add(x, x, alpha=None)  # result: "cuda:0 f32[2, 2]"
+    # result = prims.add(x, x)  # result: "cuda:0 f32[2, 2]"
+  return result
+============================================ START: LABEL default
+============================================ START: LABEL computation_trc -> backward_trc = None
+============================================ START: post_optimization_transforms
+[]
+============================================ END: post_optimization_transforms
+============================================ START: before computation_trc python Callable
+# Constructed by Delete Last Used (took 0 milliseconds)
+import torch
+from thunder.executors.torchex import no_autocast
+
+@torch.no_grad()
+@no_autocast
+def computation(x):
+  # x: "cuda:0 f32[2, 2]"
+  [result] = nvFusion0(x)
+    # result = prims.add(x, x)  # result: "cuda:0 f32[2, 2]"
+  del x
+  return result
+============================================ END: before computation_trc python Callable
+---------------------------------------------- all traces
+import thunder
+import thunder.torch as ltorch
+import torch
+from thunder.executors.torchex import no_autocast
+
+@torch.no_grad()
+@no_autocast
+def computation(x):
+  # x: "cuda:0 f32[2, 2]"
+
+  # /workspace/pj/lightning-thunder/examples/dev/simple.py:10: 	        a = x + x
+  result = ltorch.add(x, x, alpha=None)  # result: "cuda:0 f32[2, 2]"
+    # result = prims.add(x, x)  # result: "cuda:0 f32[2, 2]"
+  return result
+##############################################
+# Constructed by Dead Code Elimination (took 0 milliseconds)
+import thunder
+import thunder.torch as ltorch
+import torch
+from thunder.executors.torchex import no_autocast
+
+@torch.no_grad()
+@no_autocast
+def computation(x):
+  # x: "cuda:0 f32[2, 2]"
+
+  # /workspace/pj/lightning-thunder/examples/dev/simple.py:10: 	        a = x + x
+  result = ltorch.add(x, x, alpha=None)  # result: "cuda:0 f32[2, 2]"
+    # result = prims.add(x, x)  # result: "cuda:0 f32[2, 2]"
+  return result
+##############################################
+# Constructed by Dead Code Elimination (took 0 milliseconds)
+import thunder
+import thunder.torch as ltorch
+import torch
+from thunder.executors.torchex import no_autocast
+
+@torch.no_grad()
+@no_autocast
+def computation(x):
+  # x: "cuda:0 f32[2, 2]"
+
+  # /workspace/pj/lightning-thunder/examples/dev/simple.py:10: 	        a = x + x
+  result = ltorch.add(x, x, alpha=None)  # result: "cuda:0 f32[2, 2]"
+    # result = prims.add(x, x)  # result: "cuda:0 f32[2, 2]"
+  return result
+##############################################
+# Constructed by Transform for execution (took 1 milliseconds)
+import torch
+from thunder.executors.torchex import no_autocast
+
+@torch.no_grad()
+@no_autocast
+def computation(x):
+  # x: "cuda:0 f32[2, 2]"
+  [result] = nvFusion0(x)
+    # result = prims.add(x, x)  # result: "cuda:0 f32[2, 2]"
+  return result
+##############################################
+# Constructed by Delete Last Used (took 0 milliseconds)
+import torch
+from thunder.executors.torchex import no_autocast
+
+@torch.no_grad()
+@no_autocast
+def computation(x):
+  # x: "cuda:0 f32[2, 2]"
+  [result] = nvFusion0(x)
+    # result = prims.add(x, x)  # result: "cuda:0 f32[2, 2]"
+  del x
+  return result
+##############################################
+---------------------------------------------- ans
+tensor([[-1.9710, -4.7323],
+        [ 0.1026,  0.5416]], device='cuda:0')

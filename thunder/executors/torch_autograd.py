@@ -122,8 +122,17 @@ def split_forward_backward(computation_trc: TraceCtx, compile_data, compile_stat
     if not any(requires_grad_mask):
         raise RuntimeError("PyTorch's Autograd interface requires at least one tensor input with requires_grad=True")
 
+    import pprint
+    print('============================================ START: computation_trc split_forward_backward')
+    pprint.pprint(computation_trc)
+    print('============================================ END: computation_trc split_forward_backward')
+
     primal_trace = computation_trc
     primal_trace = sort_data_parallel_syncs(primal_trace)
+
+    print('============================================ START: primal_trace sort_data_parallel_syncs')
+    pprint.pprint(primal_trace)
+    print('============================================ END: primal_trace sort_data_parallel_syncs')
 
     if compile_stats is not None:
         compile_stats.last_traces.append(primal_trace)
@@ -134,6 +143,9 @@ def split_forward_backward(computation_trc: TraceCtx, compile_data, compile_stat
     # not any other container type. So we need to flatten the outputs of
     # the forward trace and inputs of the backward trace.
     fw_trace, bw_trace = forward_and_backward_from_trace(primal_trace, torch_autograd=True)
+    print('============================================ START: primal_trace forward_and_backward_from_trace')
+    pprint.pprint(fw_trace)
+    print('============================================ END: primal_trace forward_and_backward_from_trace')
 
     fw_traces = [fw_trace]
     bw_traces = [bw_trace]
@@ -165,9 +177,15 @@ def split_forward_backward(computation_trc: TraceCtx, compile_data, compile_stat
 
     # Now we can run the optimization passes on the forward trace
     # TODO Restore request for no rematerialization
+
+    import pprint
+    print('============================================ START: before forward_trc transform_for_execution')
+    pprint.pprint(fw_trace)
+    print('============================================ END: after forward_trc transform_for_execution')
     fw_extrace = transform_for_execution(
         fw_trace,
         executors_list=compile_data.executors_list,
+        label='forward_trc'
     )
     fw_traces.append(fw_extrace)
 
@@ -205,6 +223,7 @@ def split_forward_backward(computation_trc: TraceCtx, compile_data, compile_stat
     bw_extrace = transform_for_execution(
         bw_trace,
         executors_list=compile_data.executors_list,
+        label='backward_trc'
     )
     bw_traces.append(bw_extrace)
 

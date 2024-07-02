@@ -3609,8 +3609,16 @@ def forward_and_backward_from_trace(trace: Trace, torch_autograd=False) -> Forwa
 
     output_spec = None
 
+    import pprint
+
     def augmented_forward_fn(*args, **kwargs):
         result, env = augmented_forward_pass(*args, trace=trace, **kwargs)
+        print('============================================ START: augmented_forward_pass')
+        print('result')
+        pprint.pprint(result)
+        print('env')
+        pprint.pprint(env)
+        print('============================================ END: augmented_forward_pass')
         saved_for_backward = deconstruct_forward_env_for_backward(trace, env)
         if torch_autograd:
             nonlocal output_spec
@@ -3639,6 +3647,7 @@ def forward_and_backward_from_trace(trace: Trace, torch_autograd=False) -> Forwa
             return type(x.value)(1)
         else:
             return None
+
 
     forward_trace = construct_trace()(augmented_forward_fn, *trace.args, **trace.kwargs)
     # We set forward trace to construct proxies because we need these proxies to
