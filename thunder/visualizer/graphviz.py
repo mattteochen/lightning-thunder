@@ -31,7 +31,6 @@ def to_graphviz_dag(g: Graph) -> graphviz.Digraph:
     return dot
 
 
-def create_graphviz_pdf(g: Graph, name='graph'):
+def create_graphviz_pdf(g: Graph, name='graph', directory='./'):
     dot = to_graphviz_dag(g)
-    dot.render(name, view=False)
-
+    dot.render(name, view=False, cleanup=True, directory=directory)

@@ -334,6 +334,65 @@ class VISIT_TYPE(Enum):
     NO_OP = auto()
 
 
+# Creates a new trace from "trace_from" by calling "visit" on its bound symbols ("bsyms") paired with an assigned executor.
+#   visit(bsym: BoundSymbolInterface, ex: Executor) -> VISIT_TYPE should call operations
+#   as if executing a program, and those operations will be recorded into the
+#   new trace.
+#   If visit() returns INSERT_AFTER for a bsym then that bsym will be copied
+#   to the new trace before visit() is called. This is useful when augmenting the bound
+#   symbols in an existing trace.
+#   If visit() returns INSERT_BEFORE for a bsym then that bsym will be copied to the new trace
+#   after visit() is called. This is also useful when augmenting the bound symbols in an existing
+#   trace.
+#   If visit() returns REPLACE for a bsym then that bsym will not be copied to the new trace.
+# TODO Suggest a mechanism to preserve the original bound symbol with operations
+#   recorded both before and after it. This could be done by passing the (sub)scope to visit() for
+#   direct modification, acquiring the trace's current scope through the trace ctx and modifying it
+#   directly (this can be done today), or adding a record() function that is a sugar for the previous
+#   approach. Perhaps both passing the scope directly to visit() and adding record() would be helpful.
+# TODO(crcrpar): Think about providing a guide how to let thunder "claim" if this is called after
+# `thunder.executors.transform_for_execution`.
+def visitor_transform_paired(trace_from: Trace, visit: Callable, zipped: zip, *, provenance: None | str = None):
+    trc: Trace = from_trace(trace_from)
+
+    try:
+        tracectx_tok = set_tracectx(trc)
+
+        for bsym, ex in zipped:
+            try:
+                # Creates a temporary scope to support copying the original bsym BEFORE
+                #   the operations performed by visit(), even though this doesn't know whether to
+                #   copy the original bsym until after visit() completes
+                old_scope = trc.scopes
+                scope = []
+                trc.scopes = [scope]
+
+                # This can be simpler? We currently trigger all the flow for the substitution
+                visit_type = visit(bsym, ex)
+
+                if visit_type is VISIT_TYPE.INSERT_AFTER:
+                    trc.bound_symbols.append(bsym)
+
+                if visit_type is not VISIT_TYPE.NO_OP:
+                    trc.bound_symbols.extend(scope)
+                else:
+                    trc.bound_symbols.append(bsym)
+
+                if visit_type is VISIT_TYPE.INSERT_BEFORE:
+                    trc.bound_symbols.append(bsym)
+
+            finally:
+                # Restores the trc's scope
+                trc.scopes = old_scope
+
+        if provenance is not None:
+            trc.set_provenance(TraceProvenance(provenance))
+
+        return trc
+
+    finally:
+        reset_tracectx(tracectx_tok)
+
 # Creates a new trace from "trace_from" by calling "visit" on its bound symbols ("bsyms").
 #   visit(bsym: BoundSymbolInterface) -> VISIT_TYPE should call operations
 #   as if executing a program, and those operations will be recorded into the
@@ -3609,16 +3668,8 @@ def forward_and_backward_from_trace(trace: Trace, torch_autograd=False) -> Forwa
 
     output_spec = None
 
-    import pprint
-
     def augmented_forward_fn(*args, **kwargs):
         result, env = augmented_forward_pass(*args, trace=trace, **kwargs)
-        print('============================================ START: augmented_forward_pass')
-        print('result')
-        pprint.pprint(result)
-        print('env')
-        pprint.pprint(env)
-        print('============================================ END: augmented_forward_pass')
         saved_for_backward = deconstruct_forward_env_for_backward(trace, env)
         if torch_autograd:
             nonlocal output_spec

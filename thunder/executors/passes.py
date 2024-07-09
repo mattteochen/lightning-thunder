@@ -1,3 +1,4 @@
+from pprint import pprint
 from typing import Dict, Any, List, Tuple, Optional
 from collections.abc import Callable
 from collections.abc import Sequence
@@ -7,14 +8,15 @@ from itertools import chain
 from functools import partial
 import time
 
-from thunder.core.trace import TraceCtx, from_trace, TraceProvenance, VariableInterface
+from thunder.core.trace import TraceCtx, from_trace, TraceProvenance, VariableInterface, reset_tracectx, set_tracectx
+from thunder.core.codeutils import SigInfo
 import thunder.core.dtypes as dtypes
 import thunder.core.utils as cutils
 from thunder.core.utils import ProxyDict, check, safe_map_flat
 from thunder.core.symbol import BoundSymbol
 from thunder.core.pytree import tree_flatten, tree_unflatten, tree_map
 import thunder.core.prims as prims
-from thunder.core.proxies import Proxy, variableify, unvariableify, Variable, CollectionProxy
+from thunder.core.proxies import Proxy, TensorProxy, variableify, unvariableify, Variable, CollectionProxy
 import thunder.core.transforms as transforms
 from thunder.core.transform_common import dce
 from thunder.core.trace import get_tracectx
@@ -23,6 +25,7 @@ from thunder.executors.pythonex import clear_mutable_collection
 from thunder.extend import Executor, get_all_executors, get_always_executors, OperatorExecutor, FusionExecutor
 from thunder.backend_optimizer.optimizer import BackendOptimizer
 from thunder.visualizer.graphviz import create_graphviz_pdf
+from thunder.visualizer.visualizer_helper import Visualizer
 
 comment_symbols = {prims.PrimIDs.COMMENT, prims.PrimIDs.UNPACK_TRIVIAL}
 
@@ -132,17 +135,12 @@ def _transform_for_operator_executor_execution(trace: TraceCtx, executors_list: 
     )
     return extrace
 
-
-def transform_for_execution(trace: TraceCtx, executors_list: Sequence[Executor], label='default') -> TraceCtx:
+# Autotuned transform_for_execution version
+def autotune_transform_for_execution(trace: TraceCtx, executors_list: Sequence[Executor], visualizer: Visualizer | None = None) -> TraceCtx:
     import torch
-    import pprint
-    from thunder.executors.data_dependent_partition import Graph
 
-    what_to_log = "forward_trc"
-
-    print(f'============================================ START: LABEL {label}')
-    print(f'============================================ START: executor_list: {executors_list}')
-    print(f'============================================ START: always_executor_list: {get_always_executors()}')
+    # Recover the function name
+    sig_name = cutils.get_siginfo_name(trace)
 
     start_time_ns = time.time_ns()
 
@@ -154,33 +152,36 @@ def transform_for_execution(trace: TraceCtx, executors_list: Sequence[Executor],
 
     trace = dce(trace)
 
-    if (label == what_to_log):
-        print('============================================ START: before _transform_for_operator_executor_execution')
-        pprint.pprint(trace)
-        print('============================================ GRAPH: before _transform_for_operator_executor_execution')
-        print(Graph(trace))
-        print('============================================ END: before _transform_for_operator_executor_execution')
+    backend_optimizer = BackendOptimizer(trace, executors_list, produce_log=True, log_file_name=f'autotune_transform_for_execution_{sig_name}.log', visualizer=visualizer)
+    backend_optimizer.build_search_space()
+    backend_optimizer.benchmark_traces()
+    extrace = backend_optimizer.get_optimal_trace()
+
+    end_time_ns = time.time_ns()
+    elapsed_time_ns = end_time_ns - start_time_ns
+    elapsed_time_millis = elapsed_time_ns // 1000000
+
+    extrace.set_provenance(TraceProvenance(f"Autotuned transform for execution (took {elapsed_time_millis} milliseconds)"))
+    return extrace
 
 
-    if label == what_to_log:
-        print('============================================ start: BACKEND_OPTIMIZER')
-        backend_optimizer = BackendOptimizer(trace, executors_list)
-        backend_optimizer.build_search_space()
-        backend_optimizer.write("backend_optimizer.log")
-        print('============================================ end: BACKEND_OPTIMIZER')
+def transform_for_execution(trace: TraceCtx, executors_list: Sequence[Executor]) -> TraceCtx:
+    import torch
+
+    start_time_ns = time.time_ns()
+
+    if torch.distributed.is_available():
+        # Apply AllReduce bucketing if possible & needed
+        from thunder.distributed.transforms.ddp import apply_bucketing_to_grad_allreduce
+
+        trace = apply_bucketing_to_grad_allreduce(trace)
+
+    trace = dce(trace)
 
     #
     # Step 1 Performs execution transforms
     #
     extrace = _transform_for_operator_executor_execution(trace, executors_list)
-    if (label == what_to_log):
-        print('============================================ START: after _transform_for_operator_executor_execution')
-        pprint.pprint(extrace)
-        print('============================================ GRAPH: _transform_for_operator_executor_execution')
-        g = Graph(trace)
-        create_graphviz_pdf(g, label)
-        print(g)
-        print('============================================ END: after _transform_for_operator_executor_execution')
     extrace = dce(extrace)
 
 
@@ -191,15 +192,6 @@ def transform_for_execution(trace: TraceCtx, executors_list: Sequence[Executor],
         if isinstance(ex, FusionExecutor):
             extrace = ex.fusion_pass(extrace)
 
-    if (label == what_to_log):
-        print('============================================ START: after fusion_pass')
-        pprint.pprint(extrace)
-        print('============================================ GRAPH: fusion_pass')
-        g = Graph(extrace)
-        create_graphviz_pdf(g, f'{label}_fusion')
-        print(g)
-        print('============================================ END: after fusion_pass')
-
     #
     # Step 3 "Always" executors are given the opportunity to execute unclaimed symbols
     #
@@ -207,15 +199,6 @@ def transform_for_execution(trace: TraceCtx, executors_list: Sequence[Executor],
     #   (The only exception is that they can produce symbols that the Python executor is expected to execute)
     # NOTE This occurs if a fusion executor declines to execute a symbol after running its fusion pass
     extrace = _transform_for_operator_executor_execution(extrace, get_always_executors())
-
-    if (label == what_to_log):
-        print('============================================ START: after _transform_for_operator_executor_execution (always)')
-        pprint.pprint(extrace)
-        print('============================================ GRAPH: fusion_pass')
-        g = Graph(extrace)
-        create_graphviz_pdf(g, f'{label}_final')
-        print(g)
-        print('============================================ END: after _transform_for_operator_executor_execution (always)')
 
     end_time_ns = time.time_ns()
     elapsed_time_ns = end_time_ns - start_time_ns

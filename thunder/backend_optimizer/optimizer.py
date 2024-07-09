@@ -1,44 +1,51 @@
 from typing import Any, Hashable
+import torch
+import thunder
 from thunder.core.baseutils import BoundSymbolInterface
 from thunder.core.utils import check, safe_map_flat
-from thunder.core.proxies import Proxy, variableify, Variable
-from thunder.core.symbol import BoundSymbol
+from thunder.core.proxies import Proxy, TensorProxy, variableify, Variable
+from thunder.core.symbol import BoundSymbol, Symbol
 from thunder.executors.data_dependent_partition import Graph, Node
-from thunder.core.trace import set_tracectx, reset_tracectx, from_trace, get_tracectx, TraceProvenance, TraceCtx
-from thunder.extend import Executor, FusionExecutor, OperatorExecutor
+from thunder.core.trace import set_tracectx, reset_tracectx, get_tracectx, TraceCtx
+from thunder.extend import Executor, FusionExecutor, OperatorExecutor, get_always_executors
 import thunder.core.transforms as transforms
+from thunder.visualizer.visualizer_helper import Visualizer
 from collections.abc import Callable, Sequence
 from enum import Enum
 from itertools import chain
 import time
-import pprint
+# import pprint
 
 class OptimizerNode():
     def __init__(self, node: Node):
         self.node: Node = node
         self.candidate_executors: dict[Hashable, float] = {}
 
-    def add_candidate(self, ex: Executor, benchmarck: float):
-        self.candidate_executors[ex] = benchmarck
+    def add_candidate(self, ex: Executor, benchmark: float):
+        self.candidate_executors[ex] = benchmark
 
 class BackendOptimizer():
-    def __init__(self, trace: TraceCtx, executors: Sequence[Executor]) -> None:
-        self.trace = trace
-        self.computation_graph = Graph(trace)
-        self.executors = executors
-        self.default_cost = {}
-        self.hash_separator = '#'
-        self.dummy_cost = 1
-        self.optimizer_nodes = []
+    def __init__(self, trace: TraceCtx, executors: Sequence[Executor], produce_log=True, log_file_name='autotune_traces_computation_time.log', visualizer: Visualizer | None = None) -> None:
+        self.trace: TraceCtx = trace
+        self.optimal_trace: TraceCtx = trace
+        self.computation_graph: Graph = Graph(trace)
+        self.executors: Sequence[Executor] = executors
+        self.empty_executor_hashable_placeholder: str = 'empty'
         self.placement_options: list[list[Executor]] = []
+        self.optimzide_traces: list[TraceCtx] = []
+        self.always_executors: tuple[Executor, ...] = get_always_executors()
+        self.produce_log: bool = produce_log
+        self.log_file_name: str = log_file_name
+        self.log_str: str = ""
+        self.visualizer: Visualizer | None = visualizer
 
+        print('INIT TRACE')
+        import pprint
+        pprint.pprint(self.trace)
+
+    # TODO (matteochen): fix this
     def __repr__(self) -> str:
-        ret = self.computation_graph.__repr__()
-        ret += "\n"
-        n: OptimizerNode
-        for n in self.optimizer_nodes:
-            ret += f'NODE: {str(n.node.ID)} - {str(n.node.group_bsyms[0].sym.name)} ####################################\n {n.candidate_executors.__repr__()}\n'
-        return ret
+        return ''
 
     def write(self, file_name):
         with open(file_name, 'w') as file:
@@ -46,17 +53,16 @@ class BackendOptimizer():
             file.write(s)
             file.close()
 
-    def subgraph_hash(self, nodes: list[Node]):
-        ids = [str(n.ID) for n in nodes]
-        return self.hash_separator.join(ids)
+    def compute_time_cost(self, fn: Callable, iters: int, *args) -> tuple[float, Any]:
+        total_time = 0
+        out = None
+        for _ in range(iters):
+            time_s = time.time_ns()
+            out = fn(*args)
+            time_e = time.time_ns()
+            total_time += (time_e - time_s)
 
-    # TODO: to implement
-    def compute_default_costs_subgraphs(self, nodes: list[Node]):
-        hash = self.subgraph_hash(nodes)
-        self.default_cost[hash] = self.dummy_cost
-
-    def backed_placer(self):
-        pass
+        return total_time / iters, out
 
     def build_placement_options(self):
         class ExecutorType(Enum):
@@ -67,7 +73,6 @@ class BackendOptimizer():
             def __init__(self, symbol: BoundSymbolInterface, idx: int)-> None:
                 self.symbol = symbol
                 self.idx = idx
-                pass
 
         # We assign an internal id to each symbol based on its idx inside the bound_symbols list
         def search(node: SearchNode, configuration):
@@ -77,9 +82,10 @@ class BackendOptimizer():
                     new_symbol: BoundSymbolInterface = bound_symbols[new_idx]
                     search(SearchNode(new_symbol, new_idx), configuration)
                 else:
+                    print(f'reached end of search for this tree branch {configuration}')
                     all_configurations.append(list(configuration))
 
-            def update_dict(idx: int, type: ExecutorType, ex: Executor):
+            def safe_update_dict(idx: int, type: ExecutorType, ex: Executor):
                 if idx not in res:
                     res[idx] = {}
                     res[node.idx][type] = [ex]
@@ -96,24 +102,18 @@ class BackendOptimizer():
                     raise AssertionError("Receive a symbol which is not a BoundSymbol")
                 if (isinstance(ex, OperatorExecutor) and ex.can_execute(node.symbol)):
                     # print(f'{node.idx}-{ex._name} can execute symbol {node.symbol.sym.name}')
-                    update_dict(node.idx, ExecutorType.OPERATOR, ex)
+                    safe_update_dict(node.idx, ExecutorType.OPERATOR, ex)
                     has_backend = True
                     configuration.append(ex)
                     continue_search()
                     configuration.pop(-1)
-                else:
-                    pass
-                    # print(f'{node.idx}-{ex._name} can NOT execute symbol {node.symbol.sym.name}')
                 if (isinstance(ex, FusionExecutor) and ex.can_fuse(node.symbol)):
                     # print(f'{node.idx}-{ex._name} can fuse symbol {node.symbol.sym.name}')
-                    update_dict(node.idx, ExecutorType.FUSER, ex)
+                    safe_update_dict(node.idx, ExecutorType.FUSER, ex)
                     has_backend = True
                     configuration.append(ex)
                     continue_search()
                     configuration.pop(-1)
-                else:
-                    pass
-                    # print(f'{node.idx}-{ex._name} can NOT fuse symbol {node.symbol.sym.name}')
 
             if not has_backend:
                 configuration.append(empty_executor)
@@ -123,28 +123,27 @@ class BackendOptimizer():
         res: dict[int, dict[ExecutorType, list[Executor]]] = {}
         bound_symbols: list[BoundSymbolInterface] = self.trace.bound_symbols
         bound_symbols_name = [s.sym.name for s in bound_symbols]
-        # bound_symbols_id = [s.sym.id for s in bound_symbols]
         max_len = len(bound_symbols)
 
         all_configurations: list[list[Executor]] = []
         # Is the name reserved?
-        empty_executor = Executor(name='empty')
+        empty_executor = Executor(name=self.empty_executor_hashable_placeholder)
 
-        print(f'input trace bound symbols name: {bound_symbols_name}')
-        # print(f'input trace bound symbols id: {bound_symbols_id}')
+        print(f'input trace bound symbols name len {len(bound_symbols_name)}: {bound_symbols_name}')
 
         if len(bound_symbols) > 0:
             search(SearchNode(bound_symbols[0], 0), [])
+            print('end of search')
             self.placement_options = all_configurations
-            print(len(all_configurations))
-            print('END OF SEDARCH')
-            for config in all_configurations:
-                c_str = [str(c.name) for c in config]
-                c_str = " ".join(c_str)
-                print(c_str)
+            print('config len', len(all_configurations))
+            # for config in all_configurations:
+            #     c_str = [str(c.name) for c in config]
+            #     c_str = " ".join(c_str)
+            #     print(c_str)
 
     def place_optimizers(self, executor_list: list[Executor]) -> TraceCtx:
-        start_time_ns = time.time_ns()
+
+        from thunder.executors.passes import _transform_for_operator_executor_execution
 
         swapmap: dict[Variable, Proxy] = {}
 
@@ -162,7 +161,9 @@ class BackendOptimizer():
                 swapmap[vno] = o
 
         def preserve_bsym(bsym: BoundSymbol) -> Any:
-            trace = get_tracectx()
+            trace: TraceCtx | None = get_tracectx()
+            if trace is None:
+                raise AssertionError('None trace context')
             trace.scopes[-1].append(bsym)
             for p in chain(bsym.flat_proxy_outs, bsym.flat_proxy_args):
                 trace.names.add(p.name)
@@ -173,7 +174,7 @@ class BackendOptimizer():
                 return None
 
             # We have mapped this at previous stages
-            if ex.name == 'empty':
+            if ex.name == self.empty_executor_hashable_placeholder:
                 return None
             # The call above represent:
             # if bsym.sym.executor is not None:
@@ -186,7 +187,9 @@ class BackendOptimizer():
                 out = execution_transform(*bsym.args, **bsym.kwargs)
             elif isinstance(ex, OperatorExecutor):
                 # Calls the operator executor's operation
-                op = ex.implmap[bsym.sym.id].symbol
+                op: Symbol | None = ex.implmap[bsym.sym.id].symbol
+                if op is None:
+                    raise AssertionError('op is None')
                 out = op(*bsym.args, **bsym.kwargs)
             elif isinstance(ex, FusionExecutor):
                 # Preserves the symbol as is (it will be handled in the fusion pass)
@@ -201,45 +204,10 @@ class BackendOptimizer():
         def visit(bsym: BoundSymbol, ex: Executor) -> transforms.VISIT_TYPE:
             return transforms.VISIT_TYPE.NO_OP if visit_helper(bsym, ex) is None else transforms.VISIT_TYPE.REPLACE
 
-        def visitor_transform(trace_from: TraceCtx, executors: list[Executor]):
-            trc: TraceCtx = from_trace(trace_from)
+        # for s, o in zip(self.trace.bound_symbols, executor_list):
+        #     print(f'{s} -> {o}')
 
-            try:
-                tracectx_tok = set_tracectx(trc)
-
-                for bsym, ex in zip(trace_from.bound_symbols, executors):
-                    try:
-                        # Creates a temporary scope to support copying the original bsym BEFORE
-                        #   the operations performed by visit(), even though this doesn't know whether to
-                        #   copy the original bsym until after visit() completes
-                        old_scope = trc.scopes
-                        scope = []
-                        trc.scopes = [scope]
-
-                        # This can be simpler? We currently trigger all the flow for the substitution
-                        visit_type = visit(bsym, ex)
-
-                        if visit_type is transforms.VISIT_TYPE.INSERT_AFTER:
-                            trc.bound_symbols.append(bsym)
-
-                        if visit_type is not transforms.VISIT_TYPE.NO_OP:
-                            trc.bound_symbols.extend(scope)
-                        else:
-                            trc.bound_symbols.append(bsym)
-
-                        if visit_type is transforms.VISIT_TYPE.INSERT_BEFORE:
-                            trc.bound_symbols.append(bsym)
-
-                    finally:
-                        # Restores the trc's scope
-                        trc.scopes = old_scope
-
-                return trc
-
-            finally:
-                reset_tracectx(tracectx_tok)
-
-        extrace = visitor_transform(self.trace, executor_list)
+        extrace = transforms.visitor_transform_paired(self.trace, visit, zip(self.trace.bound_symbols, executor_list))
 
         # Restores original variables
         bound_symbols: list[BoundSymbol] = []
@@ -249,73 +217,176 @@ class BackendOptimizer():
 
         extrace.bound_symbols = bound_symbols
 
-        end_time_ns = time.time_ns()
-        elapsed_time_ns = end_time_ns - start_time_ns
-        elapsed_time_millis = elapsed_time_ns // 1000000
-        extrace.set_provenance(
-            TraceProvenance(f"Transform for operator executor execution (took {elapsed_time_millis} milliseconds)")
-        )
-
-        print('============================================ trace before fusion pass')
-        pprint.pprint(extrace)
+        # print('============================================ trace before fusion pass')
+        # pprint.pprint(extrace)
 
         # We have to temporary clear the subsymbols of already claimed symbols by not fusion ops, otherwise fusion ops will check recursively subsymbols and clear all the current placements
-        cached_subsymbols: list[Sequence[BoundSymbolInterface]] = [list(symbol.subsymbols) for symbol in extrace.bound_symbols]
-        subsymbols_idx_to_restore: list[int] = []
+        cached_subsymbols: dict[str, Sequence[BoundSymbolInterface]] = {}
         unique_fusion_executors = set()
-        for idx, ex in enumerate(executor_list):
+        for ex, bsym in zip(executor_list, extrace.bound_symbols):
+            bsym_hash: str = hex(id(bsym))
+            cached_subsymbols[bsym_hash] = list(bsym.subsymbols)
             if isinstance(ex, FusionExecutor):
                 unique_fusion_executors.add(ex)
             else:
-                subsymbols_idx_to_restore.append(idx)
-                extrace.bound_symbols[idx].subsymbols = ()
+                bsym.subsymbols = ()
 
+        # Perform fusion pass
         for ex in unique_fusion_executors:
             extrace = ex.fusion_pass(extrace)
 
         # Restore the subsymbols
-        for idx in subsymbols_idx_to_restore:
-            extrace.bound_symbols[idx].subsymbols = cached_subsymbols[idx]
+        for bsym in extrace.bound_symbols:
+            hash = hex(id(bsym))
+            if hash in cached_subsymbols:
+                bsym.subsymbols = cached_subsymbols[hash]
+
+        # print('============================================ trace after fusion pass')
+        # pprint.pprint(extrace)
+
+        # Apply always executors
+        extrace = _transform_for_operator_executor_execution(extrace, self.always_executors)
+
+        # print('============================================ trace after always executors pass')
+        # pprint.pprint(extrace)
 
         return extrace
 
     def build_search_space(self):
+        import thunder.core.codeutils as cutils
+
         self.build_placement_options()
+
         for option in self.placement_options:
-            trace = self.place_optimizers(option)
             option_str = [str(ex.name) for ex in option]
-            option_str = ' '.join(option_str)
-            print(f'============================================ config_trace, optimizers: {option_str}')
-            pprint.pprint(trace)
+            option_str = '-'.join(option_str)
+            # print(f'============================================ optimizers len {len(option)}: {option_str}')
+            trace = self.place_optimizers(option)
 
-        # visited = set()
-        # def dfs(node: Node):
-        #     visited.add(node.ID)
-        #     childs = node.children
-        #     node_symbols = [str(s.sym.id) for s in node.group_bsyms]
-        #     node_symbols = " ".join(node_symbols)
-        #     node_bsym = node.group_bsyms[0]
+            if self.visualizer is not None:
+                sig_name = cutils.get_siginfo_name(trace)
+                # TODO (matteochen): consider adding more infos for naming
+                self.visualizer.set_hidden_trace(f'hidden-{sig_name}-{option_str}', trace)
 
-        #     optimizer_node: OptimizerNode = OptimizerNode(node)
+            self.optimzide_traces.append(trace)
 
-        #     print(f'-> Node id: {node.ID}, symbols: {node_symbols}')
+    def get_optimal_trace(self) -> TraceCtx:
+        return self.optimal_trace
 
-        #     ex: Executor
-        #     for ex in self.executors:
-        #         print(f'analyzing executor {ex._name}')
-        #         if (isinstance(ex, OperatorExecutor) and ex.can_execute(node_bsym)):
-        #             print(f'{ex._name} can execute symbol {node_bsym.sym.name}')
-        #             optimizer_node.add_candidate(ex, 1.0)
-        #         if (isinstance(ex, FusionExecutor) and ex.can_fuse(node_bsym)):
-        #             print(f'{ex._name} can fuse symbol {node_bsym.sym.name}')
-        #             optimizer_node.add_candidate(ex, 1.0)
+    def benchmark_trace(self, trace: TraceCtx) -> float:
 
-        #     self.optimizer_nodes.append(optimizer_node)
+        input_args = []
 
-        #     if childs:
-        #         for c in childs:
-        #             if c.ID not in visited:
-        #                 dfs(c)
+        def print_input_args(args, level=0, show_content = False):
+            for e in args:
+                if isinstance(e, tuple) or isinstance(e, list):
+                    print_input_args(e, level=level+1)
+                else:
+                    print(f'level {level}', type(e))
 
-        # for root in self.computation_graph.roots:
-        #     dfs(root)
+        def print_trace_execution_output(out: Any, show_content=False):
+            if isinstance(out, tuple):
+                for e in out:
+                    print(f'{type(e)}')
+            else:
+                print(f'{type(out)}')
+
+        def thunder_to_torch_float_dtype(byte: int) -> torch.dtype:
+            if (byte == 2):
+                return torch.float16
+            elif (byte == 4):
+                return torch.float32
+            else:
+                return torch.float64
+
+        def transform_input_tuple(t: tuple, level=0) -> tuple:
+            res = []
+            for e in t:
+                if type(e) is tuple:
+                    res.append(transform_input_tuple(e, level+1))
+                else:
+                    # print(f'level {level}', type(e))
+                    if isinstance(e, TensorProxy):
+                        res.append(transform_tensor(e))
+                    else:
+                        # TODO (matteochen): support more data types
+                        raise AssertionError(f'Input arg type not recognized: {type(e)}')
+            return tuple(res)
+
+        def transform_tensor(arg: TensorProxy) -> torch.Tensor:
+            dtype = arg.dtype
+            if dtype is not None and type(dtype) is thunder.dtypes.floating:
+                torch_dtype = thunder_to_torch_float_dtype(dtype.bytes)
+                # print(f'thunder type: {dtype} torch_dtype: {torch_dtype}')
+            else:
+                # TODO (matteochen): support other types
+                raise AssertionError(f"dtype {dtype} not supported yet")
+
+            shape = arg.shape
+            device = arg.device
+            requires_grad = arg.requires_grad
+            # TODO (matteochen): Missing parallel and fsdp handling...
+            # TODO (matteochen): Missing support for meta types ...
+            tensor: torch.Tensor = torch.randn(*shape, dtype=torch_dtype, device=device.device_str(), requires_grad=requires_grad)
+            # print(f'Adding tensor shape: {tensor.shape} dtype: {tensor.dtype} device: {tensor.device} requires_grad: {tensor.requires_grad}')
+            return tensor
+
+        # Can we remove this check?
+        if isinstance(trace.args, list):
+            for arg in trace.args:
+                # print(f'current arg {arg}\ntype {type(arg)}')
+                if isinstance(arg, tuple):
+                    # print('Processig tuple')
+                    input_args.append(transform_input_tuple(arg))
+                elif isinstance(arg, TensorProxy):
+                    # print('Processig TensorProxy')
+                    e = transform_tensor(arg)
+                    input_args.append(e)
+                else:
+                    raise AssertionError(f'Input arg type not recognized: {type(arg)}')
+        else:
+            raise AssertionError('Unexpexcted args type')
+
+        # print('========================================= benchmark_trace: input_args')
+        # print_input_args(input_args, level=0)
+
+        # TODO (matteochen): measure time
+        trace_tok = set_tracectx(trace)
+
+        # Obtain the python executable string
+        executable_str = trace.python_callable()
+        t, _ = self.compute_time_cost(executable_str, 10, *input_args)
+
+        reset_tracectx(trace_tok)
+
+        # Note, currently the forward pass returns a tuple:
+        # (
+        #     dict,
+        #     ...
+        # )
+        # We have to access the dict['output'] in order to get the forward computation result
+
+        if self.produce_log:
+            self.log_str += f'Time taken: {t / 1000000}ms\n'
+            self.log_str += trace.python()
+            self.log_str += '\n#############################################################################################################\n'
+
+        # print('========================================= benchmark_trace out')
+        # print_trace_execution_output(out)
+
+        return t
+
+    def benchmark_traces(self):
+        min_run_time = float('inf')
+        optimal_trace: TraceCtx = self.trace # Assign initial value for unbound errors
+        for trace in self.optimzide_traces:
+            trace_time = self.benchmark_trace(trace)
+            if trace_time < min_run_time:
+                min_run_time = trace_time
+                optimal_trace = trace
+
+        self.optimal_trace = optimal_trace
+
+        with open(self.log_file_name, 'w') as file:
+            file.write(self.log_str)
+            file.close()
