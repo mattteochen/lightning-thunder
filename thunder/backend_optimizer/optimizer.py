@@ -6,7 +6,7 @@ from thunder.core.utils import check, safe_map_flat
 from thunder.core.proxies import Proxy, TensorProxy, variableify, Variable
 from thunder.core.symbol import BoundSymbol, Symbol
 from thunder.executors.data_dependent_partition import Graph, Node
-from thunder.core.trace import set_tracectx, reset_tracectx, get_tracectx, TraceCtx
+from thunder.core.trace import from_trace, set_tracectx, reset_tracectx, get_tracectx, TraceCtx
 from thunder.extend import Executor, FusionExecutor, OperatorExecutor, get_always_executors
 import thunder.core.transforms as transforms
 from thunder.visualizer.visualizer_helper import Visualizer
@@ -14,7 +14,8 @@ from collections.abc import Callable, Sequence
 from enum import Enum
 from itertools import chain
 import time
-# import pprint
+# import concurrent.futures
+import pprint
 
 class OptimizerNode():
     def __init__(self, node: Node):
@@ -25,23 +26,31 @@ class OptimizerNode():
         self.candidate_executors[ex] = benchmark
 
 class BackendOptimizer():
+    def log(self, what: str):
+        print(f'================================================================================ Autotune: {what}')
+
     def __init__(self, trace: TraceCtx, executors: Sequence[Executor], produce_log=True, log_file_name='autotune_traces_computation_time.log', visualizer: Visualizer | None = None) -> None:
         self.trace: TraceCtx = trace
+        self.incremental_search_out_trace: TraceCtx
         self.optimal_trace: TraceCtx = trace
         self.computation_graph: Graph = Graph(trace)
         self.executors: Sequence[Executor] = executors
+        self.fusion_executors: Sequence[FusionExecutor] = [ex for ex in executors if isinstance(ex, FusionExecutor)]
         self.empty_executor_hashable_placeholder: str = 'empty'
         self.placement_options: list[list[Executor]] = []
-        self.optimzide_traces: list[TraceCtx] = []
+        self.optimized_traces: list[TraceCtx] = []
         self.always_executors: tuple[Executor, ...] = get_always_executors()
         self.produce_log: bool = produce_log
         self.log_file_name: str = log_file_name
         self.log_str: str = ""
         self.visualizer: Visualizer | None = visualizer
+        self.partial_costs: dict[TraceCtx, float] = {}
 
-        print('INIT TRACE')
-        import pprint
-        pprint.pprint(self.trace)
+        self.log(f'New trace to optimize\n{self.trace}')
+
+    class OptimizationStrat(Enum):
+        EXAUSTIVE = 1
+        GREEDY = 2
 
     # TODO (matteochen): fix this
     def __repr__(self) -> str:
@@ -64,7 +73,333 @@ class BackendOptimizer():
 
         return total_time / iters, out
 
-    def build_placement_options(self):
+    # TODO (matteochen): this has a lot in common with the exaustive search, compact them
+    def build_placement_options_incremental(self):
+        class SearchNode:
+            def __init__(self, symbol: BoundSymbolInterface, idx: int)-> None:
+                self.symbol = symbol
+                self.idx = idx
+
+        # Last index inclusive
+        def benchmark_partial_trace(trace_in: TraceCtx, last_idx: int, configuration: list[Executor]) -> tuple[float, TraceCtx, Any]:
+
+            # Retrive all output tensors from each subregion
+            tensors = []
+            for i in range(last_idx+1):
+                if not isinstance(trace_in.bound_symbols[i], BoundSymbol):
+                    raise AssertionError('Expected BoundSymbol but received BoundSymbolInterface')
+                s = trace_in.bound_symbols[i]
+                # For each bsym region we expect to output a Tensor
+                tensors.append(s.output)
+            # print('Tensors inside partial trace')
+            # for t in tensors:
+            #     print(t)
+
+            forced_return_bsym = trace_in.bound_symbols[-1].from_bsym(args=tensors) # Should not be an Interface type at this point
+
+            t = from_trace(trace_in)
+            # Cut the trace to the required depth
+            t.bound_symbols = list(trace_in.bound_symbols)[:last_idx+1]
+
+            t.bound_symbols.append(forced_return_bsym)
+            configuration.append(Executor(name=self.empty_executor_hashable_placeholder)) # Empty executor for the forced_return
+
+            # self.log(f'Debug\n{len(t.bound_symbols)}\n{len(exs)}')
+            # self.log(f'Debug\n{(t)}\n')
+
+            # Place the assigned symbols
+            placed_t = self.place_optimizers(t, configuration)
+
+            cost, answer = self.benchmark_trace(placed_t)
+            self.log(f'Executing partial trace for incremental benchmark:\n{placed_t}')
+            self.log(f'Symbol under test = {t.bound_symbols[-2].sym.name}')
+            self.log(f'Assigned executor = {configuration[-2].name}')
+            self.log(f'Time = {cost/1000000} ms')
+            self.partial_costs[t] = cost
+            return cost, placed_t, answer
+
+        # We assign an internal id to each symbol based on its idx inside the bound_symbols list
+        def search(node: SearchNode, configuration: list[Executor]):
+
+            def continue_search(time_inc: float):
+                if node.idx+1 < max_len:
+                    new_idx: int = node.idx + 1
+                    new_symbol: BoundSymbolInterface = bound_symbols[new_idx]
+                    search(SearchNode(new_symbol, new_idx), configuration)
+                else:
+                    all_configurations.append(configuration)
+
+            has_backend = False
+            min_cost = float('inf')
+            min_cost_ex = None
+            ex: Executor
+            for ex in self.executors:
+                if not isinstance(node.symbol, BoundSymbol):
+                    raise AssertionError("Receive a symbol which is not a BoundSymbol")
+                if (isinstance(ex, OperatorExecutor) and ex.can_execute(node.symbol)):
+                    # print(f'{node.idx}-{ex._name} can execute symbol {node.symbol.sym.name}')
+                    # safe_update_dict(node.idx, ExecutorType.OPERATOR, ex)
+                    has_backend = True
+
+                    configuration.append(ex)
+                    cost, extrace, tensor_out = benchmark_partial_trace(self.trace, node.idx, list(configuration))
+                    configuration.pop()
+
+                    if cost < min_cost:
+                        min_cost = cost
+                        min_cost_ex = ex
+
+                if (isinstance(ex, FusionExecutor) and ex.can_fuse(node.symbol)):
+                    # print(f'{node.idx}-{ex._name} can fuse symbol {node.symbol.sym.name}')
+                    # safe_update_dict(node.idx, ExecutorType.FUSER, ex)
+                    has_backend = True
+
+                    configuration.append(ex)
+                    cost, extrace, tensor_out = benchmark_partial_trace(self.trace, node.idx, list(configuration))
+                    configuration.pop()
+
+                    if cost < min_cost:
+                        min_cost = cost
+                        min_cost_ex = ex
+
+            if not has_backend:
+                configuration.append(empty_executor)
+                continue_search(0.0)
+            else:
+                if min_cost_ex is None:
+                    raise AssertionError("Unexpected min cost executor or trace: None")
+                self.log(f'For id: {node.idx} - {node.symbol.sym.name} -> best backend {min_cost_ex.name}\n')
+                # log_min_cost_trace(min_cost_trace)
+                configuration.append(min_cost_ex)
+                continue_search(min_cost)
+
+        # res: dict[int, dict[ExecutorType, list[Executor]]] = {}
+        bound_symbols: list[BoundSymbolInterface] = self.trace.bound_symbols
+        max_len = len(bound_symbols)
+
+        all_configurations: list[list[Executor]] = []
+        # Is the name reserved?
+        empty_executor = Executor(name=self.empty_executor_hashable_placeholder)
+
+        if len(bound_symbols) > 0:
+            search(SearchNode(bound_symbols[0], 0), [])
+            self.placement_options = all_configurations
+
+    # TODO (matteochen): this has a lot in common with the exaustive search, compact them
+    # def build_placement_options_incremental(self):
+    #     class SearchNode:
+    #         def __init__(self, symbol: BoundSymbolInterface, idx: int)-> None:
+    #             self.symbol = symbol
+    #             self.idx = idx
+
+    #     def retrieve_executors_from_trace(trace_in: TraceCtx, last_symbol_idx:int = -1) -> list[Executor]:
+    #         executors: list[Executor] = []
+    #         if last_symbol_idx == -1:
+    #             last_symbol_idx = len(trace_in.bound_symbols)
+    #         for i in range(last_symbol_idx):
+    #             if not isinstance(trace_in.bound_symbols[i], BoundSymbol):
+    #                 raise AssertionError('Expected BoundSymbol but received BoundSymbolInterface')
+    #             s = trace_in.bound_symbols[i]
+    #             if s.sym.executor is None:
+    #                 executors.append(empty_executor)
+    #             else:
+    #                 executors.append(s.sym.executor)
+    #         return executors
+
+    #     # Last index inclusive
+    #     def benchmark_partial_trace(trace_in: TraceCtx, last_idx: int, new_ex: Executor) -> tuple[float, TraceCtx, Any]:
+
+    #         exs: list[Executor] = retrieve_executors_from_trace(trace_in, last_idx)
+    #         # for i in range(last_idx):
+    #         #     if not isinstance(trace_in.bound_symbols[i], BoundSymbol):
+    #         #         raise AssertionError('Expected BoundSymbol but received BoundSymbolInterface')
+    #         #     s = trace_in.bound_symbols[i]
+    #         #     if s.sym.executor is None:
+    #         #         exs.append(empty_executor)
+    #         #     else:
+    #         #         exs.append(s.sym.executor)
+    #         exs.append(new_ex)
+
+    #         # Retrive all output tensors from each subregion
+    #         tensors = []
+    #         for i in range(last_idx+1):
+    #             if not isinstance(trace_in.bound_symbols[i], BoundSymbol):
+    #                 raise AssertionError('Expected BoundSymbol but received BoundSymbolInterface')
+    #             s = trace_in.bound_symbols[i]
+    #             # For each bsym region we expect to output a Tensor
+    #             tensors.append(s.output)
+    #         # print('Tensors inside partial trace')
+    #         # for t in tensors:
+    #         #     print(t)
+
+    #         forced_return_bsym = trace_in.bound_symbols[-1].from_bsym(args=tensors) # Should not be an Interface type at this point
+
+    #         t = from_trace(trace_in)
+    #         # Cut the trace to the required depth
+    #         t.bound_symbols = list(trace_in.bound_symbols)[:last_idx+1]
+
+    #         t.bound_symbols.append(forced_return_bsym)
+    #         exs.append(Executor(name=self.empty_executor_hashable_placeholder)) # Empty executor for the forced_return
+
+    #         # self.log(f'Debug\n{len(t.bound_symbols)}\n{len(exs)}')
+    #         # self.log(f'Debug\n{(t)}\n')
+
+    #         # Place the assigned symbols
+    #         placed_t = self.place_optimizers(t, exs)
+
+    #         cost, answer = self.benchmark_trace(placed_t)
+    #         self.log(f'Executing partial trace for incremental benchmark:\n{placed_t}')
+    #         self.log(f'Symbol under test = {t.bound_symbols[-2].sym.name}')
+    #         self.log(f'Assigned executor = {exs[-2].name}')
+    #         self.log(f'Time = {cost/1000000} ms')
+    #         self.partial_costs[t] = cost
+    #         return cost, placed_t, answer
+
+    #     # We assign an internal id to each symbol based on its idx inside the bound_symbols list
+    #     def search(node: SearchNode, time_so_far: float):
+
+    #         def continue_search(time_inc: float):
+    #             if node.idx+1 < max_len:
+    #                 new_idx: int = node.idx + 1
+    #                 new_symbol: BoundSymbolInterface = bound_symbols[new_idx]
+    #                 search(SearchNode(new_symbol, new_idx), time_so_far + time_inc)
+    #             else:
+    #                 all_configurations.append(retrieve_executors_from_trace(self.incremental_search_out_trace))
+    #                 self.log(f'Incremental search ended:\n{self.incremental_search_out_trace}\n{all_configurations[0]}')
+
+    #         # def safe_update_dict(idx: int, type: ExecutorType, ex: Executor):
+    #         #     if idx not in res:
+    #         #         res[idx] = {}
+    #         #         res[node.idx][type] = [ex]
+    #         #     else:
+    #         #         if type not in res[idx]:
+    #         #             res[node.idx][type] = [ex]
+    #         #         else:
+    #         #             res[node.idx][type].append(ex)
+
+    #         def log_min_cost_trace(trace: TraceCtx):
+    #             self.log(f'Min cost trace:\n{trace}')
+    #             b: BoundSymbol
+    #             for b in trace.bound_symbols:
+    #                 self.log(f'sym = {b.sym.name} , ex = {b.sym.executor}')
+
+    #         def extend_min_cost_trace(trace_in: TraceCtx, idx_from_to_extend: int):
+    #             new_items = list(self.trace.bound_symbols[idx_from_to_extend:])
+    #             # Remove the mock return statement
+    #             trace_in.bound_symbols.pop()
+    #             trace_in.bound_symbols.extend(new_items)
+
+    #         def update_self_trace(trace_in: TraceCtx):
+    #             self.incremental_search_out_trace = from_trace(trace_in)
+    #             self.incremental_search_out_trace.bound_symbols = list(trace_in.bound_symbols)
+
+    #         has_backend = False
+    #         min_cost = float('inf')
+    #         min_cost_ex = None
+    #         min_cost_trace = from_trace(self.incremental_search_out_trace)
+    #         min_cost_trace.bound_symbols  = list(self.incremental_search_out_trace.bound_symbols)
+    #         # self.log(f'New iter, node idx = {node.idx}')
+    #         log_min_cost_trace(min_cost_trace)
+
+    #         trace_iter = from_trace(self.incremental_search_out_trace)
+    #         trace_iter.bound_symbols = list(self.incremental_search_out_trace.bound_symbols)
+
+    #         # Seach for last placed executor index in min_cost_trace
+    #         idx = 0
+    #         while idx < len(min_cost_trace.bound_symbols) and not self.bsym_assigned(min_cost_trace.bound_symbols[idx]):
+    #             idx += 1
+    #         while idx < len(min_cost_trace.bound_symbols) and self.bsym_assigned(min_cost_trace.bound_symbols[idx]):
+    #             idx += 1
+    #         # With Fusion operators, our trace will be collapsed. If the min_cost_trace is assigned to a trace that comes out from a fusion pass
+    #         # the length of the partial trace (local optimal) to be injected inside benchmark_partial_trace is < node.idx
+    #         idx = min(idx, node.idx)
+
+    #         ex: Executor
+    #         for ex in self.executors:
+    #             if not isinstance(node.symbol, BoundSymbol):
+    #                 raise AssertionError("Receive a symbol which is not a BoundSymbol")
+    #             if (isinstance(ex, OperatorExecutor) and ex.can_execute(node.symbol)):
+    #                 # print(f'{node.idx}-{ex._name} can execute symbol {node.symbol.sym.name}')
+    #                 # safe_update_dict(node.idx, ExecutorType.OPERATOR, ex)
+    #                 has_backend = True
+
+    #                 cost, extrace, tensor_out = benchmark_partial_trace(self.incremental_search_out_trace, idx, ex)
+
+    #                 if cost < min_cost:
+    #                     min_cost = cost
+    #                     min_cost_ex = ex
+    #                     min_cost_trace = extrace
+
+    #             if (isinstance(ex, FusionExecutor) and ex.can_fuse(node.symbol)):
+    #                 # print(f'{node.idx}-{ex._name} can fuse symbol {node.symbol.sym.name}')
+    #                 # safe_update_dict(node.idx, ExecutorType.FUSER, ex)
+    #                 has_backend = True
+
+    #                 cost, extrace, tensor_out = benchmark_partial_trace(self.incremental_search_out_trace, idx, ex)
+
+    #                 if cost < min_cost:
+    #                     min_cost = cost
+    #                     min_cost_ex = ex
+    #                     min_cost_trace = extrace
+
+    #         if not has_backend:
+    #             continue_search(0.0)
+    #             # configuration.pop(-1)
+    #         else:
+    #             if min_cost_ex is None or min_cost_trace is None:
+    #                 raise AssertionError("Unexpected min cost executor or trace: None")
+    #             self.log(f'For id: {node.idx} - {node.symbol.sym.name} -> best backend {min_cost_ex.name}')
+    #             if node.idx + 1 < max_len:
+    #                 extend_min_cost_trace(min_cost_trace, node.idx+1)
+    #             # log_min_cost_trace(min_cost_trace)
+    #             update_self_trace(min_cost_trace)
+    #             continue_search(min_cost)
+
+    #     # Assign search initial trace
+    #     self.incremental_search_out_trace = from_trace(self.trace)
+    #     self.incremental_search_out_trace.bound_symbols = list(self.trace.bound_symbols)
+
+    #     # res: dict[int, dict[ExecutorType, list[Executor]]] = {}
+    #     bound_symbols: list[BoundSymbolInterface] = self.trace.bound_symbols
+    #     max_len = len(bound_symbols)
+
+    #     all_configurations: list[list[Executor]] = []
+    #     # Is the name reserved?
+    #     empty_executor = Executor(name=self.empty_executor_hashable_placeholder)
+
+    #     if len(bound_symbols) > 0:
+    #         search(SearchNode(bound_symbols[0], 0), 0.0)
+    #         self.placement_options = all_configurations
+
+    # This expects a trace after the placement call.
+    # Nvfuser can be slower on the single trace region but can be faster by combining more of them, try to fuse then and compare
+    def try_to_fuse_after_executors_placement(self, trace_in: TraceCtx) -> TraceCtx:
+        best_trace: TraceCtx = trace_in
+        best_time, _ = self.benchmark_trace(best_trace)
+        trace_in_time = best_time
+
+        self.log('Try to fuse')
+
+        for bsym in trace_in.bound_symbols:
+            print(f'subsymbols: {bsym.subsymbols}')
+
+        for ex in self.fusion_executors:
+            self.log(f'Try to fuse executor {ex.name}')
+            extrace = ex.fusion_pass(trace_in)
+            self.log(f'Fused trace:\n{extrace}')
+            extrace_time, _ = self.benchmark_trace(extrace)
+            self.log(f'Fused trace time:{extrace_time}')
+
+            if extrace_time < best_time:
+                best_time = extrace_time
+                best_trace = extrace
+
+        self.log(f'Trace in (time = {trace_in_time}):\n{trace_in}')
+        self.log(f'Best fused trace (time = {best_time}):\n{best_trace}')
+
+        return best_trace
+
+    def build_placement_options_exaustive(self):
         class ExecutorType(Enum):
             OPERATOR = 1
             FUSER = 1
@@ -82,7 +417,7 @@ class BackendOptimizer():
                     new_symbol: BoundSymbolInterface = bound_symbols[new_idx]
                     search(SearchNode(new_symbol, new_idx), configuration)
                 else:
-                    print(f'reached end of search for this tree branch {configuration}')
+                    # print(f'reached end of search for this tree branch {configuration}')
                     all_configurations.append(list(configuration))
 
             def safe_update_dict(idx: int, type: ExecutorType, ex: Executor):
@@ -122,26 +457,108 @@ class BackendOptimizer():
 
         res: dict[int, dict[ExecutorType, list[Executor]]] = {}
         bound_symbols: list[BoundSymbolInterface] = self.trace.bound_symbols
-        bound_symbols_name = [s.sym.name for s in bound_symbols]
         max_len = len(bound_symbols)
 
         all_configurations: list[list[Executor]] = []
         # Is the name reserved?
         empty_executor = Executor(name=self.empty_executor_hashable_placeholder)
 
-        print(f'input trace bound symbols name len {len(bound_symbols_name)}: {bound_symbols_name}')
-
         if len(bound_symbols) > 0:
             search(SearchNode(bound_symbols[0], 0), [])
-            print('end of search')
             self.placement_options = all_configurations
-            print('config len', len(all_configurations))
-            # for config in all_configurations:
-            #     c_str = [str(c.name) for c in config]
-            #     c_str = " ".join(c_str)
-            #     print(c_str)
 
-    def place_optimizers(self, executor_list: list[Executor]) -> TraceCtx:
+    # def build_placement_options_parallel(self):
+    #     class ExecutorType(Enum):
+    #         OPERATOR = 1
+    #         FUSER = 1
+
+    #     class SearchNode:
+    #         def __init__(self, symbol: BoundSymbolInterface, idx: int)-> None:
+    #             self.symbol = symbol
+    #             self.idx = idx
+
+    #     # We assign an internal id to each symbol based on its idx inside the bound_symbols list
+    #     def search(node: SearchNode, configuration, all_configurations, level = 0):
+    #         def update():
+    #             # print(f'{node.idx + 1} >= {max_len}, reached end of search for this tree branch (len = {len(configuration)}) {configuration}')
+    #             all_configurations.append(list(configuration))
+
+    #         def safe_update_dict(idx: int, type: ExecutorType, ex: Executor):
+    #             if idx not in res:
+    #                 res[idx] = {}
+    #                 res[node.idx][type] = [ex]
+    #             else:
+    #                 if type not in res[idx]:
+    #                     res[node.idx][type] = [ex]
+    #                 else:
+    #                     res[node.idx][type].append(ex)
+
+    #         futures = []
+    #         with concurrent.futures.ThreadPoolExecutor(max_workers=100) as concurrent_executor:
+
+    #             has_backend = False
+    #             new_idx: int = node.idx + 1
+
+    #             if new_idx >= max_len:
+    #                 # As this is the last symbol, we expect a return statement by default
+    #                 configuration.append(empty_executor)
+    #                 update()
+    #                 return
+
+    #             new_symbol: BoundSymbolInterface = bound_symbols[new_idx]
+    #             new_node = SearchNode(new_symbol, new_idx)
+
+    #             ex: Executor
+    #             for ex in self.executors:
+
+    #                 if not isinstance(node.symbol, BoundSymbol):
+    #                     raise AssertionError("Receive a symbol which is not a BoundSymbol")
+    #                 if (isinstance(ex, OperatorExecutor) and ex.can_execute(node.symbol)):
+    #                     safe_update_dict(node.idx, ExecutorType.OPERATOR, ex)
+    #                     has_backend = True
+    #                     configuration.append(ex)
+    #                     futures.append(concurrent_executor.submit(search, new_node, list(configuration), all_configurations, level+1))
+    #                     configuration.pop(-1)
+    #                 if (isinstance(ex, FusionExecutor) and ex.can_fuse(node.symbol)):
+    #                     safe_update_dict(node.idx, ExecutorType.FUSER, ex)
+    #                     has_backend = True
+    #                     configuration.append(ex)
+    #                     futures.append(concurrent_executor.submit(search, new_node, list(configuration), all_configurations, level+1))
+    #                     configuration.pop(-1)
+
+    #             if not has_backend:
+    #                 configuration.append(empty_executor)
+    #                 futures.append(concurrent_executor.submit(search, new_node, list(configuration), all_configurations, level+1))
+    #                 configuration.pop(-1)
+
+    #             if level == 0:
+    #                 concurrent.futures.wait(futures)
+
+    #     res: dict[int, dict[ExecutorType, list[Executor]]] = {}
+    #     bound_symbols: list[BoundSymbolInterface] = self.trace.bound_symbols
+    #     bound_symbols_name = [s.sym.name for s in bound_symbols]
+    #     max_len = len(bound_symbols)
+
+    #     all: list[list[Executor]] = []
+    #     # Is the name reserved?
+    #     empty_executor = Executor(name=self.empty_executor_hashable_placeholder)
+
+    #     print(f'input trace bound symbols name len {len(bound_symbols_name)}: {bound_symbols_name}')
+
+    #     import time
+
+    #     if len(bound_symbols) > 0:
+    #         start = time.time_ns()
+    #         search(SearchNode(bound_symbols[0], 0), [], all)
+    #         end = time.time_ns()
+    #         print(f'End of search, tot time = {(end - start)/1000000} ms. Configurations len = {len(all)}')
+    #         self.placement_options = all
+    #         # for config in all_configurations:
+    #         #     c_str = [str(c.name) for c in config]
+    #         #     c_str = " ".join(c_str)
+    #         #     print(c_str)
+
+    def place_optimizers(self, in_trace, executor_list: list[Executor]) -> TraceCtx:
 
         from thunder.executors.passes import _transform_for_operator_executor_execution
 
@@ -172,6 +589,11 @@ class BackendOptimizer():
         def visit_helper(bsym: BoundSymbol, ex: Executor) -> None | bool:
             if bsym.sym.python_impl is not None:
                 return None
+
+            # if self.bsym_assigned(bsym):
+            #     return None
+            # if bsym.sym.executor is not None:
+            #     return None
 
             # We have mapped this at previous stages
             if ex.name == self.empty_executor_hashable_placeholder:
@@ -204,10 +626,7 @@ class BackendOptimizer():
         def visit(bsym: BoundSymbol, ex: Executor) -> transforms.VISIT_TYPE:
             return transforms.VISIT_TYPE.NO_OP if visit_helper(bsym, ex) is None else transforms.VISIT_TYPE.REPLACE
 
-        # for s, o in zip(self.trace.bound_symbols, executor_list):
-        #     print(f'{s} -> {o}')
-
-        extrace = transforms.visitor_transform_paired(self.trace, visit, zip(self.trace.bound_symbols, executor_list))
+        extrace = transforms.visitor_transform_paired(in_trace, visit, zip(in_trace.bound_symbols, executor_list))
 
         # Restores original variables
         bound_symbols: list[BoundSymbol] = []
@@ -217,8 +636,7 @@ class BackendOptimizer():
 
         extrace.bound_symbols = bound_symbols
 
-        # print('============================================ trace before fusion pass')
-        # pprint.pprint(extrace)
+        # self.log(f'Place optimizer, before fusion pass trace:\n{extrace}')
 
         # We have to temporary clear the subsymbols of already claimed symbols by not fusion ops, otherwise fusion ops will check recursively subsymbols and clear all the current placements
         cached_subsymbols: dict[str, Sequence[BoundSymbolInterface]] = {}
@@ -241,39 +659,69 @@ class BackendOptimizer():
             if hash in cached_subsymbols:
                 bsym.subsymbols = cached_subsymbols[hash]
 
-        # print('============================================ trace after fusion pass')
-        # pprint.pprint(extrace)
+        # self.log(f'Place optimizer, after fusion pass trace:\n{extrace}')
 
         # Apply always executors
         extrace = _transform_for_operator_executor_execution(extrace, self.always_executors)
 
-        # print('============================================ trace after always executors pass')
-        # pprint.pprint(extrace)
+        # self.log(f'Place optimizer, after always executors:\n{extrace}')
 
         return extrace
 
-    def build_search_space(self):
+    # TODO (matteochen): add config for exaustive search or incremental one
+    def optimize(self, strat: OptimizationStrat = OptimizationStrat.GREEDY):
         import thunder.core.codeutils as cutils
 
-        self.build_placement_options()
+        def greedy():
+            # This builds one option by default
+            self.build_placement_options_incremental()
 
-        for option in self.placement_options:
-            option_str = [str(ex.name) for ex in option]
-            option_str = '-'.join(option_str)
-            # print(f'============================================ optimizers len {len(option)}: {option_str}')
-            trace = self.place_optimizers(option)
+            self.log(f'Placement options size: {len(self.placement_options)}')
 
-            if self.visualizer is not None:
-                sig_name = cutils.get_siginfo_name(trace)
-                # TODO (matteochen): consider adding more infos for naming
-                self.visualizer.set_hidden_trace(f'hidden-{sig_name}-{option_str}', trace)
+            if len(self.placement_options) != 1:
+                raise AssertionError("Unexpected placement options size")
 
-            self.optimzide_traces.append(trace)
+            option = self.placement_options[0]
+            # option_str = [str(ex.name) for ex in option]
+            # option_str = '-'.join(option_str)
+            trace = self.place_optimizers(self.trace, option)
+            # trace = self.try_to_fuse_after_executors_placement(trace)
+
+            # There are no hidden placements hence do not call the visualizer
+
+            # Append the unique trace
+            self.optimized_traces.append(trace)
+
+        def exaustive():
+            # This builds one option by default
+            self.build_placement_options_exaustive()
+
+            self.log(f'Placement options size: {len(self.placement_options)}')
+
+            for option in self.placement_options:
+                option_str = [str(ex.name) for ex in option]
+                option_str = '-'.join(option_str)
+                # print(f'============================================ optimizers len {len(option)}: {option_str}')
+                trace = self.place_optimizers(self.trace, option)
+
+                if self.visualizer is not None:
+                    sig_name = cutils.get_siginfo_name(trace)
+                    # TODO (matteochen): consider adding more infos for naming
+                    self.visualizer.set_hidden_trace(f'hidden-{sig_name}-{option_str}', trace)
+
+                self.optimized_traces.append(trace)
+
+        if strat == self.OptimizationStrat.GREEDY:
+            greedy()
+        elif strat == self.OptimizationStrat.EXAUSTIVE:
+            exaustive()
+        else:
+            raise AssertionError('Optimization strat not implemented')
 
     def get_optimal_trace(self) -> TraceCtx:
         return self.optimal_trace
 
-    def benchmark_trace(self, trace: TraceCtx) -> float:
+    def benchmark_trace(self, trace: TraceCtx) -> tuple[float, Any]:
 
         input_args = []
 
@@ -347,15 +795,12 @@ class BackendOptimizer():
         else:
             raise AssertionError('Unexpexcted args type')
 
-        # print('========================================= benchmark_trace: input_args')
-        # print_input_args(input_args, level=0)
-
         # TODO (matteochen): measure time
         trace_tok = set_tracectx(trace)
 
         # Obtain the python executable string
         executable_str = trace.python_callable()
-        t, _ = self.compute_time_cost(executable_str, 10, *input_args)
+        t, answer = self.compute_time_cost(executable_str, 10, *input_args)
 
         reset_tracectx(trace_tok)
 
@@ -371,16 +816,17 @@ class BackendOptimizer():
             self.log_str += trace.python()
             self.log_str += '\n#############################################################################################################\n'
 
-        # print('========================================= benchmark_trace out')
-        # print_trace_execution_output(out)
+        return t, answer
 
-        return t
+    def bsym_assigned(self, bsym: BoundSymbol) -> bool:
+        return isinstance(bsym.sym.executor, OperatorExecutor) or isinstance(bsym.sym.executor, FusionExecutor)
+
 
     def benchmark_traces(self):
         min_run_time = float('inf')
         optimal_trace: TraceCtx = self.trace # Assign initial value for unbound errors
-        for trace in self.optimzide_traces:
-            trace_time = self.benchmark_trace(trace)
+        for trace in self.optimized_traces:
+            trace_time, _ = self.benchmark_trace(trace)
             if trace_time < min_run_time:
                 min_run_time = trace_time
                 optimal_trace = trace

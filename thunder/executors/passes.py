@@ -153,7 +153,7 @@ def autotune_transform_for_execution(trace: TraceCtx, executors_list: Sequence[E
     trace = dce(trace)
 
     backend_optimizer = BackendOptimizer(trace, executors_list, produce_log=True, log_file_name=f'autotune_transform_for_execution_{sig_name}.log', visualizer=visualizer)
-    backend_optimizer.build_search_space()
+    backend_optimizer.optimize()
     backend_optimizer.benchmark_traces()
     extrace = backend_optimizer.get_optimal_trace()
 
