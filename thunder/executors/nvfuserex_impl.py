@@ -749,7 +749,7 @@ class nvFuserExecutor(FusionExecutor):
         return cse_trace
 
     # TODO Restore fusion logic here -- this just replaces supported operations in isolation at the moment
-    def fusion_pass(self, trace: TraceCtx) -> TraceCtx:
+    def fusion_pass(self, trace: TraceCtx, fusion_regions_in_trace: int = 0) -> TraceCtx:
         start_time_ns: int = time.time_ns()
         # Replace uniform with uniform_philox and rng state operators for better rematerialization
         from thunder.core.rematerialization import replace_uniform
@@ -782,7 +782,7 @@ class nvFuserExecutor(FusionExecutor):
 
         # Counts how many fusions (per executor) have been constructed
         #   (Used to name fusions like nvFusion0, nvFusion1, ...)
-        fusion_counter: int = 0
+        fusion_counter: int = fusion_regions_in_trace
         for bsyms in bound_symbol_groups:
             # TODO The following allows generating single node fusions, which
             #   may be suboptimal for real-world performance.

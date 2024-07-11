@@ -15,7 +15,6 @@ from enum import Enum
 from itertools import chain
 import time
 # import concurrent.futures
-import pprint
 
 class OptimizerNode():
     def __init__(self, node: Node):
@@ -38,7 +37,7 @@ class BackendOptimizer():
         self.fusion_executors: Sequence[FusionExecutor] = [ex for ex in executors if isinstance(ex, FusionExecutor)]
         self.empty_executor_hashable_placeholder: str = 'empty'
         self.placement_options: list[list[Executor]] = []
-        self.optimized_traces: list[TraceCtx] = []
+        self.optimized_traces: list[dict[str, TraceCtx]] = []
         self.always_executors: tuple[Executor, ...] = get_always_executors()
         self.produce_log: bool = produce_log
         self.log_file_name: str = log_file_name
@@ -62,26 +61,22 @@ class BackendOptimizer():
             file.write(s)
             file.close()
 
-    def compute_time_cost(self, fn: Callable, iters: int, *args) -> tuple[float, Any]:
-        total_time = 0
-        out = None
-        for _ in range(iters):
-            time_s = time.time_ns()
-            out = fn(*args)
-            time_e = time.time_ns()
-            total_time += (time_e - time_s)
-
-        return total_time / iters, out
-
     # TODO (matteochen): this has a lot in common with the exaustive search, compact them
     def build_placement_options_incremental(self):
+        import sys
+
+        old_max_recursion = sys.getrecursionlimit()
+        # TODO (matteochen): parametrize this
+        sys.setrecursionlimit(20000)
+
+
         class SearchNode:
             def __init__(self, symbol: BoundSymbolInterface, idx: int)-> None:
                 self.symbol = symbol
                 self.idx = idx
 
         # Last index inclusive
-        def benchmark_partial_trace(trace_in: TraceCtx, last_idx: int, configuration: list[Executor]) -> tuple[float, TraceCtx, Any]:
+        def benchmark_partial_trace(trace_in: TraceCtx, last_idx: int, configuration: list[Executor]) -> tuple[float, TraceCtx]:
 
             # Retrive all output tensors from each subregion
             tensors = []
@@ -110,13 +105,15 @@ class BackendOptimizer():
             # Place the assigned symbols
             placed_t = self.place_optimizers(t, configuration)
 
-            cost, answer = self.benchmark_trace(placed_t)
+            cost, answer = benchmark_trace(placed_t)
+            del answer
             self.log(f'Executing partial trace for incremental benchmark:\n{placed_t}')
             self.log(f'Symbol under test = {t.bound_symbols[-2].sym.name}')
             self.log(f'Assigned executor = {configuration[-2].name}')
             self.log(f'Time = {cost/1000000} ms')
+            # TODO (matteochen): log this to file
             self.partial_costs[t] = cost
-            return cost, placed_t, answer
+            return cost, placed_t
 
         # We assign an internal id to each symbol based on its idx inside the bound_symbols list
         def search(node: SearchNode, configuration: list[Executor]):
@@ -133,6 +130,7 @@ class BackendOptimizer():
             min_cost = float('inf')
             min_cost_ex = None
             ex: Executor
+            # TODO (matteochen): do parallel for
             for ex in self.executors:
                 if not isinstance(node.symbol, BoundSymbol):
                     raise AssertionError("Receive a symbol which is not a BoundSymbol")
@@ -142,7 +140,7 @@ class BackendOptimizer():
                     has_backend = True
 
                     configuration.append(ex)
-                    cost, extrace, tensor_out = benchmark_partial_trace(self.trace, node.idx, list(configuration))
+                    cost, extrace = benchmark_partial_trace(self.trace, node.idx, list(configuration))
                     configuration.pop()
 
                     if cost < min_cost:
@@ -155,7 +153,7 @@ class BackendOptimizer():
                     has_backend = True
 
                     configuration.append(ex)
-                    cost, extrace, tensor_out = benchmark_partial_trace(self.trace, node.idx, list(configuration))
+                    cost, extrace = benchmark_partial_trace(self.trace, node.idx, list(configuration))
                     configuration.pop()
 
                     if cost < min_cost:
@@ -184,6 +182,8 @@ class BackendOptimizer():
         if len(bound_symbols) > 0:
             search(SearchNode(bound_symbols[0], 0), [])
             self.placement_options = all_configurations
+
+        sys.setrecursionlimit(old_max_recursion)
 
     # TODO (matteochen): this has a lot in common with the exaustive search, compact them
     # def build_placement_options_incremental(self):
@@ -247,7 +247,7 @@ class BackendOptimizer():
     #         # Place the assigned symbols
     #         placed_t = self.place_optimizers(t, exs)
 
-    #         cost, answer = self.benchmark_trace(placed_t)
+    #         cost, answer = benchmark_trace(placed_t)
     #         self.log(f'Executing partial trace for incremental benchmark:\n{placed_t}')
     #         self.log(f'Symbol under test = {t.bound_symbols[-2].sym.name}')
     #         self.log(f'Assigned executor = {exs[-2].name}')
@@ -372,30 +372,44 @@ class BackendOptimizer():
     #         self.placement_options = all_configurations
 
     # This expects a trace after the placement call.
-    # Nvfuser can be slower on the single trace region but can be faster by combining more of them, try to fuse then and compare
+    # Fusion operators as nvFuser can be slower on the single trace region but can be faster by combining more of them,
+    # try to fuse then and compare
     def try_to_fuse_after_executors_placement(self, trace_in: TraceCtx) -> TraceCtx:
+
+        def count_fusion_regions(trace_in: TraceCtx) -> int:
+            count = 0
+            for bsym in trace_in.bound_symbols:
+                if isinstance(bsym.sym.executor, FusionExecutor):
+                              count += 1
+            # ex.fuseion_pass regions are zero indexed
+            return max(0, count)
+
         best_trace: TraceCtx = trace_in
-        best_time, _ = self.benchmark_trace(best_trace)
+        best_time, answer = benchmark_trace(best_trace)
+        del answer
         trace_in_time = best_time
 
         self.log('Try to fuse')
 
-        for bsym in trace_in.bound_symbols:
-            print(f'subsymbols: {bsym.subsymbols}')
+        # for bsym in trace_in.bound_symbols:
+        #     print(f'subsymbols: {bsym.subsymbols}')
+
+        fusion_regions = count_fusion_regions(trace_in)
 
         for ex in self.fusion_executors:
             self.log(f'Try to fuse executor {ex.name}')
-            extrace = ex.fusion_pass(trace_in)
+            extrace = ex.fusion_pass(trace_in, fusion_regions)
             self.log(f'Fused trace:\n{extrace}')
-            extrace_time, _ = self.benchmark_trace(extrace)
-            self.log(f'Fused trace time:{extrace_time}')
+            extrace_time, answer = benchmark_trace(extrace)
+            del answer
+            self.log(f'Fused trace time:{extrace_time/1000000} ms')
 
             if extrace_time < best_time:
                 best_time = extrace_time
                 best_trace = extrace
 
-        self.log(f'Trace in (time = {trace_in_time}):\n{trace_in}')
-        self.log(f'Best fused trace (time = {best_time}):\n{best_trace}')
+        self.log(f'Trace in (time = {trace_in_time / 1000000} ms):\n{trace_in}')
+        self.log(f'Best fused trace (time = {best_time / 1000000} ms):\n{best_trace}')
 
         return best_trace
 
@@ -671,26 +685,37 @@ class BackendOptimizer():
     # TODO (matteochen): add config for exaustive search or incremental one
     def optimize(self, strat: OptimizationStrat = OptimizationStrat.GREEDY):
         import thunder.core.codeutils as cutils
+        from thunder.executors.passes import transform_for_execution
 
         def greedy():
-            # This builds one option by default
+            # 1. This builds one option by default
             self.build_placement_options_incremental()
-
-            self.log(f'Placement options size: {len(self.placement_options)}')
 
             if len(self.placement_options) != 1:
                 raise AssertionError("Unexpected placement options size")
 
             option = self.placement_options[0]
-            # option_str = [str(ex.name) for ex in option]
-            # option_str = '-'.join(option_str)
-            trace = self.place_optimizers(self.trace, option)
-            # trace = self.try_to_fuse_after_executors_placement(trace)
+            # self.log(f'sym len: {len(self.trace.bound_symbols)} options len = {len(option)}')
+            # self.log(f'Trace to optimize\n{self.trace}')
+            # self.log('Chosen options:')
+            # for s, o in zip(self.trace.bound_symbols, option):
+            #     print(f'{s.sym.name} -> {o.name}')
+            # Place the assigned executors
+            trace_greedy = self.place_optimizers(self.trace, option)
+            # Append the unique trace
+            self.optimized_traces.append({'greedy': trace_greedy})
+
+            # 2. Try to fuse additional regions from the greedy result
+            # Attention, if all the fused traces perform worse that the greedy one, the greedy one is returned
+            # TODO (matteochen): ignore a duplicated trace
+            trace_greedy_fused = self.try_to_fuse_after_executors_placement(trace_greedy)
+            self.optimized_traces.append({'fused_greedy': trace_greedy_fused})
+
+            # 3. Try the priority list approach
+            trace_priority = transform_for_execution(self.trace, self.executors)
+            self.optimized_traces.append({'priority_list': trace_priority})
 
             # There are no hidden placements hence do not call the visualizer
-
-            # Append the unique trace
-            self.optimized_traces.append(trace)
 
         def exaustive():
             # This builds one option by default
@@ -709,7 +734,7 @@ class BackendOptimizer():
                     # TODO (matteochen): consider adding more infos for naming
                     self.visualizer.set_hidden_trace(f'hidden-{sig_name}-{option_str}', trace)
 
-                self.optimized_traces.append(trace)
+                self.optimized_traces.append({option_str: trace})
 
         if strat == self.OptimizationStrat.GREEDY:
             greedy()
@@ -721,102 +746,6 @@ class BackendOptimizer():
     def get_optimal_trace(self) -> TraceCtx:
         return self.optimal_trace
 
-    def benchmark_trace(self, trace: TraceCtx) -> tuple[float, Any]:
-
-        input_args = []
-
-        def print_input_args(args, level=0, show_content = False):
-            for e in args:
-                if isinstance(e, tuple) or isinstance(e, list):
-                    print_input_args(e, level=level+1)
-                else:
-                    print(f'level {level}', type(e))
-
-        def print_trace_execution_output(out: Any, show_content=False):
-            if isinstance(out, tuple):
-                for e in out:
-                    print(f'{type(e)}')
-            else:
-                print(f'{type(out)}')
-
-        def thunder_to_torch_float_dtype(byte: int) -> torch.dtype:
-            if (byte == 2):
-                return torch.float16
-            elif (byte == 4):
-                return torch.float32
-            else:
-                return torch.float64
-
-        def transform_input_tuple(t: tuple, level=0) -> tuple:
-            res = []
-            for e in t:
-                if type(e) is tuple:
-                    res.append(transform_input_tuple(e, level+1))
-                else:
-                    # print(f'level {level}', type(e))
-                    if isinstance(e, TensorProxy):
-                        res.append(transform_tensor(e))
-                    else:
-                        # TODO (matteochen): support more data types
-                        raise AssertionError(f'Input arg type not recognized: {type(e)}')
-            return tuple(res)
-
-        def transform_tensor(arg: TensorProxy) -> torch.Tensor:
-            dtype = arg.dtype
-            if dtype is not None and type(dtype) is thunder.dtypes.floating:
-                torch_dtype = thunder_to_torch_float_dtype(dtype.bytes)
-                # print(f'thunder type: {dtype} torch_dtype: {torch_dtype}')
-            else:
-                # TODO (matteochen): support other types
-                raise AssertionError(f"dtype {dtype} not supported yet")
-
-            shape = arg.shape
-            device = arg.device
-            requires_grad = arg.requires_grad
-            # TODO (matteochen): Missing parallel and fsdp handling...
-            # TODO (matteochen): Missing support for meta types ...
-            tensor: torch.Tensor = torch.randn(*shape, dtype=torch_dtype, device=device.device_str(), requires_grad=requires_grad)
-            # print(f'Adding tensor shape: {tensor.shape} dtype: {tensor.dtype} device: {tensor.device} requires_grad: {tensor.requires_grad}')
-            return tensor
-
-        # Can we remove this check?
-        if isinstance(trace.args, list):
-            for arg in trace.args:
-                # print(f'current arg {arg}\ntype {type(arg)}')
-                if isinstance(arg, tuple):
-                    # print('Processig tuple')
-                    input_args.append(transform_input_tuple(arg))
-                elif isinstance(arg, TensorProxy):
-                    # print('Processig TensorProxy')
-                    e = transform_tensor(arg)
-                    input_args.append(e)
-                else:
-                    raise AssertionError(f'Input arg type not recognized: {type(arg)}')
-        else:
-            raise AssertionError('Unexpexcted args type')
-
-        # TODO (matteochen): measure time
-        trace_tok = set_tracectx(trace)
-
-        # Obtain the python executable string
-        executable_str = trace.python_callable()
-        t, answer = self.compute_time_cost(executable_str, 10, *input_args)
-
-        reset_tracectx(trace_tok)
-
-        # Note, currently the forward pass returns a tuple:
-        # (
-        #     dict,
-        #     ...
-        # )
-        # We have to access the dict['output'] in order to get the forward computation result
-
-        if self.produce_log:
-            self.log_str += f'Time taken: {t / 1000000}ms\n'
-            self.log_str += trace.python()
-            self.log_str += '\n#############################################################################################################\n'
-
-        return t, answer
 
     def bsym_assigned(self, bsym: BoundSymbol) -> bool:
         return isinstance(bsym.sym.executor, OperatorExecutor) or isinstance(bsym.sym.executor, FusionExecutor)
@@ -825,14 +754,132 @@ class BackendOptimizer():
     def benchmark_traces(self):
         min_run_time = float('inf')
         optimal_trace: TraceCtx = self.trace # Assign initial value for unbound errors
-        for trace in self.optimized_traces:
-            trace_time, _ = self.benchmark_trace(trace)
+        best_label = ""
+
+        for trace_info in self.optimized_traces:
+
+            label = None
+            trace = None
+            for k, v in trace_info.items():
+                label = k
+                trace = v
+
+            trace_time, res = benchmark_trace(trace)
+            del res
+            self.log(f'Benchmark trace "{label}" (time = {trace_time / 1000000} ms):\n{trace}')
             if trace_time < min_run_time:
                 min_run_time = trace_time
                 optimal_trace = trace
+                best_label = label
+
+        self.log(f'Benchmark end: Best trace "{best_label}":\n{optimal_trace}')
 
         self.optimal_trace = optimal_trace
 
         with open(self.log_file_name, 'w') as file:
             file.write(self.log_str)
             file.close()
+
+
+# This will benpchmark the input trace with the del_last_used call
+def benchmark_trace(trace: TraceCtx) -> tuple[float, Any]:
+    from thunder.executors.passes import del_last_used
+
+    input_args = []
+
+    def compute_time_cost(fn: Callable, iters: int, *args) -> tuple[float, Any]:
+        total_time = 0
+        out = None
+        for _ in range(iters):
+            time_s = time.time_ns()
+            out = fn(*args)
+            torch.cuda.synchronize()
+            time_e = time.time_ns()
+            total_time += (time_e - time_s)
+
+        return total_time / iters, out
+
+    def print_input_args(args, level=0, show_content = False):
+        for e in args:
+            if isinstance(e, tuple) or isinstance(e, list):
+                print_input_args(e, level=level+1)
+            else:
+                print(f'level {level}', type(e))
+
+    def print_trace_execution_output(out: Any, show_content=False):
+        if isinstance(out, tuple):
+            for e in out:
+                print(f'{type(e)}')
+        else:
+            print(f'{type(out)}')
+
+    def thunder_to_torch_float_dtype(byte: int) -> torch.dtype:
+        if (byte == 2):
+            return torch.float16
+        elif (byte == 4):
+            return torch.float32
+        else:
+            return torch.float64
+
+    def transform_input_tuple(t: tuple, level=0) -> tuple:
+        res = []
+        for e in t:
+            if type(e) is tuple:
+                res.append(transform_input_tuple(e, level+1))
+            else:
+                # print(f'level {level}', type(e))
+                if isinstance(e, TensorProxy):
+                    res.append(transform_tensor(e))
+                else:
+                    # TODO (matteochen): support more data types
+                    raise AssertionError(f'Input arg type not recognized: {type(e)}')
+        return tuple(res)
+
+    def transform_tensor(arg: TensorProxy) -> torch.Tensor:
+        dtype = arg.dtype
+        if dtype is not None and type(dtype) is thunder.dtypes.floating:
+            torch_dtype = thunder_to_torch_float_dtype(dtype.bytes)
+            # print(f'thunder type: {dtype} torch_dtype: {torch_dtype}')
+        else:
+            # TODO (matteochen): support other types
+            raise AssertionError(f"dtype {dtype} not supported yet")
+
+        shape = arg.shape
+        device = arg.device
+        requires_grad = arg.requires_grad
+        # TODO (matteochen): Missing parallel and fsdp handling...
+        # TODO (matteochen): Missing support for meta types ...
+        tensor: torch.Tensor = torch.randn(*shape, dtype=torch_dtype, device=device.device_str(), requires_grad=requires_grad)
+        # print(f'Adding tensor shape: {tensor.shape} dtype: {tensor.dtype} device: {tensor.device} requires_grad: {tensor.requires_grad}')
+        return tensor
+
+    # Can we remove this check?
+    if isinstance(trace.args, list):
+        for arg in trace.args:
+            # print(f'current arg {arg}\ntype {type(arg)}')
+            if isinstance(arg, tuple):
+                # print('Processig tuple')
+                input_args.append(transform_input_tuple(arg))
+            elif isinstance(arg, TensorProxy):
+                # print('Processig TensorProxy')
+                e = transform_tensor(arg)
+                input_args.append(e)
+            else:
+                raise AssertionError(f'Input arg type not recognized: {type(arg)}')
+    else:
+        raise AssertionError('Unexpexcted args type')
+
+    # Always benchmark trace after a deletion last used pass
+    trace = del_last_used(trace)
+
+    # TODO (matteochen): measure time
+    trace_tok = set_tracectx(trace)
+
+    # Obtain the python executable string
+    executable_str = trace.python_callable()
+    # TODO (matteochen): make the iters configurable
+    t, answer = compute_time_cost(executable_str, 1, *input_args)
+
+    reset_tracectx(trace_tok)
+
+    return t, answer
