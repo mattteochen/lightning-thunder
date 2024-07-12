@@ -1,6 +1,7 @@
 from typing import Any, Hashable
 import torch
 import thunder
+from thunder.clang import sub
 from thunder.core.baseutils import BoundSymbolInterface
 from thunder.core.utils import check, safe_map_flat
 from thunder.core.proxies import Proxy, TensorProxy, variableify, Variable
@@ -389,15 +390,14 @@ class BackendOptimizer():
         del answer
         trace_in_time = best_time
 
-        self.log('Try to fuse')
-
         # for bsym in trace_in.bound_symbols:
         #     print(f'subsymbols: {bsym.subsymbols}')
 
         fusion_regions = count_fusion_regions(trace_in)
+        self.log(f'Try to fuse. Fusion regions already present: {fusion_regions}')
 
         for ex in self.fusion_executors:
-            self.log(f'Try to fuse executor {ex.name}')
+            self.log(f'Try to fuse executor {ex.name} with trace:\n{trace_in}')
             extrace = ex.fusion_pass(trace_in, fusion_regions)
             self.log(f'Fused trace:\n{extrace}')
             extrace_time, answer = benchmark_trace(extrace)
@@ -652,28 +652,48 @@ class BackendOptimizer():
 
         # self.log(f'Place optimizer, before fusion pass trace:\n{extrace}')
 
-        # We have to temporary clear the subsymbols of already claimed symbols by not fusion ops, otherwise fusion ops will check recursively subsymbols and clear all the current placements
-        cached_subsymbols: dict[str, Sequence[BoundSymbolInterface]] = {}
+        # proxy_names_to_ignore = set()
         unique_fusion_executors = set()
+        cached_subsymbols: dict[str, Sequence[BoundSymbol]] = {}
+
+        if len(executor_list) != len(extrace.bound_symbols):
+            raise AssertionError("Invalid executor - bound_symbols lenght")
+
         for ex, bsym in zip(executor_list, extrace.bound_symbols):
-            bsym_hash: str = hex(id(bsym))
-            cached_subsymbols[bsym_hash] = list(bsym.subsymbols)
             if isinstance(ex, FusionExecutor):
                 unique_fusion_executors.add(ex)
-            else:
-                bsym.subsymbols = ()
+            elif isinstance(ex, OperatorExecutor):
+                if isinstance(bsym.output, TensorProxy):
+                    t_proxy_name: str = bsym.output.name
+                    cached_subsymbols[t_proxy_name] = list(bsym.subsymbols)
+                    # This will leave out these symbols from the fusion pass
+                    bsym.subsymbols = []
+
+                    # proxy_names_to_ignore.add(t_proxy.name)
+
+        # self.log(f'To ignore:\n{proxy_names_to_ignore}')
+
+        self.log(f'Before fusion pass trace\n{extrace}')
 
         # Perform fusion pass
+        # TODO (matteochen): filter for the current fusion operator as we wanna find the most efficient one
         for ex in unique_fusion_executors:
             extrace = ex.fusion_pass(extrace)
 
-        # Restore the subsymbols
-        for bsym in extrace.bound_symbols:
-            hash = hex(id(bsym))
-            if hash in cached_subsymbols:
-                bsym.subsymbols = cached_subsymbols[hash]
+        self.log(f'After fusion pass trace\n{extrace}')
 
-        # self.log(f'Place optimizer, after fusion pass trace:\n{extrace}')
+        # Restore subsymbols
+        # TODO (matteochen): Improve this search
+        for k, v in cached_subsymbols.items():
+            # Note some symbols may be cut out by the fusion pass -> CSE
+            # For example:
+            # a = 1 + 1
+            # b = 1 + 1
+            # c = a + b
+            # being replaced by c = a + a
+            for bsym in extrace.bound_symbols:
+                if isinstance(bsym.output, TensorProxy) and bsym.output.name == k:
+                    bsym.subsymbols = v
 
         # Apply always executors
         extrace = _transform_for_operator_executor_execution(extrace, self.always_executors)
@@ -681,6 +701,34 @@ class BackendOptimizer():
         # self.log(f'Place optimizer, after always executors:\n{extrace}')
 
         return extrace
+
+
+    def clear_bad_inputs(self, trace_in: TraceCtx):
+
+        def args_eq(a, b) -> bool:
+            if len(a) != len(b):
+                return False
+            for obj_a, obj_b in zip(a, b):
+                if type(obj_a) == type(obj_b) and isinstance(obj_a, TensorProxy):
+                    if obj_a.name != obj_b.name:
+                        return False
+            return True
+
+        def clear(bsym: BoundSymbol, input):
+            size = len(bsym.subsymbols)
+            if size > 0:
+                for subsym in bsym.subsymbols:
+                    if not args_eq(subsym.args, input):
+                        print(f'Sub = {subsym.sym.name} Args = {subsym.args}')
+                        print(f'Got subsymbol {subsym.sym.name} with different inputs from {bsym.sym.name}')
+                        subsym.args = tuple(list(input))
+                        clear(subsym, input)
+
+        # Solve the issue of nvfuser mismatrch input args
+        for bsym in trace_in.bound_symbols:
+            if bsym.sym.executor is not None:
+                print(f'Calling clear for {bsym.sym.name} Args({type(bsym.args)}) = {bsym.args}\n')
+                clear(bsym, bsym.args)
 
     # TODO (matteochen): add config for exaustive search or incremental one
     def optimize(self, strat: OptimizationStrat = OptimizationStrat.GREEDY):
@@ -701,7 +749,14 @@ class BackendOptimizer():
             # for s, o in zip(self.trace.bound_symbols, option):
             #     print(f'{s.sym.name} -> {o.name}')
             # Place the assigned executors
+            self.log(f'Placing optimizers for greedy trace:\n{self.trace}')
+            for s, o in zip(self.trace.bound_symbols, option):
+                print(f'{s.sym.name} -> {o.name}')
             trace_greedy = self.place_optimizers(self.trace, option)
+            self.log(f'Greedy trace:\n{trace_greedy}')
+
+            self.clear_bad_inputs(trace_greedy)
+
             # Append the unique trace
             self.optimized_traces.append({'greedy': trace_greedy})
 
