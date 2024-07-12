@@ -193,6 +193,18 @@ class FusionExecutor(Executor):
         sym = Symbol(name=name, meta=_meta, is_fusion=True, _bind_postprocess=_bind_postprocess, executor=self)
         return sym.bind(*inputs, output=outputs)
 
+    # If a trace comes in with already placed fusion region we have to updated the initial counter (see derived class)
+    def count_fusion_regions(self, trace_in: TraceCtx, ex_type: type) -> int:
+        count = 0
+        for bsym in trace_in.bound_symbols:
+            if not isinstance(bsym, BoundSymbol):
+                raise AssertionError(f"Expected a BoundSymbol, got: {type(bsym)}")
+            if type(bsym.sym.executor) is ex_type:
+            # if isinstance(bsym.sym.executor, FusionExecutor):
+                      count += 1
+        # ex.fuseion_pass regions are zero indexed
+        return max(0, count)
+
 
 class OperatorExecutor(Executor):
     def __init__(self, name: Hashable, *, version: None | Any = None):

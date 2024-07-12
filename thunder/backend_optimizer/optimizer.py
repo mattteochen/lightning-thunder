@@ -7,7 +7,7 @@ from thunder.core.symbol import BoundSymbol, Symbol
 from thunder.core.trace import from_trace, set_tracectx, reset_tracectx, get_tracectx, TraceCtx
 from thunder.core.utils import check, safe_map_flat
 from thunder.executors.data_dependent_partition import Graph, Node
-from thunder.extend import Executor, FusionExecutor, OperatorExecutor, get_always_executors
+from thunder.extend import Executor, FusionExecutor, OperatorExecutor, get_all_executors, get_always_executors
 from thunder.visualizer.visualizer_helper import Visualizer
 from typing import Any, Hashable
 import thunder
@@ -45,7 +45,10 @@ class BackendOptimizer():
         self.visualizer: Visualizer | None = visualizer
         self.partial_costs: dict[TraceCtx, float] = {}
 
-        self.log(f'New trace to optimize\n{self.trace}')
+        self.log(f'New trace to optimize:\n{self.trace}')
+        self.log('Executors:')
+        for o in self.executors:
+            print(f'{o.name} -> {type(o)}, is operator = {isinstance(o, OperatorExecutor)}, is fusion = {isinstance(o, FusionExecutor)}')
 
     class OptimizationStrat(Enum):
         EXAUSTIVE = 1
@@ -100,7 +103,7 @@ class BackendOptimizer():
             # Place the assigned symbols
             placed_t = self.place_optimizers(t, configuration)
 
-            cost, answer = benchmark_trace(placed_t)
+            cost, answer = benchmark_trace(placed_t, iters=10)
             del answer
             self.log(f'Executing partial trace for incremental benchmark:\n{placed_t}')
             self.log(f'Symbol under test = {t.bound_symbols[-2].sym.name}')
@@ -154,7 +157,7 @@ class BackendOptimizer():
             else:
                 if min_cost_ex is None:
                     raise AssertionError("Unexpected min cost executor or trace: None")
-                self.log(f'For id: {node.idx} - {node.symbol.sym.name} -> best backend {min_cost_ex.name}\n')
+                self.log(f'\nFor id: {node.idx} - {node.symbol.sym.name} -> best backend {min_cost_ex.name}\n')
                 configuration.append(min_cost_ex)
                 continue_search()
 
@@ -176,28 +179,16 @@ class BackendOptimizer():
     # try to fuse then and compare
     def try_to_fuse_after_executors_placement(self, trace_in: TraceCtx) -> TraceCtx:
 
-        # Fuser call is expecting a fresh trace with no prior fusion calls hence the fusion regions count will start from 0. We need to override that logic
-        def count_fusion_regions(trace_in: TraceCtx) -> int:
-            count = 0
-            for bsym in trace_in.bound_symbols:
-                if isinstance(bsym.sym.executor, FusionExecutor):
-                              count += 1
-            # ex.fuseion_pass regions are zero indexed
-            return max(0, count)
-
         best_trace: TraceCtx = trace_in
-        best_time, answer = benchmark_trace(best_trace)
+        best_time, answer = benchmark_trace(best_trace, iters=10)
         del answer
         trace_in_time = best_time
 
-        fusion_regions = count_fusion_regions(trace_in)
-        self.log(f'Try to fuse. Fusion regions already present: {fusion_regions}')
-
         for ex in self.fusion_executors:
             self.log(f'Try to fuse executor {ex.name} with trace:\n{trace_in}')
-            extrace = ex.fusion_pass(trace_in, fusion_regions)
+            extrace = ex.fusion_pass(trace_in)
             self.log(f'Fused trace:\n{extrace}')
-            extrace_time, answer = benchmark_trace(extrace)
+            extrace_time, answer = benchmark_trace(extrace, iters=10)
             del answer
             self.log(f'Fused trace time:{extrace_time/1000000} ms')
 
@@ -470,7 +461,7 @@ class BackendOptimizer():
                 label = k
                 trace = v
 
-            trace_time, res = benchmark_trace(trace)
+            trace_time, res = benchmark_trace(trace, iters=10)
             del res
             self.debug_msg += f'Trace name = [{label}] - Time = {trace_time / 1000000} ms\n{trace}\n\n'
             self.log(f'Benchmark trace "{label}" (time = {trace_time / 1000000} ms):\n{trace}')
@@ -479,7 +470,7 @@ class BackendOptimizer():
                 optimal_trace = trace
                 best_label = label
 
-        self.log(f'Benchmark end: Best trace "{best_label} (time = {min_run_time})":\n{optimal_trace}')
+        self.log(f'Benchmark end: Best trace "{best_label} (time = {min_run_time / 1000000} ms)":\n{optimal_trace}')
 
         self.optimal_trace = optimal_trace
 
