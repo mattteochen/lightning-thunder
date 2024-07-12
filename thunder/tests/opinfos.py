@@ -3499,6 +3499,9 @@ def getitem_sample_generator(op, device, dtype, requires_grad, **kwargs):
         ((5, 5), (slice(1, 3, 1), [-3])),
         ((2, 2, 2), (slice(None, None), (-1,), slice(None, None))),
         ((2, 2), (..., [-1])),
+        # check performance optimization regarding slice_prim
+        ((1, 5, 3), (slice(0, 2), slice(0, 5), slice(0, 4))),
+        ((4, 5, 3), (slice(0, 2, 2), slice(0, 5, 3), slice(0, 4, 2))),
         # This sample shows inconsistencies between PyTorch and Numpy
         # >>> t = torch.rand(2, 2, 2)
         # >>> n = np.random.rand(2, 2, 2)
@@ -3595,6 +3598,51 @@ def getitem_sample_generator(op, device, dtype, requires_grad, **kwargs):
     idx0 = make_idx(7, 9)
     yield SampleInput(a, (Ellipsis, idx0))
 
+    # list indexing
+    a = make((5, 4, 7))
+    yield SampleInput(a, ([1, 2]))
+
+    # list indexing into a tensor with no elements
+    a = make((5, 0, 7))
+    yield SampleInput(a, [1, 2])
+
+    # list indexing with tensor indexing
+    a = make((5, 4, 7))
+    idx = make_idx(5, 12)
+    yield SampleInput(a, (idx, [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]))
+
+    # list indexing with Ellipsis
+    a = make((5, 2, 9, 4, 7))
+    idx0 = make_idx(4, 8)
+    idx1 = make_idx(7, 1)
+    yield SampleInput(a, (Ellipsis, idx0, [0]))
+
+    # basic indexing and advanced indexing together
+    a = make((5, 5, 7))
+    yield SampleInput(a, (None, [1, 2]))
+    a = make((5, 5))
+    yield SampleInput(a, (slice(1, 4), [1, 2]))
+    yield SampleInput(a, (slice(None, None, None), [1, 2]))
+    a = make((5, 5))
+    yield SampleInput(a, (1, [1, 2]))
+
+    # Ellipsis, basic, and advanced indexing
+    a = make((5, 5, 7))
+    yield SampleInput(a, (Ellipsis, None, [1, 2]))
+    a = make((5, 5, 9, 5))
+    yield SampleInput(a, (Ellipsis, slice(1, 4), None, [1, 2]))
+    a = make((5, 5))
+    yield SampleInput(a, (Ellipsis, 1, [1, 2]))
+
+    # mixed order basic and advanced indexing
+    a = make((5, 5, 7))
+    yield SampleInput(a, ([1, 2], None))
+    a = make((5, 5))
+    yield SampleInput(a, ([1, 2], slice(1, 4)))
+    yield SampleInput(a, ([1, 2], slice(None, None, None)))
+    a = make((5, 5))
+    yield SampleInput(a, ([1, 2], 1))
+
 
 # NOTE getitem intentionally defines 3 references, since advanced indexing is probably
 #   the most complicated operation that any framework implements, and there's a good chance
@@ -3614,6 +3662,9 @@ getitem_opinfo = OpInfo(
         ),
         DecorateInfo(pytest.mark.xfail, "test_vjp_correctness", active_if=IS_WINDOWS),
         DecorateInfo(pytest.mark.xfail, "test_phantom_grad_vs_torch_consistency", active_if=IS_WINDOWS),
+        # TypeError: Using a non-tuple sequence for multidimensional indexing is not allowed; use `arr[array(seq)]`
+        # instead of `arr[seq]`. See https://github.com/google/jax/issues/4564 for more information.
+        DecorateInfo(pytest.mark.xfail, "test_core_vs_jax_consistency"),
     ),
 )
 shape_ops.append(getitem_opinfo)
@@ -5415,8 +5466,29 @@ argmin_opinfo = OpInfo(
 reduction_ops.append(argmin_opinfo)
 
 
+def make_sort_stable_sample(shape, dim, dtype, device, requires_grad):
+    """
+    Creates stable samples at which sort is differentiable.
+
+    The following holds true for any sample `x` from this generator:
+    sort(x, ...).indices == sort(x + eps, ...).indices for eps in (0, 1).
+    """
+
+    make = partial(make_tensor, device=device, dtype=dtype)
+
+    noise = make(shape, low=0, high=1)
+    data = 2 * torch.arange(0, noise.numel(), device=noise.device).reshape(noise.shape).to(noise.dtype)
+    if data.ndim > 0 and data.shape[dim] > 0:
+        perm = torch.randperm(data.shape[dim], device=data.device)
+        data = data.index_select(dim, perm)
+
+    sample = data + noise
+    sample.requires_grad_(requires_grad)
+    return sample
+
+
 def topk_sample_generator(op, device, dtype, requires_grad, **kwargs):
-    make = partial(make_tensor, device=device, dtype=dtype, requires_grad=requires_grad)
+    make = partial(make_sort_stable_sample, device=device, dtype=dtype, requires_grad=requires_grad)
 
     # shape, k, dim
     # NOTE: k = 0 is not consistent between the CPU and the CUDA PyTorch implementations,
@@ -5432,9 +5504,14 @@ def topk_sample_generator(op, device, dtype, requires_grad, **kwargs):
         ((4, 2, 5, 1), 1),
     )
 
-    for shape, *args in cases:
+    for shape, k, *dim in cases:
+        if not dim:
+            implied_dim = -1
+        else:
+            implied_dim = dim[0]
+
         for largest, sorted in itertools.product((True, False), repeat=2):
-            yield SampleInput(make(shape), *args, largest=largest, sorted=sorted)
+            yield SampleInput(make(shape, implied_dim), k, *dim, largest=largest, sorted=sorted)
 
 
 def topk_error_generator(op, device, **kwargs):
@@ -5453,27 +5530,72 @@ topk_opinfo = OpInfo(
     clang.topk,
     name="topk",
     supports_grad=True,
-    # Without the fixed seed this generator does not guarantee
-    # to produce inputs at which topk is differentiable
-    # (i.e. when topk(x, ...).indices == topk(x + dx, ...).indices).
-    # TODO: (@nikitaved): potentially modify these inputs to
-    # fix the issue.
     sample_input_generator=topk_sample_generator,
     error_input_generator=topk_error_generator,
     torch_reference=torch.topk,
     dtypes=(datatypes.signedinteger, datatypes.unsignedinteger, datatypes.floating),
-    test_directives=(
-        DecorateInfo(
-            # See https://github.com/Lightning-AI/lightning-thunder/issues/120
-            pytest.mark.skip(reason="Cannot handle inputs/outputs which do not require grads"),
-            "test_vjp_correctness",
-        ),
-    ),
 )
 reduction_ops.append(topk_opinfo)
 
 
 opinfos.extend(reduction_ops)
+
+
+#
+# Sort and dim permutations operations
+#
+dim_perm_ops = []
+
+
+def sort_sample_generator(op, device, dtype, requires_grad, **kwargs):
+    make = partial(make_sort_stable_sample, device=device, dtype=dtype, requires_grad=requires_grad)
+
+    # shape, dim
+    cases = (
+        ((),),
+        ((), 0),
+        ((3, 0),),
+        ((4, 4), 1),
+        ((4, 1, 6), -1),
+        ((4, 1, 6), 0),
+        ((4, 7, 5, 1), -3),
+        ((4, 2, 5, 1),),
+    )
+
+    for shape, *dim in cases:
+        if dim:
+            dim = dim[0]
+        else:
+            dim = -1
+
+        for descending, stable in itertools.product((True, False), repeat=2):
+            yield SampleInput(make(shape, dim), dim=dim, descending=descending, stable=stable)
+
+
+sort_opinfo = OpInfo(
+    clang.sort,
+    name="sort",
+    supports_grad=True,
+    sample_input_generator=sort_sample_generator,
+    torch_reference=torch.sort,
+    dtypes=(datatypes.bool8, datatypes.signedinteger, datatypes.unsignedinteger, datatypes.floating),
+    test_directives=(
+        DecorateInfo(
+            custom_comparator(partial(assert_close, atol=1e-6, rtol=1e-6)),
+            "test_vjp_correctness",
+        ),
+        DecorateInfo(
+            pytest.mark.skip(reason="PyTorch does not yet support boolean types in sort for CUDA"),
+            "test_core_vs_torch_consistency",
+            dtypes=(datatypes.bool8,),
+            devicetypes=(devices.DeviceType.CUDA,),
+        ),
+    ),
+)
+dim_perm_ops.append(sort_opinfo)
+
+
+opinfos.extend(dim_perm_ops)
 
 
 #
@@ -7779,13 +7901,6 @@ sdpa_opinfo = OpInfo(
             "test_vjp_correctness",
             dtypes=(datatypes.float64,),
         ),
-        DecorateInfo(
-            pytest.mark.skip(reason="https://github.com/pytorch/pytorch/issues/129579"),
-            "test_cudnn_vs_torch_consistency",
-            dtypes=(datatypes.bfloat16, datatypes.float16, datatypes.float32),
-            devicetypes=(devices.DeviceType.CUDA,),
-            active_if=version_between(torch.__version__, min_ver="2.5.0a0", max_ver="2.5.0a99"),
-        ),
     ),
 )
 nn_ops.append(sdpa_opinfo)
@@ -7899,15 +8014,6 @@ grad_sdpa_opinfo = OpInfo(
     # NOTE: NotImplementedError: Could not run 'aten::_scaled_dot_product_efficient_attention' with arguments from the 'CPU' backend.
     # NOTE: NotImplementedError: Could not run 'aten::_scaled_dot_product_efficient_attention_backward' with arguments from the 'CPU' backend
     devicetypes=(devices.DeviceType.CUDA,),
-    test_directives=(
-        DecorateInfo(
-            pytest.mark.skip(reason="https://github.com/pytorch/pytorch/issues/129579"),
-            "test_core_vs_torch_consistency",
-            dtypes=(datatypes.bfloat16, datatypes.float16, datatypes.float32),
-            devicetypes=(devices.DeviceType.CUDA,),
-            active_if=version_between(torch.__version__, min_ver="2.5.0a0", max_ver="2.5.0a99"),
-        ),
-    ),
 )
 nn_ops.append(grad_sdpa_opinfo)
 
