@@ -1,7 +1,6 @@
 from typing import Any, Hashable
 import torch
 import thunder
-from thunder.clang import sub
 from thunder.core.baseutils import BoundSymbolInterface
 from thunder.core.utils import check, safe_map_flat
 from thunder.core.proxies import Proxy, TensorProxy, variableify, Variable
