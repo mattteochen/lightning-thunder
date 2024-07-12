@@ -142,7 +142,7 @@ def autotune_transform_for_execution(trace: TraceCtx, executors_list: Sequence[E
     # Recover the function name
     sig_name = cutils.get_siginfo_name(trace)
 
-    start_time_ns = time.time_ns()
+    start_time_ns = time.perf_counter_ns()
 
     if torch.distributed.is_available():
         # Apply AllReduce bucketing if possible & needed
@@ -157,7 +157,7 @@ def autotune_transform_for_execution(trace: TraceCtx, executors_list: Sequence[E
     backend_optimizer.benchmark_traces()
     extrace = backend_optimizer.get_optimal_trace()
 
-    end_time_ns = time.time_ns()
+    end_time_ns = time.perf_counter_ns()
     elapsed_time_ns = end_time_ns - start_time_ns
     elapsed_time_millis = elapsed_time_ns // 1000000
 
