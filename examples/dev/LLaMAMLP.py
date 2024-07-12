@@ -1,5 +1,6 @@
 import torch
 import thunder
+import time
 
 class LLaMAMLP(torch.nn.Module):
     def __init__(self, n_embd, intermediate_size) -> None:
@@ -14,15 +15,31 @@ class LLaMAMLP(torch.nn.Module):
         return self.proj(x)
 
 with torch.device('cuda'):
-    model = LLaMAMLP(4096, 11008)
-    x = torch.randn(2, 2048, 4096, requires_grad=True)
+    a = 4096 * 3
+    b = 11008 * 3
+    model = LLaMAMLP(a, b)
+    x = torch.randn(2, 2048, a, requires_grad=True)
 
     jmodel = thunder.jit(model)
 
-    ans = jmodel(x)
-    print('---------------------------------------------- all traces')
-    for t in thunder.last_traces(jmodel):
-        print(t)
-        print('##############################################')
-    print('---------------------------------------------- ans')
-    print(ans)
+    tot_time = 0
+    iters = 12
+    for i in range(iters):
+        start = time.time_ns()
+        ans = jmodel(x)
+        torch.cuda.synchronize()
+        end = time.time_ns()
+
+        # Skip the model without cache
+        if i > 1:
+            tot_time += (end - start)
+        print(f'tot time = {(end - start) / 1000000} ms')
+
+
+    # for t in thunder.last_traces(jmodel):
+    #     print(t)
+    print(thunder.last_traces(jmodel)[-1])
+    print(thunder.last_backward_traces(jmodel)[-1])
+    print(f'Mean time = {(tot_time/(iters-2))/1000000} ms')
+
+    print('deviation:', (jmodel(x) - model(x)).abs().max().item())
