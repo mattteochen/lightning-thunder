@@ -10,30 +10,28 @@ class Module(torch.nn.Module):
 
     def forward(self, x: torch.Tensor):
         a = x + x
-        # a_silu = self.silu(a)
         b: torch.Tensor = self.linear(a)
         c = b * b
-        # c_silu = self.silu(c)
         d = c + c
-        return d
+        return self.silu(d)
 
 with torch.device('cuda'):
-    multiplier = 10
+    multiplier = 1000
     in_features = 20 * multiplier
     out_features = 30 * multiplier
     model = Module(in_features, out_features)
     x = torch.randn(128, in_features)
 
-    jmodel = thunder.jit(model)
+    jmodel = thunder.jit(model, autotune_executors=True, executors=['nvfuser', 'torchcompile', 'torch'])
 
-    for _ in range(100):
-        start = time.time_ns()
+    for _ in range(10):
+        start = time.perf_counter_ns()
         ans = jmodel(x)
-        end = time.time_ns()
-        # print('---------------------------------------------- all traces')
-        # for t in thunder.last_traces(jmodel):
-        #     print(t)
-        #     print('##############################################')
+        torch.autograd.grad(ans.sum(), model.parameters())
+        torch.cuda.synchronize()
+        end = time.perf_counter_ns()
 
         print(f'tot time = {(end - start) / 1000000} ms')
+
+    print(thunder.last_backward_traces(jmodel)[-1])
 

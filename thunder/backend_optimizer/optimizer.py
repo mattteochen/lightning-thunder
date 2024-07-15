@@ -465,7 +465,7 @@ class BackendOptimizer():
             del res
             self.debug_msg += f'Trace name = [{label}] - Time = {trace_time / 1000000} ms\n{trace}\n\n'
             self.log(f'Benchmark trace "{label}" (time = {trace_time / 1000000} ms):\n{trace}')
-            if trace_time < min_run_time:
+            if trace_time < min_run_time and label=='priority_list':
                 min_run_time = trace_time
                 optimal_trace = trace
                 best_label = label

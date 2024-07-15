@@ -285,6 +285,7 @@ def jit(
     additional_transforms: list[AdditionalTransform] | None = None,
     post_optimization_transforms: list[PostOptimizationTransform] | None = None,
     record_history: bool = False,
+    autotune_executors: bool = True,
     **compile_options,  # TODO RC1 Make this explicit -- dict of options
 ) -> Callable:
     """Just-in-time compile a callable (function or model).
@@ -582,7 +583,7 @@ def jit(
                     # transform_for_execution and various sorting of symbols,
                     # applying transform_for_execution after this would be
                     # breaking the order of operations
-                    computation_trc, backward_trc = split_forward_backward(computation_trc, cd, cs, *inps)
+                    computation_trc, backward_trc = split_forward_backward(computation_trc, cd, cs, autotune_executors, *inps)
                     # Note computation_trc and backward_trc have been appended to cs.last_(backward_)traces
                     # by split_forward_backward
                     extraces = cs.last_traces

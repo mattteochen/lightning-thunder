@@ -25,10 +25,10 @@ with torch.device('cuda'):
     tot_time = 0
     iters = 12
     for i in range(iters):
-        start = time.time_ns()
+        start = time.perf_counter_ns()
         ans = jmodel(x)
         torch.cuda.synchronize()
-        end = time.time_ns()
+        end = time.perf_counter_ns()
 
         # Skip the model without cache
         if i > 1:

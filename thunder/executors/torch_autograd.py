@@ -106,12 +106,12 @@ class ThunderFunction(torch.autograd.Function):
             return (None, None, None, None, None, *([None] * n_grads))
 
 # TODO (matteochen): add control for using autotuner or not
-def split_forward_backward(computation_trc: TraceCtx, compile_data, compile_stats, /, *flat_args):
+def split_forward_backward(computation_trc: TraceCtx, compile_data, compile_stats, autotune_executors, /, *flat_args):
     from thunder.core.rematerialization import rematerialize_all_gather, rematerialize_forward_and_backward
     from thunder.core.transforms import forward_and_backward_from_trace
     from thunder.distributed.transforms import FSDPCommBucketing
     from thunder.distributed.utils import sort_data_parallel_syncs, sort_waits, sort_communication_ops
-    from thunder.executors.passes import del_last_used, autotune_transform_for_execution
+    from thunder.executors.passes import del_last_used, transform_for_execution, autotune_transform_for_execution
     from thunder.visualizer.visualizer_helper import Visualizer
 
     visualizer = Visualizer(produce_hidden=False)
@@ -170,11 +170,17 @@ def split_forward_backward(computation_trc: TraceCtx, compile_data, compile_stat
     # TODO Restore request for no rematerialization
 
     visualizer.set_fw_initial_trace(fw_trace)
-    fw_extrace = autotune_transform_for_execution(
-        fw_trace,
-        executors_list=compile_data.executors_list,
-        visualizer=visualizer
-    )
+    if autotune_executors:
+        fw_extrace = autotune_transform_for_execution(
+            fw_trace,
+            executors_list=compile_data.executors_list,
+            visualizer=visualizer
+        )
+    else:
+        fw_extrace = transform_for_execution(
+            fw_trace,
+            executors_list=compile_data.executors_list
+        )
     fw_traces.append(fw_extrace)
     visualizer.set_fw_optimized_trace(fw_extrace)
 
@@ -210,11 +216,17 @@ def split_forward_backward(computation_trc: TraceCtx, compile_data, compile_stat
     # Now we can run the optimization passes on the backward trace
     # TODO Restore request for no rematerialization
     visualizer.set_bw_initial_trace(bw_trace)
-    bw_extrace = autotune_transform_for_execution(
-        bw_trace,
-        executors_list=compile_data.executors_list,
-        visualizer=visualizer
-    )
+    if autotune_executors:
+        bw_extrace = autotune_transform_for_execution(
+            bw_trace,
+            executors_list=compile_data.executors_list,
+            visualizer=visualizer
+        )
+    else:
+        bw_extrace = transform_for_execution(
+            bw_trace,
+            executors_list=compile_data.executors_list,
+        )
     bw_traces.append(bw_extrace)
     visualizer.set_bw_optimized_trace(bw_extrace)
 
