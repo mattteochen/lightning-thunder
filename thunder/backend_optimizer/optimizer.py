@@ -2,7 +2,7 @@ from collections.abc import Callable, Sequence
 from enum import Enum
 from itertools import chain
 from thunder.core.baseutils import BoundSymbolInterface
-from thunder.core.proxies import Proxy, TensorProxy, variableify, Variable
+from thunder.core.proxies import CollectionProxy, Proxy, TensorProxy, variableify, Variable
 from thunder.core.symbol import BoundSymbol, Symbol
 from thunder.core.trace import from_trace, set_tracectx, reset_tracectx, get_tracectx, TraceCtx
 from thunder.core.utils import check, safe_map_flat
@@ -405,6 +405,9 @@ class BackendOptimizer():
         import thunder.core.codeutils as cutils
         from thunder.executors.passes import transform_for_execution
 
+        self.split_fusion_executors_placement()
+        return
+
         def greedy():
             # 1. This builds one option by default
             self.build_placement_options_incremental()
@@ -454,6 +457,277 @@ class BackendOptimizer():
             exaustive()
         else:
             raise AssertionError('Optimization strat not implemented')
+
+    # For each node retrive subgraph
+        # 1 For each fusion executor compute the min common subgraph
+        # 2 Select the best runtime for the current subgraph
+        # 3 Mark nodes as visited
+    # 4 Nodes which can not be fused do select the best backend
+
+    def split_fusion_executors_placement(self):
+        import pprint
+        from thunder.executors.data_dependent_partition import Node, fuse_bound_symbols
+
+        # TODO: parametrize
+        increment = 1
+
+        def sequence_hash(s: Sequence) -> str:
+            name = ""
+            for e in s:
+                if isinstance(e, CollectionProxy) or isinstance(e, TensorProxy):
+                    name += e.name
+                elif e is None:
+                    name += "None"
+                else:
+                    raise AssertionError(f'What? type = {type(e)}')
+            return name
+
+        # Benchmark the optimal executor and call this optimal
+        def get_default_executor(bsym: BoundSymbol):
+            for ex in self.executors:
+                if isinstance(ex, FusionExecutor):
+                    continue
+                if ex.can_execute(bsym):
+                    return ex
+            return Executor(name=self.empty_executor_hashable_placeholder)
+
+        def get_placed_trace(mapping: dict[str, Executor], bound_symbols: Sequence[BoundSymbol]):
+            import pprint
+            self.log(f'Input mapping len = {len(mapping)}:')
+            pprint.pprint(mapping)
+            trc = from_trace(self.trace)
+            trc.bound_symbols = list(bound_symbols)
+
+            # for b in trc.bound_symbols:
+            #     print(b.sym.name)
+
+            # print(f'trc:\n{trc}')
+
+            # Check if this naming is always valid
+            def is_possible_out(name: str):
+                num = name[1:]
+                return num.isdigit()
+
+            def find_original_return_tensors(trace_in: TraceCtx) -> list[str]:
+                return_bsym = trace_in.bound_symbols[-1]
+                if return_bsym.sym.name != 'return':
+                    raise AssertionError(f'Expected return symbol got {return_bsym.sym.name}')
+
+                ans = []
+                # forward trace
+                if isinstance(return_bsym.args, tuple):
+                    if isinstance(return_bsym.args[0], dict):
+                        ans.append(return_bsym.args[0]['output'])
+                    else:
+                        ans.extend([s for s in return_bsym.args if s is not None])
+                else:
+                    raise AssertionError('Not supported')
+
+                return ans
+
+            def find_last_out_tensor(trace_in: TraceCtx):
+                m = 0
+                t = None
+                for b in trace_in.bound_symbols:
+                    if b.sym.name == 'return':
+                        continue
+                    if isinstance(b.output, TensorProxy):
+                        if is_possible_out(b.output.name) and int(b.output.name[1:]) > m:
+                            m = int(b.output.name[1:])
+                            t = b.output
+                    # else:
+                    #     raise AssertionError(f'Not implemented, type = {type(b.output)}')
+                if t is None:
+                    raise AssertionError('Max tensor output not found')
+                print(f'max tensor out name: {t}')
+                return t
+
+            return_tensor = [find_last_out_tensor(trc)]
+            original_returns = find_original_return_tensors(self.trace)
+            for t in original_returns:
+                if t in trc.bound_symbols:
+                    return_tensor.append(t)
+
+            print(f'Return tensors: {return_tensor}')
+
+            forced_return_bsym = self.trace.bound_symbols[-1].from_bsym(args=return_tensor) # Should not be an Interface type at this point
+
+            executor_configuration = []
+            empty_executor = Executor(name=self.empty_executor_hashable_placeholder)
+            keys = []
+            for bsym in  trc.bound_symbols:
+                print(f'current bsym {bsym.sym.name} -> type out {type(bsym.output)}')
+                if bsym.sym.name == 'return':
+                    executor_configuration.append(empty_executor)
+                    keys.append('return')
+                elif isinstance(bsym.output, Sequence):
+                    seq_hash = sequence_hash(bsym.output)
+                    executor_configuration.append(mapping.get(seq_hash, empty_executor))
+                    keys.append(seq_hash)
+                elif isinstance(bsym.output, CollectionProxy) or isinstance(bsym.output, TensorProxy):
+                    if bsym.output.name not in mapping:
+                        raise AssertionError(f'Expected key {bsym.output.name} in mapping {mapping}')
+                    executor_configuration.append(mapping[bsym.output.name])
+                    keys.append(bsym.output.name)
+                else:
+                    raise AssertionError(f"Type not handled: {type(bsym.output)}")
+
+            if trc.bound_symbols[-1].sym.name != 'return':
+                trc.bound_symbols.append(forced_return_bsym)
+                executor_configuration.append(Executor(name=self.empty_executor_hashable_placeholder))
+                keys.append('return')
+
+            if len(trc.bound_symbols) != len(executor_configuration) or len(keys) != len(executor_configuration):
+                raise AssertionError(f'len trc.bound_symbols ({len(trc.bound_symbols)}) != len executor_configuration ({len(executor_configuration)}) != len keys ({len(keys)})')
+
+            placed_trace = self.place_optimizers(trc, executor_configuration)
+            return placed_trace, keys, executor_configuration
+
+        best_ex_time = float('inf')
+        best_ex_trace = None
+        ex: FusionExecutor
+        for ex in self.fusion_executors:
+            # TODO (matteochen): fix
+            if not ex.name == 'nvfuser' and not ex.name == 'torchcompile':
+                raise AssertionError(f'Fusion operator not supported: {ex.name}')
+
+            self.log(f'Searching best placement for fusion executor = {ex.name}')
+            # TODO (matteochen): each executor has a custo def
+            def _should_fuse_nvfuser(a: Node, b: Node):
+                def _can_fuse_node(n: Node):
+                    # if already merged, then node can be fused
+                    if len(n.group_bsyms) > 1:
+                        return True
+                    bsym: BoundSymbol = n.group_bsyms[0]
+                    can_fuse: bool = ex.can_fuse(bsym)
+                    cuda_in_or_out: bool = ex.has_cuda_input_or_output(bsym)
+                    return can_fuse and cuda_in_or_out
+                return _can_fuse_node(a) and _can_fuse_node(b)
+
+            def _should_fuse_torchcompile(a: Node, b: Node):
+                def _can_fuse_node(n: Node):
+                    if len(n.group_bsyms) > 1:
+                        return True
+                    bsym: BoundSymbol = n.group_bsyms[0]
+                    return ex.can_fuse(bsym)
+                return _can_fuse_node(a) and _can_fuse_node(b)
+
+            bound_symbol_groups =fuse_bound_symbols(self.trace, _should_fuse_nvfuser if ex.name == 'nvfuser' else _should_fuse_torchcompile)
+            self.log(f'Num of groups = {len(bound_symbol_groups)}')
+
+            for group in bound_symbol_groups:
+                for sub in group:
+                    print(f'{sub.sym.name} -> out: {sub.output}')
+                if len(group) > 0:
+                    print('\n')
+
+            t_map: dict[str, Executor] = {}
+            increasing_symbols = []
+            for i, group in enumerate(bound_symbol_groups):
+                print(f'group start = {group[0].sym.name}')
+                print(f'group end = {group[-1].sym.name}')
+
+                # Is not a fusion region, get the default executor
+                increasing_symbols += group
+                if len(group) < 2:
+                    symbol = group[0]
+                    print(f'Single: {symbol.sym.name}')
+                    name = symbol.sym.name
+                    ex_for_this = get_default_executor(symbol)
+                    if name == 'return':
+                        t_map['return'] = ex_for_this
+                    elif isinstance(symbol.output, Sequence):
+                        t_map[sequence_hash(symbol.output)] = ex_for_this
+                    elif isinstance(symbol.output, CollectionProxy) or isinstance(symbol.output, TensorProxy):
+                        t_map[symbol.output.name] = ex_for_this
+                    continue
+
+                # Inside groups we should have alwasy tensors as out
+                # -> First iteration is the one with no fusion regions
+                # -> Last iteration gives the complete fusion region
+                best_trc = None
+                best_time = float('inf')
+                best_placement = None
+                best_keys = None
+                for i in range(len(group)):
+                    # From top to bottom
+                    for j in range(0, i+1, increment):
+                        t_map[group[j].output.name] = ex
+                    for k in range(i+1, len(group), increment):
+                        t_map[group[k].output.name] = get_default_executor(group[k])
+
+                    # Benchmark this placement
+                    trc, keys, placements = get_placed_trace(t_map, increasing_symbols)
+                    cost, out = benchmark_trace(trc, iters=2)
+                    del out
+                    self.log(f'Placed trace (cost = {cost / 1000000} ms)\n{trc}')
+                    if cost < best_time:
+                        best_time = cost
+                        best_trc = trc
+                        best_placement = placements
+                        best_keys = keys
+
+                    # From bottom to up
+                    for j in range(0, i+1, increment):
+                        t_map[group[j].output.name] = get_default_executor(group[j])
+                    for k in range(i+1, len(group), increment):
+                        t_map[group[k].output.name] = ex
+
+                    # Benchmark this placement
+                    trc, keys, placements = get_placed_trace(t_map, increasing_symbols)
+                    cost, out = benchmark_trace(trc, iters=2)
+                    del out
+                    self.log(f'Placed trace (cost = {cost / 1000000} ms)\n{trc}')
+                    if cost < best_time:
+                        best_time = cost
+                        best_trc = trc
+                        best_placement = placements
+                        best_keys = keys
+                if best_placement is None or best_keys is None:
+                    raise AssertionError('Failed to get best placement')
+
+                self.log(f'For group {i} best placement with cost = {best_time / 1000000} ms is:\n{best_trc}')
+
+                # for n, p in zip(best_keys, best_placement):
+                #     print(f'{n} -> {p.name}')
+
+                # Update our dict
+                for n, p in zip(best_keys, best_placement):
+                    t_map |= {n: p}
+
+            self.log('End of group search')
+            pprint.pprint(t_map)
+
+            # Generate final trace
+            trc = from_trace(self.trace)
+            trc.bound_symbols = list(self.trace.bound_symbols)
+            executors = []
+            for bsym in  trc.bound_symbols:
+                if bsym.sym.name == 'return':
+                    if 'return' not in t_map:
+                        raise AssertionError(f'Expected key return in mapping {t_map}')
+                    executors.append(t_map['return'])
+                elif isinstance(bsym.output, Sequence):
+                    seq_hash = sequence_hash(bsym.output)
+                    if seq_hash not in t_map:
+                        raise AssertionError(f'Expected key {seq_hash} in mapping {t_map}')
+                    executors.append(t_map[seq_hash])
+                elif isinstance(bsym.output, CollectionProxy) or isinstance(bsym.output, TensorProxy):
+                    if bsym.output.name not in t_map:
+                        raise AssertionError(f'Expected key {bsym.output.name} in mapping {t_map}')
+                    executors.append(t_map[bsym.output.name])
+                else:
+                    raise AssertionError(f"Type not handled: {type(bsym.output)}")
+            trc = self.place_optimizers(trc, executors)
+
+            # Update res
+            cost, out = benchmark_trace(trc)
+            self.log(f'Final trace for ex {ex.name}, cost = {cost / 1000000} ms:\n{trc}')
+            del out
+            if cost < best_ex_time:
+                best_ex_time = cost
+                best_ex_trace = trc
+        self.log(f'Selected trace from fusion split optimizer:\n{best_ex_trace}')
 
     def get_optimal_trace(self) -> TraceCtx:
         return self.optimal_trace
