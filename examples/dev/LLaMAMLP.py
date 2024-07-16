@@ -1,3 +1,4 @@
+import inspect
 import torch
 import thunder
 import time
@@ -15,31 +16,59 @@ class LLaMAMLP(torch.nn.Module):
         return self.proj(x)
 
 with torch.device('cuda'):
-    a = 4096 * 3
-    b = 11008 * 3
-    model = LLaMAMLP(a, b)
+    a = 4096 * 1
+    b = 11008 * 1
     x = torch.randn(2, 2048, a, requires_grad=True)
 
-    jmodel = thunder.jit(model)
+    jmodel_def = thunder.jit(LLaMAMLP(a, b), autotune_executors=False)
+    jmodel_auto = thunder.jit(LLaMAMLP(a, b), autotune_executors=True)
+    warm_up_iters = 2
+    iters = 10
 
-    tot_time = 0
-    iters = 12
     for i in range(iters):
-        start = time.perf_counter_ns()
-        ans = jmodel(x)
+        start_fw = time.perf_counter_ns()
+        y = jmodel_auto(x)
         torch.cuda.synchronize()
-        end = time.perf_counter_ns()
+        end_fw = time.perf_counter_ns()
+        grad_outputs = torch.ones_like(y)
+        torch.cuda.synchronize()
+        start_bw = time.perf_counter_ns()
+        torch.autograd.grad(y, x, grad_outputs=grad_outputs)
+        torch.cuda.synchronize()
+        end_bw = time.perf_counter_ns()
+        torch.cuda.empty_cache()
+        # source = inspect.getsource(y.grad_fn.compiled_backward)
 
-        # Skip the model without cache
-        if i > 1:
-            tot_time += (end - start)
-        print(f'tot time = {(end - start) / 1000000} ms')
+        if i >= warm_up_iters:
+            print(f'tot time auto forward  = {(end_fw - start_fw) / 1000000} ms')
+            print(f'tot time auto backward = {(end_bw - start_bw) / 1000000} ms')
 
+    torch.cuda.synchronize()
+    torch.cuda.empty_cache()
 
-    # for t in thunder.last_traces(jmodel):
-    #     print(t)
-    print(thunder.last_traces(jmodel)[-1])
-    print(thunder.last_backward_traces(jmodel)[-1])
-    print(f'Mean time = {(tot_time/(iters-2))/1000000} ms')
+    for i in range(iters):
+        start_fw = time.perf_counter_ns()
+        y = jmodel_def(x)
+        torch.cuda.synchronize()
+        end_fw = time.perf_counter_ns()
+        grad_outputs = torch.ones_like(y)
+        torch.cuda.synchronize()
+        start_bw = time.perf_counter_ns()
+        torch.autograd.grad(y, x, grad_outputs=grad_outputs)
+        torch.cuda.synchronize()
+        end_bw = time.perf_counter_ns()
+        torch.cuda.empty_cache()
+        # source = inspect.getsource(y.grad_fn.compiled_backward)
 
-    print('deviation:', (jmodel(x) - model(x)).abs().max().item())
+        if i >= warm_up_iters:
+            print(f'tot time def forward  = {(end_fw - start_fw) / 1000000} ms')
+            print(f'tot time def backward = {(end_bw - start_bw) / 1000000} ms')
+    print('\n\n\n\n\n\n')
+    print(f'{thunder.last_traces(jmodel_def)[-1]}')
+    print('###############################################################################')
+    print(f'{thunder.last_traces(jmodel_auto)[-1]}')
+
+    print('\n\n')
+    print(f'{thunder.last_backward_traces(jmodel_def)[-1]}')
+    print('###############################################################################')
+    print(f'{thunder.last_backward_traces(jmodel_auto)[-1]}')

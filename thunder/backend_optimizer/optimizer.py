@@ -7,7 +7,7 @@ from thunder.core.symbol import BoundSymbol, Symbol
 from thunder.core.trace import from_trace, set_tracectx, reset_tracectx, get_tracectx, TraceCtx
 from thunder.core.utils import check, safe_map_flat
 from thunder.executors.data_dependent_partition import Graph, Node
-from thunder.extend import Executor, FusionExecutor, OperatorExecutor, get_all_executors, get_always_executors
+from thunder.extend import Executor, FusionExecutor, OperatorExecutor, get_all_executors, get_always_executors, resolve_executors
 from thunder.visualizer.visualizer_helper import Visualizer
 from typing import Any, Hashable
 import thunder
@@ -28,13 +28,15 @@ class BackendOptimizer():
     def log(self, what: str):
         print(f'================================================================================ Autotune: {what}')
 
-    def __init__(self, trace: TraceCtx, executors: Sequence[Executor], produce_log=True, log_file_name='autotune_debug.log', visualizer: Visualizer | None = None) -> None:
+    def __init__(self, trace: TraceCtx, priority_executors: Sequence[Executor], produce_log=True, log_file_name='autotune_debug.log', visualizer: Visualizer | None = None) -> None:
+        # Add more supported ones
+        self.executors: Sequence[Executor] = resolve_executors(['torch', 'python', 'nvfuser', 'torchcompile', 'sdpa', 'cudnn'])
+        self.priority_executors: Sequence[Executor] = priority_executors
         self.trace: TraceCtx = trace
         self.incremental_search_out_trace: TraceCtx
         self.optimal_trace: TraceCtx = trace
         self.computation_graph: Graph = Graph(trace)
-        self.executors: Sequence[Executor] = executors
-        self.fusion_executors: Sequence[FusionExecutor] = [ex for ex in executors if isinstance(ex, FusionExecutor)]
+        self.fusion_executors: Sequence[FusionExecutor] = [ex for ex in self.executors if isinstance(ex, FusionExecutor)]
         self.empty_executor_hashable_placeholder: str = 'empty'
         self.placement_options: list[list[Executor]] = []
         self.optimized_traces: list[dict[str, TraceCtx]] = []
@@ -69,8 +71,13 @@ class BackendOptimizer():
             self.symbol = symbol
             self.idx = idx
 
+    class TraceType(Enum):
+        COMPUTATIONAL = 0
+        FW = 1
+        BW = 2
+
     # TODO (matteochen): this has a lot in common with the exaustive search, compact them
-    def build_placement_options_incremental(self):
+    def build_placement_options_incremental(self, whoami: TraceType = TraceType.COMPUTATIONAL):
         import sys
 
         old_max_recursion = sys.getrecursionlimit()
@@ -78,6 +85,14 @@ class BackendOptimizer():
 
         # Last index inclusive
         def benchmark_partial_trace(trace_in: TraceCtx, last_idx: int, configuration: list[Executor]) -> tuple[float, TraceCtx]:
+
+            def safe_update_dict(d: dict, key_one, key_two, value):
+                if key_one not in d:
+                    d[key_one] = {
+                        key_two: value
+                    }
+                else:
+                    d[key_one][key_two] = value
 
             # Retrive all output tensors from each subregion
             tensors = []
@@ -103,14 +118,14 @@ class BackendOptimizer():
             # Place the assigned symbols
             placed_t = self.place_optimizers(t, configuration)
 
-            cost, answer = benchmark_trace(placed_t, iters=10)
+            cost, answer = benchmark_trace(placed_t, iters=5)
             del answer
             self.log(f'Executing partial trace for incremental benchmark:\n{placed_t}')
             self.log(f'Symbol under test = {t.bound_symbols[-2].sym.name}')
             self.log(f'Assigned executor = {configuration[-2].name}')
             self.log(f'Time = {cost/1000000} ms')
             # TODO (matteochen): log this to file
-            self.partial_costs[t] = cost
+            safe_update_dict(self.partial_costs, whoami, t, cost)
             return cost, placed_t
 
         # We assign an internal id to each symbol based on its idx inside the bound_symbols list
@@ -409,7 +424,7 @@ class BackendOptimizer():
             self.optimized_traces.append({'fused_greedy': trace_greedy_fused})
 
             # 3. Try the priority list approach
-            trace_priority = transform_for_execution(self.trace, self.executors)
+            trace_priority = transform_for_execution(self.trace, self.priority_executors)
             self.optimized_traces.append({'priority_list': trace_priority})
 
             # There are no hidden placements hence do not call the visualizer
@@ -465,7 +480,7 @@ class BackendOptimizer():
             del res
             self.debug_msg += f'Trace name = [{label}] - Time = {trace_time / 1000000} ms\n{trace}\n\n'
             self.log(f'Benchmark trace "{label}" (time = {trace_time / 1000000} ms):\n{trace}')
-            if trace_time < min_run_time and label=='priority_list':
+            if trace_time < min_run_time:
                 min_run_time = trace_time
                 optimal_trace = trace
                 best_label = label
@@ -486,14 +501,18 @@ def benchmark_trace(trace: TraceCtx, iters: int = 1) -> tuple[float, Any]:
     input_args = []
 
     def compute_time_cost(fn: Callable, iters: int, *args) -> tuple[float, Any]:
+        warm_up_iters = 3
         total_time = 0
         out = None
-        for _ in range(iters):
+        torch.cuda.empty_cache()
+        for i in range(iters + warm_up_iters):
             time_s = time.perf_counter_ns()
             out = fn(*args)
             torch.cuda.synchronize()
             time_e = time.perf_counter_ns()
-            total_time += (time_e - time_s)
+            torch.cuda.empty_cache()
+            if i >= warm_up_iters:
+                total_time += (time_e - time_s)
 
         return total_time / iters, out
 
