@@ -1059,6 +1059,14 @@ def benchmark_trace(trace: TraceCtx, iters: int = 1, show_func = False, apply_de
         else:
             return torch.float64
 
+    def thunder_to_torch_int_dtype(byte: int) -> torch.dtype:
+        if (byte == 2):
+            return torch.int16
+        elif (byte == 4):
+            return torch.int32
+        else:
+            return torch.int64
+
     def transform_input_tuple(t: tuple, level=0) -> tuple:
         res = []
         for e in t:
@@ -1076,6 +1084,8 @@ def benchmark_trace(trace: TraceCtx, iters: int = 1, show_func = False, apply_de
         dtype = arg.dtype
         if dtype is not None and type(dtype) is thunder.dtypes.floating:
             torch_dtype = thunder_to_torch_float_dtype(dtype.bytes)
+        elif dtype is not None and type(dtype) is thunder.dtypes.signedinteger:
+            torch_dtype = thunder_to_torch_int_dtype(dtype.bytes)
         else:
             # TODO (matteochen): support other types
             raise AssertionError(f"dtype {dtype} not supported yet")
