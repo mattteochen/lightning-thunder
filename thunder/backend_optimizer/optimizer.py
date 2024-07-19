@@ -396,7 +396,9 @@ class BackendOptimizer():
             if isinstance(bsym.output, TensorProxy):
                 t_name = bsym.output.name
                 if t_name not in executor_mapping:
-                    raise AssertionError('Failed to retrive key in mapping')
+                    # Symbol added by the visitor
+                    continue
+                    # raise AssertionError('Failed to retrive key in mapping')
                 saved_ex = executor_mapping[t_name]
                 if isinstance(saved_ex, OperatorExecutor):
                     cached_subsymbols[t_name] = list(bsym.subsymbols)
