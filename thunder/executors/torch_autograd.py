@@ -106,7 +106,7 @@ class ThunderFunction(torch.autograd.Function):
             return (None, None, None, None, None, *([None] * n_grads))
 
 # TODO (matteochen): add control for using autotuner or not
-def split_forward_backward(computation_trc: TraceCtx, compile_data, compile_stats, autotune_executors, /, *flat_args):
+def split_forward_backward(computation_trc: TraceCtx, compile_data, compile_stats, autotune_type, /, *flat_args):
     from thunder.core.rematerialization import rematerialize_all_gather, rematerialize_forward_and_backward
     from thunder.core.transforms import forward_and_backward_from_trace
     from thunder.distributed.transforms import FSDPCommBucketing
@@ -170,10 +170,11 @@ def split_forward_backward(computation_trc: TraceCtx, compile_data, compile_stat
     # TODO Restore request for no rematerialization
 
     visualizer.set_fw_initial_trace(fw_trace)
-    if autotune_executors:
+    if autotune_type is not None:
         fw_extrace = autotune_transform_for_execution(
             fw_trace,
             executors_list=compile_data.executors_list,
+            autotune_type=autotune_type,
             visualizer=visualizer
         )
     else:
@@ -216,10 +217,11 @@ def split_forward_backward(computation_trc: TraceCtx, compile_data, compile_stat
     # Now we can run the optimization passes on the backward trace
     # TODO Restore request for no rematerialization
     visualizer.set_bw_initial_trace(bw_trace)
-    if autotune_executors:
+    if autotune_type is not None:
         bw_extrace = autotune_transform_for_execution(
             bw_trace,
             executors_list=compile_data.executors_list,
+            autotune_type=autotune_type,
             visualizer=visualizer
         )
     else:

@@ -23,7 +23,7 @@ from thunder.core.trace import get_tracectx
 from thunder.executors.pythonex import clear_mutable_collection
 
 from thunder.extend import Executor, get_all_executors, get_always_executors, OperatorExecutor, FusionExecutor
-from thunder.backend_optimizer.optimizer import BackendOptimizer
+from thunder.backend_optimizer.optimizer import BackendOptimizer, OptimizerType
 from thunder.visualizer.graphviz import create_graphviz_pdf
 from thunder.visualizer.visualizer_helper import Visualizer
 
@@ -136,7 +136,7 @@ def _transform_for_operator_executor_execution(trace: TraceCtx, executors_list: 
     return extrace
 
 # Autotuned transform_for_execution version
-def autotune_transform_for_execution(trace: TraceCtx, executors_list: Sequence[Executor], visualizer: Visualizer | None = None) -> TraceCtx:
+def autotune_transform_for_execution(trace: TraceCtx, executors_list: Sequence[Executor], autotune_type: OptimizerType, visualizer: Visualizer | None = None) -> TraceCtx:
     import torch
 
     # Recover the function name
@@ -152,7 +152,7 @@ def autotune_transform_for_execution(trace: TraceCtx, executors_list: Sequence[E
 
     trace = dce(trace)
 
-    backend_optimizer = BackendOptimizer(trace, executors_list, produce_log=True, log_file_name=f'autotune_transform_for_execution_{sig_name}.log', visualizer=visualizer)
+    backend_optimizer = BackendOptimizer(trace, executors_list, produce_log=True, log_file_name=f'autotune_transform_for_execution_{sig_name}.log', visualizer=visualizer, optimizer_type=autotune_type)
     backend_optimizer.optimize()
     backend_optimizer.benchmark_traces()
     extrace = backend_optimizer.get_optimal_trace()
@@ -161,7 +161,7 @@ def autotune_transform_for_execution(trace: TraceCtx, executors_list: Sequence[E
     elapsed_time_ns = end_time_ns - start_time_ns
     elapsed_time_millis = elapsed_time_ns // 1000000
 
-    extrace.set_provenance(TraceProvenance(f"Autotuned transform for execution (took {elapsed_time_millis} milliseconds)"))
+    extrace.set_provenance(TraceProvenance(f"Autotuned transform for execution (strat: {autotune_type}) (took {elapsed_time_millis} milliseconds)"))
     return extrace
 
 

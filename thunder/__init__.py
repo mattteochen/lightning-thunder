@@ -285,7 +285,7 @@ def jit(
     additional_transforms: list[AdditionalTransform] | None = None,
     post_optimization_transforms: list[PostOptimizationTransform] | None = None,
     record_history: bool = False,
-    autotune_executors: bool = True,
+    autotune_type: Any | None = None,
     **compile_options,  # TODO RC1 Make this explicit -- dict of options
 ) -> Callable:
     """Just-in-time compile a callable (function or model).
@@ -308,6 +308,7 @@ def jit(
         transforms: List of transforms to be applied to the computation trace. It should be an instance :class:`thunder.core.transforms.AdditionalTransform`. Default: ``None``
         post_optimization_transforms: List of transforms to be applied to the optimized computation traces i.e. forward and backward traces. It should be an instance :class:`thunder.core.transforms.PostOptimizationTransform`. Default: ``None``
     """
+    from thunder.backend_optimizer.optimizer import OptimizerType
 
     if "executors_list" in compile_options:
         warnings.warn("outdated argument executors_list= in call, please use executors=")
@@ -332,6 +333,14 @@ def jit(
 
     if post_optimization_transforms is None:
         post_optimization_transforms = []
+
+    if autotune_type is not None:
+        if autotune_type == 'runtime':
+            autotune_type = OptimizerType.RUNTIME
+        elif autotune_type == 'memory':
+            autotune_type = OptimizerType.MEMORY
+        else:
+            raise AssertionError(f'Not supported optimization: {autotune_type}')
 
     # Resolve names of executors
     executors = resolve_executors(executors)
@@ -583,7 +592,7 @@ def jit(
                     # transform_for_execution and various sorting of symbols,
                     # applying transform_for_execution after this would be
                     # breaking the order of operations
-                    computation_trc, backward_trc = split_forward_backward(computation_trc, cd, cs, autotune_executors, *inps)
+                    computation_trc, backward_trc = split_forward_backward(computation_trc, cd, cs, autotune_type, *inps)
                     # Note computation_trc and backward_trc have been appended to cs.last_(backward_)traces
                     # by split_forward_backward
                     extraces = cs.last_traces
