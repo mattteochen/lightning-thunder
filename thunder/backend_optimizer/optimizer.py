@@ -1101,8 +1101,8 @@ def benchmark_trace(trace: TraceCtx, iters: int = 1, show_func = False, apply_de
         requires_grad = arg.requires_grad
         # TODO (matteochen): Missing parallel and fsdp handling...
         # TODO (matteochen): Missing support for meta types ...
-        tensor: torch.Tensor = torch.randn(*shape, dtype=torch_dtype, device=device.device_str(), requires_grad=requires_grad)
         print(f'Tensor: {shape} {torch_dtype} {device.device_str()}')
+        tensor: torch.Tensor = torch.randn(*shape, dtype=torch_dtype, device=device.device_str(), requires_grad=requires_grad)
         return tensor
 
     # Can we remove this check?
