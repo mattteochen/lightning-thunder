@@ -380,8 +380,11 @@ class BackendOptimizer():
         cached_subsymbols: dict[str, Sequence[BoundSymbol]] = {}
 
         print('bsym diff')
-        print(in_trace.bound_symbols)
-        print(extrace.bound_symbols)
+        for b in in_trace.bound_symbols:
+            print(b.sym.name)
+        print('bsym diff')
+        for b in extrace.bound_symbols:
+            print(b.sym.name)
 
         if len(executor_list) != len(extrace.bound_symbols):
             raise AssertionError("len(executor_list) != len(extrace.bound_symbols)")
