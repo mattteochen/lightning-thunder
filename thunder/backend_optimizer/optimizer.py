@@ -379,12 +379,14 @@ class BackendOptimizer():
         unique_fusion_executors = set()
         cached_subsymbols: dict[str, Sequence[BoundSymbol]] = {}
 
-        print('bsym diff')
+        print('############## bsym diff')
         for b in in_trace.bound_symbols:
-            print(b.sym.name)
-        print('bsym diff')
+            if isinstance(b.output, TensorProxy):
+                print(f'{b.sym.name} out: {b.output.name}')
+        print('############## bsym diff')
         for b in extrace.bound_symbols:
-            print(b.sym.name)
+            if isinstance(b.output, TensorProxy):
+                print(f'{b.sym.name} out: {b.output.name}')
 
         if len(executor_list) != len(extrace.bound_symbols):
             raise AssertionError("len(executor_list) != len(extrace.bound_symbols)")
