@@ -359,6 +359,13 @@ class BackendOptimizer():
         def visit(bsym: BoundSymbol, ex: Executor) -> transforms.VISIT_TYPE:
             return transforms.VISIT_TYPE.NO_OP if visit_helper(bsym, ex) is None else transforms.VISIT_TYPE.REPLACE
 
+        if len(executor_list) != len(in_trace.bound_symbols):
+            raise AssertionError("len(executor_list) != len(in_trace.bound_symbols)")
+
+        self.log(f'Visit transf')
+        for n, e in zip(in_trace.bound_symbols, executor_list):
+            print(f'{n.sym.name}             -> {e.name}')
+
         extrace = transforms.visitor_transform_paired(in_trace, visit, zip(in_trace.bound_symbols, executor_list))
 
         # Restores original variables
@@ -963,6 +970,7 @@ def return_not_used(trace_in: TraceCtx) -> list[TensorProxy]:
     return ans
 
 # This will benchmark the input trace with the del_last_used call
+# TODO (matteochen): move into utils module
 def benchmark_trace(trace: TraceCtx, iters: int = 1, show_func = False, apply_del_last_used = True, snapshot = False, snapshot_name = "") -> tuple[float, float, Any]:
     from thunder.executors.passes import del_last_used
     import inspect
