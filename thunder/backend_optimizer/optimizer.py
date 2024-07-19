@@ -1051,21 +1051,27 @@ def benchmark_trace(trace: TraceCtx, iters: int = 1, show_func = False, apply_de
     #     else:
     #         print(f'{type(out)}')
 
-    def thunder_to_torch_float_dtype(byte: int) -> torch.dtype:
+    def thunder_to_torch_float_dtype(tp, byte: int) -> torch.dtype:
+        if isinstance(tp, type(thunder.bfloat16)):
+            raise AssertionError('Not supported')
         if (byte == 2):
             return torch.float16
         elif (byte == 4):
             return torch.float32
-        else:
+        elif byte == 8:
             return torch.float64
+        else:
+            raise AssertionError('Not supported')
 
     def thunder_to_torch_int_dtype(byte: int) -> torch.dtype:
         if (byte == 2):
             return torch.int16
         elif (byte == 4):
             return torch.int32
-        else:
+        elif (byte == 8):
             return torch.int64
+        else:
+            raise AssertionError('Not supported')
 
     def transform_input_tuple(t: tuple, level=0) -> tuple:
         res = []
@@ -1083,7 +1089,7 @@ def benchmark_trace(trace: TraceCtx, iters: int = 1, show_func = False, apply_de
     def transform_tensor(arg: TensorProxy) -> torch.Tensor:
         dtype = arg.dtype
         if dtype is not None and type(dtype) is thunder.dtypes.floating:
-            torch_dtype = thunder_to_torch_float_dtype(dtype.bytes)
+            torch_dtype = thunder_to_torch_float_dtype(dtype, dtype.bytes)
         elif dtype is not None and type(dtype) is thunder.dtypes.signedinteger:
             torch_dtype = thunder_to_torch_int_dtype(dtype.bytes)
         else:
@@ -1096,6 +1102,7 @@ def benchmark_trace(trace: TraceCtx, iters: int = 1, show_func = False, apply_de
         # TODO (matteochen): Missing parallel and fsdp handling...
         # TODO (matteochen): Missing support for meta types ...
         tensor: torch.Tensor = torch.randn(*shape, dtype=torch_dtype, device=device.device_str(), requires_grad=requires_grad)
+        print(f'Tensor: {shape} {torch_dtype} {device.device_str()}')
         return tensor
 
     # Can we remove this check?
