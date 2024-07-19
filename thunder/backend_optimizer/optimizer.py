@@ -367,7 +367,8 @@ class BackendOptimizer():
             print(f'{n.sym.name} -> {e.name}')
 
         extrace = transforms.visitor_transform_paired(in_trace, visit, zip(in_trace.bound_symbols, executor_list))
-            
+           
+        l0 = len(in_trace.bound_symbols)
         l1 = len(extrace.bound_symbols)
 
         # Restores original variables
@@ -383,7 +384,7 @@ class BackendOptimizer():
 
         l2 = len(extrace.bound_symbols)
 
-        print(f'l1 = {l1} l2 = {l2}')
+        print(f'lo = {l0} l1 = {l1} l2 = {l2}')
 
         # print('############## bsym diff')
         # for b in in_trace.bound_symbols:
