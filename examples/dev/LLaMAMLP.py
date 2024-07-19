@@ -14,13 +14,14 @@ class LLaMAMLP(torch.nn.Module):
         return self.proj(x)
 
 with torch.device('cuda'):
-    from thunder.backend_optimizer.optimizer import OptimizerType, benchmark_trace
+    from thunder.backend_optimizer.optimizer import benchmark_trace
     a = 4096 * 1
     b = 11008 * 1
     x = torch.randn(2, 2048, a, requires_grad=True)
+    model = LLaMAMLP(a, b)
+    jmodel_def = thunder.jit(model)
+    jmodel_auto = thunder.jit(model, autotune_type='memory')
 
-    jmodel_def = thunder.jit(LLaMAMLP(a, b))
-    jmodel_auto = thunder.jit(LLaMAMLP(a, b), autotune_type='memory')
     warm_up_iters = 2
     iters = 10
     stream = torch.cuda.current_stream()
@@ -28,8 +29,12 @@ with torch.device('cuda'):
     for _ in range(warm_up_iters):
         y = jmodel_auto(x)
         yy = jmodel_def(x)
+        yyy = model(x)
         torch.autograd.grad(y, x, grad_outputs=torch.ones_like(y))
         torch.autograd.grad(yy, x, grad_outputs=torch.ones_like(y))
+
+    print('deviation auto:', (jmodel_auto(x) - model(x)).abs().max().item())
+    print('deviation def:', (jmodel_def(x) - model(x)).abs().max().item())
 
     print('\n\n')
 
