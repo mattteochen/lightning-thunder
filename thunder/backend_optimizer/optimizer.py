@@ -364,7 +364,7 @@ class BackendOptimizer():
 
         self.log(f'Visit transf')
         for n, e in zip(in_trace.bound_symbols, executor_list):
-            print(f'{n.sym.name}             -> {e.name}')
+            print(f'{n.sym.name} -> {e.name}')
 
         extrace = transforms.visitor_transform_paired(in_trace, visit, zip(in_trace.bound_symbols, executor_list))
 
@@ -378,6 +378,10 @@ class BackendOptimizer():
 
         unique_fusion_executors = set()
         cached_subsymbols: dict[str, Sequence[BoundSymbol]] = {}
+
+        print('bsym diff')
+        print(in_trace.bound_symbols)
+        print(extrace.bound_symbols)
 
         if len(executor_list) != len(extrace.bound_symbols):
             raise AssertionError("len(executor_list) != len(extrace.bound_symbols)")
