@@ -127,6 +127,8 @@ def _transform_for_operator_executor_execution(trace: TraceCtx, executors_list: 
 
     extrace.bound_symbols = bound_symbols
 
+    print(f'DIFF BSYM: {len(trace.bound_symbols)} - {len(extrace.bound_symbols)}')
+
     end_time_ns = time.perf_counter_ns()
     elapsed_time_ns = end_time_ns - start_time_ns
     elapsed_time_millis = elapsed_time_ns // 1000000
