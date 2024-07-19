@@ -365,51 +365,53 @@ class BackendOptimizer():
         # self.log(f'Visit transf')
         # for n, e in zip(in_trace.bound_symbols, executor_list):
         #     print(f'{n.sym.name} -> {e.name}')
+        cached_subsymbols: dict[str, Sequence[BoundSymbol]] = {}
+        executor_mapping: dict[str, Executor] = {}
+        unique_fusion_executors = set()
+
+        # Input should have equal length
+        if len(executor_list) != len(in_trace.bound_symbols):
+            raise AssertionError("len(executor_list) != len(extrace.bound_symbols)")
+
+        for b, e in zip(in_trace.bound_symbols, executor_list):
+            if isinstance(e, FusionExecutor):
+                unique_fusion_executors.add(e)
+            if isinstance(b.output, TensorProxy):
+                executor_mapping[b.output.name] = e
 
         extrace = transforms.visitor_transform_paired(in_trace, visit, zip(in_trace.bound_symbols, executor_list))
-           
-        # l0 = len(in_trace.bound_symbols)
-        # l1 = len(extrace.bound_symbols)
 
         # Restores original variables
         bound_symbols: list[BoundSymbol] = []
         for bsym in extrace.bound_symbols:
             nbsym: BoundSymbol = bsym.from_bsym_swap_proxies(swapmap)
             bound_symbols.append(nbsym)
-
         extrace.bound_symbols = bound_symbols
 
-        unique_fusion_executors = set()
-        cached_subsymbols: dict[str, Sequence[BoundSymbol]] = {}
-
-        self.log(f'A\n{in_trace}')
-        self.log(f'B\n{extrace}')
-
-        # l2 = len(extrace.bound_symbols)
-        # print(f'lo = {l0} l1 = {l1} l2 = {l2}')
-
-        # print('############## bsym diff')
-        # for b in in_trace.bound_symbols:
-        #     if isinstance(b.output, TensorProxy):
-        #         print(f'{b.sym.name} out: {b.output.name}')
-        # print('############## bsym diff')
-        # for b in extrace.bound_symbols:
-        #     if isinstance(b.output, TensorProxy):
-        #         print(f'{b.sym.name} out: {b.output.name}')
-        
         # extrace bound_symbols len could be modified by the visit above
-        if len(executor_list) != len(extrace.bound_symbols):
-            raise AssertionError("len(executor_list) != len(extrace.bound_symbols)")
+        # if len(executor_list) != len(extrace.bound_symbols):
+        #     raise AssertionError("len(executor_list) != len(extrace.bound_symbols)")
 
-        for ex, bsym in zip(executor_list, extrace.bound_symbols):
-            if isinstance(ex, FusionExecutor):
-                unique_fusion_executors.add(ex)
-            elif isinstance(ex, OperatorExecutor):
-                if isinstance(bsym.output, TensorProxy):
-                    t_proxy_name: str = bsym.output.name
-                    cached_subsymbols[t_proxy_name] = list(bsym.subsymbols)
+        for bsym in extrace.bound_symbols:
+            if isinstance(bsym.output, TensorProxy):
+                t_name = bsym.output.name
+                if t_name not in executor_mapping:
+                    raise AssertionError('Failed to retrive key in mapping')
+                saved_ex = executor_mapping[t_name]
+                if isinstance(saved_ex, OperatorExecutor):
+                    cached_subsymbols[t_name] = list(bsym.subsymbols)
                     # This will leave out these symbols from the fusion pass
                     bsym.subsymbols = []
+
+        # for ex, bsym in zip(executor_list, extrace.bound_symbols):
+        #     if isinstance(ex, FusionExecutor):
+        #         unique_fusion_executors.add(ex)
+        #     elif isinstance(ex, OperatorExecutor):
+        #         if isinstance(bsym.output, TensorProxy):
+        #             t_proxy_name: str = bsym.output.name
+        #             cached_subsymbols[t_proxy_name] = list(bsym.subsymbols)
+        #             # This will leave out these symbols from the fusion pass
+        #             bsym.subsymbols = []
 
         # Perform fusion pass
         # TODO (matteochen): filter for the current fusion operator as we wanna find the most efficient one
