@@ -1054,7 +1054,9 @@ def benchmark_trace(trace: TraceCtx, iters: int = 1, show_func = False, apply_de
     def thunder_to_torch_float_dtype(tp, byte: int) -> torch.dtype:
         if isinstance(tp, type(thunder.bfloat16)):
             raise AssertionError('Not supported')
-        if (byte == 2):
+        if byte == 1:
+            raise AssertionError('Not implmented')
+        elif (byte == 2):
             return torch.float16
         elif (byte == 4):
             return torch.float32
