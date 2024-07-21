@@ -522,7 +522,7 @@ class BackendOptimizer():
                 elif e is None:
                     name += "None"
                 else:
-                    raise AssertionError(f'What? type = {type(e)}')
+                    raise AssertionError(f'What? Maybe nested Sequence. type = {type(e)}')
             return name
 
         # TODO (matteochen): Benchmark the optimal executor and call this optimal
@@ -681,6 +681,16 @@ class BackendOptimizer():
                     return ex.can_fuse(bsym)
                 return _can_fuse_node(a) and _can_fuse_node(b)
 
+            def match_bsym_output(bsym_in: BoundSymbol, time_dict: dict, mem_dict: dict, ex_in: Executor):
+                if isinstance(bsym_in.output, Sequence):
+                    time_dict[sequence_hash(bsym_in.output)] = ex_in
+                    mem_dict[sequence_hash(bsym_in.output)] = ex_in
+                elif isinstance(bsym_in.output, CollectionProxy) or isinstance(bsym_in.output, TensorProxy):
+                    time_dict[bsym_in.output.name] = ex_in
+                    mem_dict[bsym_in.output.name] = ex_in
+                else:
+                    raise AssertionError(f'Type not handled: {type(bsym_in.output)}')
+
             bound_symbol_groups =fuse_bound_symbols(self.trace, _should_fuse_nvfuser if ex.name == 'nvfuser' else _should_fuse_torchcompile)
             self.log(f'Num of groups = {len(bound_symbol_groups)}')
 
@@ -704,21 +714,16 @@ class BackendOptimizer():
 
                 # Is not a fusion region, get the default executor
                 if len(group) < 2:
-                    symbol = group[0]
-                    self.log(f'--> Single group: {symbol.sym.name}')
-                    name = symbol.sym.name
-                    ex_for_this = get_default_executor(symbol)
+                    current_bsym = group[0]
+                    self.log(f'--> Single group: {current_bsym.sym.name}')
+                    name = current_bsym.sym.name
+                    ex_for_this = get_default_executor(current_bsym)
                     if name == 'return':
                         map_time['return'] = ex_for_this
                         map_mem['return'] = ex_for_this
                         # Add the modified return statement at the end of the for loop
                         break
-                    elif isinstance(symbol.output, Sequence):
-                        map_time[sequence_hash(symbol.output)] = ex_for_this
-                        map_mem[sequence_hash(symbol.output)] = ex_for_this
-                    elif isinstance(symbol.output, CollectionProxy) or isinstance(symbol.output, TensorProxy):
-                        map_time[symbol.output.name] = ex_for_this
-                        map_mem[symbol.output.name] = ex_for_this
+                    match_bsym_output(current_bsym, map_time, map_mem, ex)
                     continue
 
                 # Inside groups we should have alwasy tensors as out
@@ -740,11 +745,9 @@ class BackendOptimizer():
                     # -> First iteration is the one with fusion region with single element
                     # -> Last iteration gives the complete fusion region
                     for j in range(0, i+1, increment_factor):
-                        map_time[group[j].output.name] = ex
-                        map_mem[group[j].output.name] = ex
+                        match_bsym_output(group[j], map_time, map_mem, ex)
                     for k in range(i+1, len(group), increment_factor):
-                        map_time[group[k].output.name] = get_default_executor(group[k])
-                        map_mem[group[k].output.name] = get_default_executor(group[k])
+                        match_bsym_output(group[k], map_time, map_mem, get_default_executor(group[k]))
 
                     # Benchmark this placement
                     trc, keys, placements = get_placed_trace(map_time, increasing_symbols)
@@ -867,6 +870,7 @@ class BackendOptimizer():
     def bsym_assigned(self, bsym: BoundSymbol) -> bool:
         return isinstance(bsym.sym.executor, OperatorExecutor) or isinstance(bsym.sym.executor, FusionExecutor)
 
+    # Currently this manages both time and memory
     class Result:
         def __init__(self) -> None:
             self.measure: float = float('inf')
