@@ -684,7 +684,8 @@ class BackendOptimizer():
             bound_symbol_groups =fuse_bound_symbols(self.trace, _should_fuse_nvfuser if ex.name == 'nvfuser' else _should_fuse_torchcompile)
             self.log(f'Num of groups = {len(bound_symbol_groups)}')
 
-            for group in bound_symbol_groups:
+            for id, group in enumerate(bound_symbol_groups):
+                self.log(f'Group id: {id}')
                 for sub in group:
                     self.log(f'{sub.sym.name} -> out: {sub.output}')
                 if len(group) > 0:
@@ -694,6 +695,7 @@ class BackendOptimizer():
             map_mem: dict[str, Executor] = {}
             increasing_symbols = []
             for group_id, group in enumerate(bound_symbol_groups):
+                self.log(f'Group id: {group_id}')
                 self.log(f'group start = {group[0].sym.name}')
                 self.log(f'group end = {group[-1].sym.name}')
 
