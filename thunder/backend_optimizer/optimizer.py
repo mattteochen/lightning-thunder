@@ -1106,7 +1106,7 @@ def benchmark_trace(trace: TraceCtx, iters: int = 1, show_func = False, apply_de
         elif dtype is not None and is_signedinteger_dtype(dtype):
             torch_dtype = thunder_to_torch_int_dtype(dtype.bytes)
             print(f'Tensor: {shape} {torch_dtype} {device.device_str()}')
-            tensor: torch.Tensor = torch.randint(*shape, dtype=torch_dtype, device=device.device_str(), requires_grad=requires_grad)
+            tensor: torch.Tensor = torch.randint(0, 10, shape, dtype=torch_dtype, device=device.device_str(), requires_grad=requires_grad)
         else:
             # TODO (matteochen): support other types
             raise AssertionError(f"dtype {dtype} not supported yet")
