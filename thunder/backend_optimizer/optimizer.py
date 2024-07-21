@@ -1053,7 +1053,7 @@ def benchmark_trace(trace: TraceCtx, iters: int = 1, show_func = False, apply_de
 
     def thunder_to_torch_float_dtype(tp, byte: int) -> torch.dtype:
         if isinstance(tp, type(thunder.bfloat16)):
-            raise AssertionError('Not supported')
+            return torch.bfloat16
         if byte == 1:
             raise AssertionError('Not implmented: 8 bit float')
         elif (byte == 2):
@@ -1101,11 +1101,11 @@ def benchmark_trace(trace: TraceCtx, iters: int = 1, show_func = False, apply_de
         requires_grad = arg.requires_grad
         if dtype is not None and is_float_dtype(dtype):
             torch_dtype = thunder_to_torch_float_dtype(dtype, dtype.bytes)
-            print(f'Tensor: {shape} {torch_dtype} {device.device_str()}')
+            # print(f'Tensor: {shape} {torch_dtype} {device.device_str()}')
             tensor: torch.Tensor = torch.randn(*shape, dtype=torch_dtype, device=device.device_str(), requires_grad=requires_grad)
         elif dtype is not None and is_signedinteger_dtype(dtype):
             torch_dtype = thunder_to_torch_int_dtype(dtype.bytes)
-            print(f'Tensor: {shape} {torch_dtype} {device.device_str()}')
+            # print(f'Tensor: {shape} {torch_dtype} {device.device_str()}')
             tensor: torch.Tensor = torch.randint(0, 10, shape, dtype=torch_dtype, device=device.device_str(), requires_grad=requires_grad)
         else:
             # TODO (matteochen): support other types
