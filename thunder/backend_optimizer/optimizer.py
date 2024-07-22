@@ -1097,9 +1097,9 @@ def benchmark_trace(trace: TraceCtx, iters: int = 1, show_func = False, apply_de
                     res.append(transform_tensor(e))
                 elif isinstance(e, IntegerProxy):
                     if e.python_type == bool:
-                        res.append(True)
+                        res.append(False)
                     elif e.python_type == int:
-                        res.append(1)
+                        res.append(0)
                     else:
                         raise AssertionError(f'IntegerProxy python_type not recognized: {type(e.python_type)}')
                 elif isinstance(e, FloatProxy):
@@ -1142,9 +1142,9 @@ def benchmark_trace(trace: TraceCtx, iters: int = 1, show_func = False, apply_de
                 input_args.append(e)
             elif isinstance(arg, IntegerProxy):
                 if arg.python_type == bool:
-                    input_args.append(True)
+                    input_args.append(False)
                 elif arg.python_type == int:
-                    input_args.append(1)
+                    input_args.append(0)
                 else:
                     raise AssertionError(f'Incorrect IntegerProxy: {type(arg)}')
             elif isinstance(arg, FloatProxy):
