@@ -836,7 +836,7 @@ class BackendOptimizer():
                         raise AssertionError(f'Expected key {seq_hash} in mapping {map_time} and {map_mem}')
                     executors_time.append(map_time[seq_hash])
                     executors_mem.append(map_mem[seq_hash])
-                elif isinstance(bsym.output, CollectionProxy) or isinstance(bsym.output, TensorProxy) or isinstance(bsym.output, IntegerProxy):
+                elif isinstance(bsym.output, CollectionProxy) or isinstance(bsym.output, TensorProxy) or isinstance(bsym.output, IntegerProxy) or isinstance(bsym.output, FloatProxy):
                     if bsym.output.name not in map_time or bsym.output.name not in map_mem:
                         raise AssertionError(f'Expected key {bsym.output.name} in mapping {map_time} and {map_mem}')
                     executors_time.append(map_time[bsym.output.name])
