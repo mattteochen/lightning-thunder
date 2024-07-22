@@ -740,14 +740,17 @@ class BackendOptimizer():
                 best_keys_mem = None
                 # Each iteration of this loop will have map_time = map_mem, hence we use and fill only map_time
                 # Best time and best mem will be recorded separatedly though
-                for i in range(len(group)):
+                for i in range(0, len(group), len(group)):
                     # From top to bottom (this will include the whole region)
                     # -> First iteration is the one with fusion region with single element
                     # -> Last iteration gives the complete fusion region
-                    for j in range(0, i+1, increment_factor):
+                    # for j in range(0, i+1, increment_factor):
+                    #     match_bsym_output(group[j], map_time, map_mem, ex)
+                    # for k in range(i+1, len(group), increment_factor):
+                    #     match_bsym_output(group[k], map_time, map_mem, get_default_executor(group[k]))
+
+                    for j in range(0, len(group), increment_factor):
                         match_bsym_output(group[j], map_time, map_mem, ex)
-                    for k in range(i+1, len(group), increment_factor):
-                        match_bsym_output(group[k], map_time, map_mem, get_default_executor(group[k]))
 
                     # Benchmark this placement
                     trc, keys, placements = get_placed_trace(map_time, increasing_symbols)
