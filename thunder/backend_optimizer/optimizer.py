@@ -1013,38 +1013,44 @@ def benchmark_trace(trace: TraceCtx, iters: int = 1, show_func = False, apply_de
         raise AssertionError('Missing return statement')
 
     def compute_time_cost_ms(fn: Callable, iters: int, *args) -> tuple[float, float, Any]:
-        warm_up_iters = 3
-        out = None
-        # torch.cuda.empty_cache()
+        try:
+            warm_up_iters = 3
+            out = None
+            torch.cuda.empty_cache()
 
-        start_events = [torch.cuda.Event(enable_timing=True) for _ in range(iters)]
-        end_events = [torch.cuda.Event(enable_timing=True) for _ in range(iters)]
+            start_events = [torch.cuda.Event(enable_timing=True) for _ in range(iters)]
+            end_events = [torch.cuda.Event(enable_timing=True) for _ in range(iters)]
 
-        max_allocated_bytes = 0
-        # Warm up cycles
-        for _ in range(warm_up_iters):
-            fn(*args)
-        # Snapshot request
-        if snapshot:
-            torch.cuda.memory._record_memory_history()
-            fn(*args)
-            torch.cuda.memory._dump_snapshot(snapshot_name + "_benchmark.pickle")
-            torch.cuda.memory._record_memory_history(enabled=None)
-        # Benchmark
-        stream = torch.cuda.current_stream()
-        for i in range(iters):
-            torch.cuda.reset_peak_memory_stats(torch.cuda.current_device())
-            # torch.cuda.empty_cache()
-            torch.cuda._sleep(1_000_000)
-            start_events[i].record(stream)
-            fn(*args)
-            end_events[i].record(stream)
-            max_allocated_bytes = max(max_allocated_bytes, torch.cuda.max_memory_allocated(torch.cuda.current_device()))
+            max_allocated_bytes = 0
+            # Warm up cycles
+            for _ in range(warm_up_iters):
+                fn(*args)
+            # Snapshot request
+            if snapshot:
+                torch.cuda.memory._record_memory_history()
+                fn(*args)
+                torch.cuda.memory._dump_snapshot(snapshot_name + "_benchmark.pickle")
+                torch.cuda.memory._record_memory_history(enabled=None)
+            # Benchmark
+            stream = torch.cuda.current_stream()
+            for i in range(iters):
+                torch.cuda.reset_peak_memory_stats(torch.cuda.current_device())
+                torch.cuda.empty_cache()
+                torch.cuda._sleep(1_000_000)
+                start_events[i].record(stream)
+                fn(*args)
+                end_events[i].record(stream)
+                max_allocated_bytes = max(max_allocated_bytes, torch.cuda.max_memory_allocated(torch.cuda.current_device()))
 
-        # torch.cuda.synchronize()
-        times = [s.elapsed_time(e) for s, e in zip(start_events, end_events)]
-        tot_time = sum(times) / iters
-        return tot_time, max_allocated_bytes, out
+            torch.cuda.synchronize()
+            times = [s.elapsed_time(e) for s, e in zip(start_events, end_events)]
+            tot_time = sum(times) / iters
+            return tot_time, max_allocated_bytes, out
+        except:
+            import inspect
+            trc = inspect.getsource(fn)
+            print(f'#BENCHMARK FAILED:\n{trc}')
+            return float('inf'), float('inf'), None
 
     def print_input_args(args, level=0, show_content = False):
         for e in args:
