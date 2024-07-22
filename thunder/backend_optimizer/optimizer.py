@@ -40,7 +40,7 @@ class BackendOptimizer():
         self.computation_graph: Graph = Graph(trace)
         self.debug_msg: str = ""
         self.empty_executor_hashable_placeholder: str = 'empty'
-        self.executors: Sequence[Executor] = resolve_executors(['nvfuser', 'torchcompile', 'sdpa', 'cudnn', 'torch', 'python'])
+        self.executors: Sequence[Executor] = resolve_executors(['nvfuser', 'torchcompile', 'cudnn', 'torch', 'python'])
         self.fusion_executors: Sequence[FusionExecutor] = [ex for ex in self.executors if isinstance(ex, FusionExecutor)]
         self.incremental_search_out_trace: TraceCtx
         self.log_file_name: str = log_file_name
@@ -1015,7 +1015,7 @@ def benchmark_trace(trace: TraceCtx, iters: int = 1, show_func = False, apply_de
     def compute_time_cost_ms(fn: Callable, iters: int, *args) -> tuple[float, float, Any]:
         warm_up_iters = 3
         out = None
-        # torch.cuda.empty_cache()
+        torch.cuda.empty_cache()
 
         start_events = [torch.cuda.Event(enable_timing=True) for _ in range(iters)]
         end_events = [torch.cuda.Event(enable_timing=True) for _ in range(iters)]
@@ -1034,7 +1034,7 @@ def benchmark_trace(trace: TraceCtx, iters: int = 1, show_func = False, apply_de
         stream = torch.cuda.current_stream()
         for i in range(iters):
             torch.cuda.reset_peak_memory_stats(torch.cuda.current_device())
-            # torch.cuda.empty_cache()
+            torch.cuda.empty_cache()
             torch.cuda._sleep(1_000_000)
             start_events[i].record(stream)
             fn(*args)
