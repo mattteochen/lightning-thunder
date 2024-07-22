@@ -1086,6 +1086,7 @@ def benchmark_trace(trace: TraceCtx, iters: int = 1, show_func = False, apply_de
         else:
             raise AssertionError(f'Not supported byte = {byte}')
 
+    # TODO (matteochen): use more appropriate mock int and float
     def transform_input_tuple(t: tuple, level=0) -> tuple:
         res = []
         for e in t:
@@ -1094,6 +1095,15 @@ def benchmark_trace(trace: TraceCtx, iters: int = 1, show_func = False, apply_de
             else:
                 if isinstance(e, TensorProxy):
                     res.append(transform_tensor(e))
+                elif isinstance(e, IntegerProxy):
+                    if e.python_type == bool:
+                        res.append(True)
+                    elif e.python_type == int:
+                        res.append(1)
+                    else:
+                        raise AssertionError(f'IntegerProxy python_type not recognized: {type(e.python_type)}')
+                elif isinstance(e, FloatProxy):
+                    res.append(1.0)
                 else:
                     # TODO (matteochen): support more data types
                     raise AssertionError(f'Input arg type not recognized: {type(e)}')
