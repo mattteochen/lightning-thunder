@@ -1,7 +1,6 @@
 import torch
 import thunder
-import time
-import inspect
+from thunder.backend_optimizer.optimizer import benchmark_trace
 
 class Module(torch.nn.Module):
     def __init__(self, in_features, out_features) -> None:
@@ -20,45 +19,113 @@ with torch.device('cuda'):
     multiplier = 1000
     in_features = 20 * multiplier
     out_features = 30 * multiplier
-
-    jmodel_default = thunder.jit(Module(in_features, out_features), autotune_executors=False)
-    jmodel_autotune = thunder.jit(Module(in_features, out_features), autotune_executors=True)
+    model = Module(in_features, out_features)
     x = torch.randn(128, in_features, requires_grad=True)
-    warm_up_iters = 3
-    for i in range(10):
-        start_fw = time.perf_counter_ns()
-        y = jmodel_default(x)
-        torch.cuda.synchronize()
-        end_fw = time.perf_counter_ns()
+
+    jmodel_def = thunder.jit(model, autotune_executors=False)
+    jmodel_auto = thunder.jit(model, autotune_executors=True)
+    stream = torch.cuda.current_stream()
+
+    warm_up_iters = 2
+    iters = 10
+    for _ in range(warm_up_iters):
+        y = jmodel_auto(x)
+        yy = jmodel_def(x)
         grad_outputs = torch.ones_like(y)
-        torch.cuda.synchronize()
-        start_bw = time.perf_counter_ns()
         torch.autograd.grad(y, x, grad_outputs=grad_outputs)
-        torch.cuda.synchronize()
-        end_bw = time.perf_counter_ns()
-        torch.cuda.empty_cache()
-        # source = inspect.getsource(y.grad_fn.compiled_backward)
+        torch.autograd.grad(yy, x, grad_outputs=grad_outputs)
 
-        if i >= warm_up_iters:
-            print(f'tot time default forward  = {(end_fw - start_fw) / 1000000} ms')
-            print(f'tot time default backward = {(end_bw - start_bw) / 1000000} ms')
+    print('\n\n')
 
-    for i in range(10):
-        start_fw = time.perf_counter_ns()
-        y = jmodel_autotune(x)
-        torch.cuda.synchronize()
-        end_fw = time.perf_counter_ns()
-        grad_outputs = torch.ones_like(y)
-        torch.cuda.synchronize()
-        start_bw = time.perf_counter_ns()
-        torch.autograd.grad(y, x, grad_outputs=grad_outputs)
-        torch.cuda.synchronize()
-        end_bw = time.perf_counter_ns()
-        torch.cuda.empty_cache()
-        # source = inspect.getsource(y.grad_fn.compiled_backward)
+    for i in range(1):
 
-        if i >= warm_up_iters:
-            print(f'tot time autotune forward  = {(end_fw - start_fw) / 1000000} ms')
-            print(f'tot time autotune backward = {(end_bw - start_bw) / 1000000} ms')
-    # print('\n\n', thunder.last_backward_traces(jmodel)[-1])
+        start_events = [torch.cuda.Event(enable_timing=True) for _ in range(iters)]
+        middle_events = [torch.cuda.Event(enable_timing=True) for _ in range(iters)]
+        end_events = [torch.cuda.Event(enable_timing=True) for _ in range(iters)]
 
+        for i in range(iters):
+            torch.cuda.empty_cache()
+            torch.cuda._sleep(1_000_000)
+            start_events[i].record(stream)
+            y = jmodel_auto(x)
+            middle_events[i].record(stream)
+            torch.autograd.grad(y, x, grad_outputs=torch.ones_like(y))
+            end_events[i].record(stream)
+
+        torch.cuda.synchronize()
+        fw = [s.elapsed_time(e) for s, e in zip(start_events, middle_events)]
+        bw = [s.elapsed_time(e) for s, e in zip(middle_events, end_events)]
+        tot = [s.elapsed_time(e) for s, e in zip(start_events, end_events)]
+        fw_time = sum(fw)
+        bw_time = sum(bw)
+        tot_time = sum(tot)
+        print(f'Auto fw: {fw_time / iters}')
+        print(f'Auto bw: {bw_time / iters}')
+        print(f'Auto tot: {tot_time / iters}')
+        print('\n')
+
+        start_events = [torch.cuda.Event(enable_timing=True) for _ in range(iters)]
+        middle_events = [torch.cuda.Event(enable_timing=True) for _ in range(iters)]
+        end_events = [torch.cuda.Event(enable_timing=True) for _ in range(iters)]
+
+        for i in range(iters):
+            torch.cuda.empty_cache()
+            torch.cuda._sleep(1_000_000)
+            start_events[i].record(stream)
+            y = jmodel_def(x)
+            middle_events[i].record(stream)
+            torch.autograd.grad(y, x, grad_outputs=torch.ones_like(y))
+            end_events[i].record(stream)
+
+        torch.cuda.synchronize()
+        fw = [s.elapsed_time(e) for s, e in zip(start_events, middle_events)]
+        bw = [s.elapsed_time(e) for s, e in zip(middle_events, end_events)]
+        tot = [s.elapsed_time(e) for s, e in zip(start_events, end_events)]
+        fw_time = sum(fw)
+        bw_time = sum(bw)
+        tot_time = sum(tot)
+        print(f'Default fw: {fw_time / iters}')
+        print(f'Default bw: {bw_time / iters}')
+        print(f'Default tot: {tot_time / iters}')
+        print('-------------------------------------------------------')
+
+        c, m, o = benchmark_trace(thunder.last_traces(jmodel_def)[-1], apply_del_last_used=False)
+        print(f'Executing default fw trace:\n{c} ms, {m / (2**30)} GB')
+        del o
+        c, m, o = benchmark_trace(thunder.last_traces(jmodel_auto)[-1], apply_del_last_used=False)
+        print(f'Executing auto fw trace:\n{c} ms, {m / (2**30)} GB')
+        del o
+        c, m, o = benchmark_trace(thunder.last_backward_traces(jmodel_def)[-1], apply_del_last_used=False)
+        print(f'Executing default bw trace:\n{c} ms, {m / (2**30)} GB')
+        del o
+        c, m, o = benchmark_trace(thunder.last_backward_traces(jmodel_auto)[-1], apply_del_last_used=False)
+        print(f'Executing auto bw trace:\n{c} ms, {m / (2**30)} GB')
+        del o
+    # print('\n\n\n\n\n\n')
+    # print(f'{thunder.last_traces(jmodel_def)[-1]}')
+    # print('###############################################################################')
+    # print(f'{thunder.last_traces(jmodel_auto)[-1]}')
+
+    # print('\n\n')
+    # print(f'{thunder.last_backward_traces(jmodel_def)[-1]}')
+    # print('###############################################################################')
+    # print(f'{thunder.last_backward_traces(jmodel_auto)[-1]}')
+
+    from torch.profiler import profile, record_function, ProfilerActivity
+    with profile(activities=[
+            ProfilerActivity.CPU, ProfilerActivity.CUDA], record_shapes=True) as prof:
+        with record_function("def"):
+            y = jmodel_def(x)
+            grad_outputs = torch.ones_like(y)
+            torch.autograd.grad(y, x, grad_outputs=grad_outputs)
+
+    print(prof.key_averages().table(sort_by="cuda_time_total", row_limit=10))
+
+    with profile(activities=[
+            ProfilerActivity.CPU, ProfilerActivity.CUDA], record_shapes=True) as prof:
+        with record_function("auto"):
+            y = jmodel_auto(x)
+            grad_outputs = torch.ones_like(y)
+            torch.autograd.grad(y, x, grad_outputs=grad_outputs)
+
+    print(prof.key_averages().table(sort_by="cuda_time_total", row_limit=10))
