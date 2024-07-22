@@ -40,7 +40,7 @@ class BackendOptimizer():
         self.computation_graph: Graph = Graph(trace)
         self.debug_msg: str = ""
         self.empty_executor_hashable_placeholder: str = 'empty'
-        self.executors: Sequence[Executor] = resolve_executors(['nvfuser', 'torchcompile', 'cudnn', 'torch', 'python'])
+        self.executors: Sequence[Executor] = resolve_executors(['nvfuser', 'torchcompile', 'torch', 'python'])
         self.fusion_executors: Sequence[FusionExecutor] = [ex for ex in self.executors if isinstance(ex, FusionExecutor)]
         self.incremental_search_out_trace: TraceCtx
         self.log_file_name: str = log_file_name
