@@ -4,7 +4,7 @@ from itertools import chain
 from thunder.core.prims import PrimIDs
 from thunder.core.utils import check, safe_map_flat
 from thunder.core.baseutils import BoundSymbolInterface
-from thunder.core.proxies import CollectionProxy, IntegerProxy, Proxy, TensorProxy, variableify, Variable
+from thunder.core.proxies import CollectionProxy, FloatProxy, IntegerProxy, Proxy, TensorProxy, variableify, Variable
 from thunder.core.symbol import BoundSymbol, Symbol
 from thunder.core.trace import from_trace, set_tracectx, reset_tracectx, get_tracectx, TraceCtx
 from thunder.executors.data_dependent_partition import Graph, Node
@@ -517,7 +517,7 @@ class BackendOptimizer():
         def sequence_hash(s: Sequence) -> str:
             name = ""
             for e in s:
-                if isinstance(e, CollectionProxy) or isinstance(e, TensorProxy) or isinstance(e, IntegerProxy):
+                if isinstance(e, CollectionProxy) or isinstance(e, TensorProxy) or isinstance(e, IntegerProxy) or isinstance(e, FloatProxy):
                     name += e.name
                 elif e is None:
                     name += "None"
@@ -634,7 +634,7 @@ class BackendOptimizer():
                     seq_hash = sequence_hash(bsym.output)
                     executor_configuration.append(mapping.get(seq_hash, empty_executor))
                     keys.append(seq_hash)
-                elif isinstance(bsym.output, CollectionProxy) or isinstance(bsym.output, TensorProxy) or isinstance(bsym.output, IntegerProxy):
+                elif isinstance(bsym.output, CollectionProxy) or isinstance(bsym.output, TensorProxy) or isinstance(bsym.output, IntegerProxy) or isinstance(bsym.output, FloatProxy):
                     if bsym.output.name not in mapping:
                         raise AssertionError(f'Expected key {bsym.output.name} in mapping {mapping}')
                     executor_configuration.append(mapping[bsym.output.name])
@@ -685,7 +685,7 @@ class BackendOptimizer():
                 if isinstance(bsym_in.output, Sequence):
                     time_dict[sequence_hash(bsym_in.output)] = ex_in
                     mem_dict[sequence_hash(bsym_in.output)] = ex_in
-                elif isinstance(bsym_in.output, CollectionProxy) or isinstance(bsym_in.output, TensorProxy) or isinstance(bsym_in.output, IntegerProxy):
+                elif isinstance(bsym_in.output, CollectionProxy) or isinstance(bsym_in.output, TensorProxy) or isinstance(bsym_in.output, IntegerProxy) or isinstance(bsym_in.output, FloatProxy):
                     time_dict[bsym_in.output.name] = ex_in
                     mem_dict[bsym_in.output.name] = ex_in
                 else:
@@ -1137,6 +1137,8 @@ def benchmark_trace(trace: TraceCtx, iters: int = 1, show_func = False, apply_de
                     input_args.append(1)
                 else:
                     raise AssertionError(f'Incorrect IntegerProxy: {type(arg)}')
+            elif isinstance(arg, FloatProxy):
+                input_args.append(float(1.0))
             else:
                 raise AssertionError(f'Input arg type not recognized: {type(arg)}')
     else:
