@@ -786,6 +786,22 @@ class nvFuserExecutor(FusionExecutor):
         #   (Used to name fusions like nvFusion0, nvFusion1, ...)
         fusion_counter: int = self.count_fusion_regions(trace, nvFuserExecutor)
         for bsyms in bound_symbol_groups:
+            # Related to in-place ops.
+            # prims.copy_ is a no-op for NVFuser in a sense that it does not
+            # generate nor runs any kernels.
+            # For that reason we should avoid fusing prims.copy_ unless
+            # it comes after other non-copy symbols in a fusion.
+            # See the following relevant issues:
+            # https://github.com/Lightning-AI/lightning-thunder/issues/789
+            # https://github.com/Lightning-AI/lightning-thunder/issues/791
+            # NOTE: filter all first "dangling" no-op copies
+            while len(bsyms) > 0 and bsyms[0].sym.id is prims.PrimIDs.COPY_:
+                fused_bsyms.append(bsyms[0])
+                bsyms = bsyms[1:]
+
+            if len(bsyms) == 0:
+                continue
+
             # TODO The following allows generating single node fusions, which
             #   may be suboptimal for real-world performance.
             #   Provide a mechanism to switch between "test" and "perf" modes
@@ -1724,14 +1740,17 @@ def bitwise_xor(a: TensorProxy | Number, b: TensorProxy | Number, *, fd: FusionD
 register_supported(PrimIDs.BITWISE_XOR, bitwise_xor, _elementwise_binary_check)
 
 
-# TODO nvFuser's div operation is not equivalent to the div primitive
-#   (mruberry) I need to investigate if nvFuser exposes a truncation division operation
 def div(a: TensorProxy | Number, b: TensorProxy | Number, *, fd: FusionDefinition, lc_to_nv_map: dict) -> Any:
     nva = getnv(a, fd, lc_to_nv_map)
     nvb = getnv(b, fd, lc_to_nv_map)
 
+    a_dtype = dtypes.to_dtype(a)
+    b_dtype = dtypes.to_dtype(b)
+
+    if dtypes.is_integer_dtype(a_dtype) and dtypes.is_integer_dtype(b_dtype):
+        return fd.ops.div(nva, nvb)
+
     # NOTE It's currently significantly faster for nvFuser to multiply the reciprocal than divide
-    # return fd.ops.div(nva, nvb)
     return fd.ops.mul(nva, fd.ops.reciprocal(nvb))
 
 
