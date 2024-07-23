@@ -1,7 +1,7 @@
 from collections.abc import Callable, Sequence
 from enum import Enum
 from itertools import chain
-from thunder.core.dtypes import dtype
+from thunder.core.dtypes import dtype, is_boolean_dtype
 from thunder.core.prims import PrimIDs
 from thunder.core.utils import check, safe_map_flat
 from thunder.core.baseutils import BoundSymbolInterface
@@ -1002,191 +1002,205 @@ def return_not_used(trace_in: TraceCtx) -> list[TensorProxy]:
 # This will benchmark the input trace with the del_last_used call
 # TODO (matteochen): move into utils module
 def benchmark_trace(trace: TraceCtx, iters: int = 1, show_func = False, apply_del_last_used = True, snapshot = False, snapshot_name = "") -> tuple[float, float, Any]:
-    try:
-        from thunder.executors.passes import del_last_used
-        import inspect
+    from thunder.executors.passes import del_last_used
+    import inspect
 
-        input_args = []
+    input_args = []
 
-        if trace.bound_symbols[-1].sym.id != PrimIDs.RETURN:
-            raise AssertionError('Missing return statement')
+    if trace.bound_symbols[-1].sym.id != PrimIDs.RETURN:
+        raise AssertionError('Missing return statement')
 
-        def compute_time_cost_ms(fn: Callable, iters: int, *args) -> tuple[float, float, Any]:
-            try:
-                warm_up_iters = 3
-                out = None
+    def compute_time_cost_ms(fn: Callable, iters: int, *args) -> tuple[float, float, Any]:
+        try:
+            warm_up_iters = 3
+            out = None
+            torch.cuda.empty_cache()
+
+            start_events = [torch.cuda.Event(enable_timing=True) for _ in range(iters)]
+            end_events = [torch.cuda.Event(enable_timing=True) for _ in range(iters)]
+
+            max_allocated_bytes = 0
+            # Warm up cycles
+            for _ in range(warm_up_iters):
+                fn(*args)
+            # Snapshot request
+            if snapshot:
+                torch.cuda.memory._record_memory_history()
+                fn(*args)
+                torch.cuda.memory._dump_snapshot(snapshot_name + "_benchmark.pickle")
+                torch.cuda.memory._record_memory_history(enabled=None)
+            # Benchmark
+            stream = torch.cuda.current_stream()
+            for i in range(iters):
+                torch.cuda.reset_peak_memory_stats(torch.cuda.current_device())
                 torch.cuda.empty_cache()
+                torch.cuda._sleep(1_000_000)
+                start_events[i].record(stream)
+                fn(*args)
+                end_events[i].record(stream)
+                max_allocated_bytes = max(max_allocated_bytes, torch.cuda.max_memory_allocated(torch.cuda.current_device()))
 
-                start_events = [torch.cuda.Event(enable_timing=True) for _ in range(iters)]
-                end_events = [torch.cuda.Event(enable_timing=True) for _ in range(iters)]
+            torch.cuda.synchronize()
+            times = [s.elapsed_time(e) for s, e in zip(start_events, end_events)]
+            tot_time = sum(times) / iters
+            return tot_time, max_allocated_bytes, out
+        except Exception as e:
+            import inspect
+            trc = inspect.getsource(fn)
+            print(f'#FN EXECUTION FAILED:\n{trc}')
+            raise e
 
-                max_allocated_bytes = 0
-                # Warm up cycles
-                for _ in range(warm_up_iters):
-                    fn(*args)
-                # Snapshot request
-                if snapshot:
-                    torch.cuda.memory._record_memory_history()
-                    fn(*args)
-                    torch.cuda.memory._dump_snapshot(snapshot_name + "_benchmark.pickle")
-                    torch.cuda.memory._record_memory_history(enabled=None)
-                # Benchmark
-                stream = torch.cuda.current_stream()
-                for i in range(iters):
-                    torch.cuda.reset_peak_memory_stats(torch.cuda.current_device())
-                    torch.cuda.empty_cache()
-                    torch.cuda._sleep(1_000_000)
-                    start_events[i].record(stream)
-                    fn(*args)
-                    end_events[i].record(stream)
-                    max_allocated_bytes = max(max_allocated_bytes, torch.cuda.max_memory_allocated(torch.cuda.current_device()))
-
-                torch.cuda.synchronize()
-                times = [s.elapsed_time(e) for s, e in zip(start_events, end_events)]
-                tot_time = sum(times) / iters
-                return tot_time, max_allocated_bytes, out
-            except Exception as e:
-                import inspect
-                trc = inspect.getsource(fn)
-                print(f'#FN EXECUTION FAILED:\n{trc}')
-                raise e
-
-        def print_input_args(args, level=0, show_content = False):
-            for e in args:
-                if isinstance(e, tuple) or isinstance(e, list):
-                    print_input_args(e, level=level+1)
-                else:
-                    print(f'level {level}', type(e))
-
-        # def print_trace_execution_output(out: Any, show_content=False):
-        #     if isinstance(out, tuple):
-        #         for e in out:
-        #             print(f'{type(e)}')
-        #     else:
-        #         print(f'{type(out)}')
-
-        def thunder_to_torch_float_dtype(tp: dtype, byte: int) -> torch.dtype:
-            if byte == 1:
-                raise AssertionError('Not implmented: 8 bit float')
-            # Dispatch flaot 16 type 1 from type 2
-            elif (byte == 2):
-                if tp._name == thunder.bfloat16._name:
-                    return torch.bfloat16
-                else:
-                    return torch.float16
-            elif (byte == 4):
-                return torch.float32
-            elif byte == 8:
-                return torch.float64
+    def print_input_args(args, level=0, show_content = False):
+        for e in args:
+            if isinstance(e, tuple) or isinstance(e, list):
+                print_input_args(e, level=level+1)
             else:
-                raise AssertionError(f'Not supported byte = {byte}')
+                print(f'level {level}', type(e))
 
-        def thunder_to_torch_int_dtype(byte: int) -> torch.dtype:
-            if byte == 1:
-                return torch.int8
-            elif (byte == 2):
-                return torch.int16
-            elif (byte == 4):
-                return torch.int32
-            elif (byte == 8):
-                return torch.int64
+    # def print_trace_execution_output(out: Any, show_content=False):
+    #     if isinstance(out, tuple):
+    #         for e in out:
+    #             print(f'{type(e)}')
+    #     else:
+    #         print(f'{type(out)}')
+
+    def thunder_to_torch_float_dtype(tp: dtype, byte: int) -> torch.dtype:
+        if byte == 1:
+            raise AssertionError('Not implmented: 8 bit float')
+        # Dispatch flaot 16 type 1 from type 2
+        elif (byte == 2):
+            if tp._name == thunder.bfloat16._name:
+                return torch.bfloat16
             else:
-                raise AssertionError(f'Not supported byte = {byte}')
-
-        # TODO (matteochen): use more appropriate mock int and float
-        def transform_input_tuple(t: tuple, level=0) -> tuple:
-            res = []
-            for e in t:
-                if type(e) is tuple:
-                    res.append(transform_input_tuple(e, level+1))
-                else:
-                    if isinstance(e, TensorProxy):
-                        res.append(transform_tensor(e))
-                    elif isinstance(e, IntegerProxy):
-                        if e.python_type is bool:
-                            res.append(False)
-                        elif e.python_type is int:
-                            res.append(0)
-                        else:
-                            raise AssertionError(f'IntegerProxy python_type not recognized: {type(e.python_type)}')
-                    elif isinstance(e, FloatProxy):
-                        res.append(0.1)
-                    else:
-                        # TODO (matteochen): support more data types
-                        raise AssertionError(f'Input arg type not recognized: {type(e)}')
-            return tuple(res)
-
-        def transform_tensor(arg: TensorProxy) -> torch.Tensor:
-            from thunder.core.dtypes import is_float_dtype, is_signedinteger_dtype
-
-            # TODO (matteochen): Missing parallel and fsdp handling...
-            # TODO (matteochen): Missing support for meta types ...
-            dtype = arg.dtype
-            shape = arg.shape
-            device = arg.device
-            requires_grad = arg.requires_grad
-            if dtype is not None and is_float_dtype(dtype):
-                torch_dtype = thunder_to_torch_float_dtype(dtype, dtype.bytes)
-                # print(f'Tensor: {shape} {torch_dtype} {device.device_str()}')
-                tensor: torch.Tensor = torch.randn(*shape, dtype=torch_dtype, device=device.device_str(), requires_grad=requires_grad)
-            elif dtype is not None and is_signedinteger_dtype(dtype):
-                torch_dtype = thunder_to_torch_int_dtype(dtype.bytes)
-                # print(f'Tensor: {shape} {torch_dtype} {device.device_str()}')
-                tensor: torch.Tensor = torch.randint(0, 10, shape, dtype=torch_dtype, device=device.device_str(), requires_grad=requires_grad)
-            else:
-                # TODO (matteochen): support other types
-                raise AssertionError(f"dtype {dtype} not supported yet")
-
-            return tensor
-
-        # Can we remove this check?
-        # TODO (matteochen): use more appropriate mock int and float
-        if isinstance(trace.args, Sequence):
-            for arg in trace.args:
-                if isinstance(arg, tuple):
-                    input_args.append(transform_input_tuple(arg))
-                elif isinstance(arg, TensorProxy):
-                    e = transform_tensor(arg)
-                    input_args.append(e)
-                elif isinstance(arg, IntegerProxy):
-                    if arg.python_type is bool:
-                        input_args.append(False)
-                    elif arg.python_type is int:
-                        input_args.append(0)
-                    else:
-                        raise AssertionError(f'Incorrect IntegerProxy: {type(arg)}')
-                elif isinstance(arg, FloatProxy):
-                    input_args.append(float(0.1))
-                else:
-                    raise AssertionError(f'Input arg type not recognized: {type(arg)}')
+                return torch.float16
+        elif (byte == 4):
+            return torch.float32
+        elif byte == 8:
+            return torch.float64
         else:
-            raise AssertionError('Unexpexcted args type')
+            raise AssertionError(f'Not supported byte = {byte}')
 
-        # Always benchmark trace after a deletion last used pass as the final trace out will passed under this stage
-        if apply_del_last_used:
-            trace = del_last_used(trace)
+    def thunder_to_torch_int_dtype(byte: int) -> torch.dtype:
+        if byte == 1:
+            return torch.int8
+        elif (byte == 2):
+            return torch.int16
+        elif (byte == 4):
+            return torch.int32
+        elif (byte == 8):
+            return torch.int64
+        else:
+            raise AssertionError(f'Not supported byte = {byte}')
 
-        # print(f'BENCHMARKING:\n{trace}')
-        # def p(args):
-        #     for e in args:
-        #         if not isinstance(e, Sequence):
-        #             print(f'{e.name} -> {e}')
-        #         else:
-        #             print('rec')
-        #             p(e)
-        # p(trace.args)
+    # TODO (matteochen): use more appropriate mock int and float
+    def transform_input_tuple(t: tuple, level=0) -> tuple:
+        res = []
+        for e in t:
+            if type(e) is tuple:
+                res.append(transform_input_tuple(e, level+1))
+            else:
+                if isinstance(e, TensorProxy):
+                    res.append(transform_tensor(e))
+                elif isinstance(e, IntegerProxy):
+                    if e.python_type is bool:
+                        res.append(False if e.value is None else e.value)
+                    else:
+                        res.append(0 if e.value is None else e.value)
+                elif isinstance(e, FloatProxy):
+                    res.append(0.0 if e.value is None else e.value)
+                else:
+                    # TODO (matteochen): support more data types
+                    raise AssertionError(f'Input arg type not recognized: {type(e)}')
+        return tuple(res)
 
-        trace_tok = set_tracectx(trace)
+    def transform_tensor(arg: TensorProxy) -> torch.Tensor:
+        from thunder.core.dtypes import is_float_dtype, is_signedinteger_dtype
 
-        # Obtain the python executable string
-        executable = trace.python_callable()
-        if show_func:
-            print(inspect.getsource(executable))
+        # TODO (matteochen): Missing parallel and fsdp handling...
+        # TODO (matteochen): Missing support for meta types ...
+        dtype = arg.dtype
+        shape = arg.shape
+        device = arg.device
+        requires_grad = arg.requires_grad
+        if dtype is not None and is_float_dtype(dtype):
+            torch_dtype = thunder_to_torch_float_dtype(dtype, dtype.bytes)
+            tensor: torch.Tensor = torch.randn(*shape, dtype=torch_dtype, device=device.device_str(), requires_grad=requires_grad)
+        elif dtype is not None and is_signedinteger_dtype(dtype):
+            torch_dtype = thunder_to_torch_int_dtype(dtype.bytes)
+            tensor: torch.Tensor = torch.randint(0, 10, shape, dtype=torch_dtype, device=device.device_str(), requires_grad=requires_grad)
+        elif dtype is not None and is_boolean_dtype(dtype):
+            # TODO (matteochen): maybe random?
+            tensor: torch.Tensor = torch.zeros(*shape, dtype=torch.bool, device=device.device_str(), requires_grad=requires_grad)
+        else:
+            # TODO (matteochen): support other types
+            raise AssertionError(f"dtype {dtype} not supported yet")
+
+        return tensor
+
+    # Can we remove this check?
+    # TODO (matteochen): use more appropriate mock int and float
+    if isinstance(trace.args, Sequence):
+        for arg in trace.args:
+            if isinstance(arg, tuple):
+                input_args.append(transform_input_tuple(arg))
+            elif isinstance(arg, TensorProxy):
+                e = transform_tensor(arg)
+                input_args.append(e)
+            elif isinstance(arg, IntegerProxy):
+                if arg.python_type is bool:
+                    input_args.append(False if arg.value is None else arg.value)
+                else:
+                    input_args.append(0 if arg.value is None else arg.value)
+            elif isinstance(arg, FloatProxy):
+                input_args.append(0.0 if arg.value is None else arg.value)
+            else:
+                raise AssertionError(f'Input arg type not recognized: {type(arg)}')
+    else:
+        raise AssertionError('Unexpexcted args type')
+
+    # Always benchmark trace after a deletion last used pass as the final trace out will passed under this stage
+    if apply_del_last_used:
+        trace = del_last_used(trace)
+
+    # print(f'BENCHMARKING:\n{trace}')
+    # def p(args):
+    #     for e in args:
+    #         if not isinstance(e, Sequence):
+    #             if isinstance(e, torch.Tensor):
+    #                 print(f'{e.size()}')
+    #             else:
+    #                 try:
+    #                     print(f'{e.name} -> {e}')
+    #                 except:
+    #                     print(f'{e}')
+    #         else:
+    #             print('rec')
+    #             p(e)
+    # p(trace.args)
+    # print('##################')
+    # p(input_args)
+
+    trace_tok = set_tracectx(trace)
+
+    # Obtain the python executable string
+    executable = trace.python_callable()
+    if show_func:
+        print(inspect.getsource(executable))
+    t = 0.0
+    m = 0.0
+    answer = None
+    try:
         t, m, answer = compute_time_cost_ms(executable, iters, *input_args)
-
-        reset_tracectx(trace_tok)
-
-        return t, m, answer
     except Exception as e:
-        print(f'#BENCHMARK FAILED: {e}')
-        return float('inf'), float('inf'), None
+        # https://github.com/Lightning-AI/lightning-thunder/issues/664
+        print(f'Exception:\n{e}')
+        if 'call_method UserDefinedObjectVariable(set) __contains__ [UserDefinedObjectVariable()] {}' in str(e):
+            print('Executing with torch compile no full graph (this might still fail), see: https://github.com/Lightning-AI/lightning-thunder/issues/664')
+            torch_compiled = torch.compile(executable, fullgraph=False)
+            t, m, answer = compute_time_cost_ms(torch_compiled, iters, *input_args)
+        else:
+            raise e
+
+    reset_tracectx(trace_tok)
+
+    return t, m, answer
