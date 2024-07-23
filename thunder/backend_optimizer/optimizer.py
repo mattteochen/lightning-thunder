@@ -1,6 +1,7 @@
 from collections.abc import Callable, Sequence
 from enum import Enum
 from itertools import chain
+from thunder.core.dtypes import dtype
 from thunder.core.prims import PrimIDs
 from thunder.core.utils import check, safe_map_flat
 from thunder.core.baseutils import BoundSymbolInterface
@@ -1064,12 +1065,12 @@ def benchmark_trace(trace: TraceCtx, iters: int = 1, show_func = False, apply_de
         #     else:
         #         print(f'{type(out)}')
 
-        def thunder_to_torch_float_dtype(tp, byte: int) -> torch.dtype:
+        def thunder_to_torch_float_dtype(tp: dtype, byte: int) -> torch.dtype:
             if byte == 1:
                 raise AssertionError('Not implmented: 8 bit float')
+            # Dispatch flaot 16 type 1 from type 2
             elif (byte == 2):
-                if isinstance(tp, type(thunder.bfloat16)):
-                    print('BFLOAT')
+                if tp._name == thunder.bfloat16._name:
                     return torch.bfloat16
                 else:
                     return torch.float16
@@ -1102,9 +1103,9 @@ def benchmark_trace(trace: TraceCtx, iters: int = 1, show_func = False, apply_de
                     if isinstance(e, TensorProxy):
                         res.append(transform_tensor(e))
                     elif isinstance(e, IntegerProxy):
-                        if e.python_type == bool:
+                        if e.python_type is bool:
                             res.append(False)
-                        elif e.python_type == int:
+                        elif e.python_type is int:
                             res.append(0)
                         else:
                             raise AssertionError(f'IntegerProxy python_type not recognized: {type(e.python_type)}')
@@ -1139,6 +1140,7 @@ def benchmark_trace(trace: TraceCtx, iters: int = 1, show_func = False, apply_de
             return tensor
 
         # Can we remove this check?
+        # TODO (matteochen): use more appropriate mock int and float
         if isinstance(trace.args, Sequence):
             for arg in trace.args:
                 if isinstance(arg, tuple):
@@ -1147,9 +1149,9 @@ def benchmark_trace(trace: TraceCtx, iters: int = 1, show_func = False, apply_de
                     e = transform_tensor(arg)
                     input_args.append(e)
                 elif isinstance(arg, IntegerProxy):
-                    if arg.python_type == bool:
+                    if arg.python_type is bool:
                         input_args.append(False)
-                    elif arg.python_type == int:
+                    elif arg.python_type is int:
                         input_args.append(0)
                     else:
                         raise AssertionError(f'Incorrect IntegerProxy: {type(arg)}')
@@ -1164,15 +1166,15 @@ def benchmark_trace(trace: TraceCtx, iters: int = 1, show_func = False, apply_de
         if apply_del_last_used:
             trace = del_last_used(trace)
 
-        print(f'BENCHMARKING:\n{trace}')
-        def p(args):
-            for e in args:
-                if not isinstance(e, Sequence):
-                    print(f'{e.name} -> {e}')
-                else:
-                    print('rec')
-                    p(e)
-        p(trace.args)
+        # print(f'BENCHMARKING:\n{trace}')
+        # def p(args):
+        #     for e in args:
+        #         if not isinstance(e, Sequence):
+        #             print(f'{e.name} -> {e}')
+        #         else:
+        #             print('rec')
+        #             p(e)
+        # p(trace.args)
 
         trace_tok = set_tracectx(trace)
 
