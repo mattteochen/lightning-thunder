@@ -1,7 +1,5 @@
 import torch
 import torch.nn as nn
-import torch.functional as F
-import math
 import thunder
 
 class CausalSelfAttention(nn.Module):
@@ -41,7 +39,8 @@ class CausalSelfAttention(nn.Module):
             dropout = 0.0
             is_causal = False
 
-        y = F.scaled_dot_product_attention(query, key, value, attn_mask=None, dropout_p=dropout, is_causal=is_causal)
+        y = torch.nn.functional.scaled_dot_product_attention(query, key, value, attn_mask=None, dropout_p=dropout, is_causal=is_causal)
+        # y = torch.nn.functional.scaled_dot_product_attention(q, k, v, attn_mask=None, dropout_p=self.dropout if self.training else 0, is_causal=True)
         y = y.transpose(1, 2).view(batch_size, -1, self.num_heads * head_dim)
 
         y = self.resid_dropout(self.c_proj(y))
