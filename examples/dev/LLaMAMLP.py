@@ -29,16 +29,16 @@ with torch.device('cuda'):
     print('deviation def:', (jmodel_def(x) - model(x)).abs().max().item())
 
     print('########################################')
-    c, m, o = benchmark_trace(thunder.last_traces(jmodel_def)[-1], apply_del_last_used=False, snapshot=True, snapshot_name='LLaMAMLP_def_fw')
+    c, m, o = benchmark_trace(thunder.last_traces(jmodel_def)[-1], iters=10, apply_del_last_used=False, snapshot=True, snapshot_name='LLaMAMLP_def_fw')
     print(f'Executing default fw trace:\n{c} ms, {m / (2**30)} GB')
     del o
-    c, m, o = benchmark_trace(thunder.last_traces(jmodel_auto)[-1], apply_del_last_used=False, snapshot=True, snapshot_name='LLaMAMLP_auto_fw')
+    c, m, o = benchmark_trace(thunder.last_traces(jmodel_auto)[-1], iters=10, apply_del_last_used=False, snapshot=True, snapshot_name='LLaMAMLP_auto_fw')
     print(f'Executing auto fw trace:\n{c} ms, {m / (2**30)} GB')
     del o
-    c, m, o = benchmark_trace(thunder.last_backward_traces(jmodel_def)[-1], apply_del_last_used=False, snapshot=True, snapshot_name='LLaMAMLP_def_bw')
+    c, m, o = benchmark_trace(thunder.last_backward_traces(jmodel_def)[-1], iters=10, apply_del_last_used=False, snapshot=True, snapshot_name='LLaMAMLP_def_bw')
     print(f'Executing default bw trace:\n{c} ms, {m / (2**30)} GB')
     del o
-    c, m, o = benchmark_trace(thunder.last_backward_traces(jmodel_auto)[-1], apply_del_last_used=False, snapshot=True, snapshot_name='LLaMAMLP_auto_bw')
+    c, m, o = benchmark_trace(thunder.last_backward_traces(jmodel_auto)[-1], iters=10, apply_del_last_used=False, snapshot=True, snapshot_name='LLaMAMLP_auto_bw')
     print(f'Executing auto bw trace:\n{c} ms, {m / (2**30)} GB')
     del o
 
