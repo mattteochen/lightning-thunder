@@ -1,6 +1,10 @@
 import torch
 import torch.nn as nn
 import thunder
+from thunder.backend_optimizer.optimizer import benchmark_trace
+
+# import torch._dynamo
+# torch._dynamo.config.suppress_errors = True
 
 class CausalSelfAttention(nn.Module):
 
@@ -46,82 +50,127 @@ class CausalSelfAttention(nn.Module):
         y = self.resid_dropout(self.c_proj(y))
         return y
 
-
-
-# class ModelConfig:
-#     def __init__(self, n_embd=256, n_head=8, dropout=0.1, block_size=64, bias=True):
-#         self.n_embd = n_embd
-#         self.n_head = n_head
-#         self.dropout = dropout
-#         self.bias = bias
-#         self.block_size = block_size
-
-# class CausalSelfAttention(nn.Module):
-#     def __init__(self, config):
-#         super().__init__()
-#         assert config.n_embd % config.n_head == 0
-#         # key, query, value projections for all heads, but in a batch
-#         self.c_attn = nn.Linear(config.n_embd, 3 * config.n_embd, bias=config.bias, dtype=torch.float32)
-#         # output projection
-#         self.c_proj = nn.Linear(config.n_embd, config.n_embd, bias=config.bias, dtype=torch.float32)
-#         # regularization
-#         self.attn_dropout = nn.Dropout(config.dropout)
-#         self.resid_dropout = nn.Dropout(config.dropout)
-#         self.n_head = config.n_head
-#         self.n_embd = config.n_embd
-#         self.dropout = config.dropout
-#         # flash attention make GPU go brrrrr but support is only in PyTorch >= 2.0
-#         self.flash = hasattr(torch.nn.functional, 'scaled_dot_product_attention')
-#         if not self.flash:
-#             print("WARNING: using slow attention. Flash Attention requires PyTorch >= 2.0")
-#             # causal mask to ensure that attention is only applied to the left in the input sequence
-#             self.register_buffer("bias", torch.tril(torch.ones(config.block_size, config.block_size))
-#                                         .view(1, 1, config.block_size, config.block_size))
-
-#     def forward(self, x):
-#         B, T, C = x.size() # batch size, sequence length, embedding dimensionality (n_embd)
-
-#         # calculate query, key, values for all heads in batch and move head forward to be the batch dim
-#         q, k, v  = self.c_attn(x).split(self.n_embd, dim=2)
-#         k = k.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
-#         q = q.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
-#         v = v.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
-
-#         # causal self-attention; Self-attend: (B, nh, T, hs) x (B, nh, hs, T) -> (B, nh, T, T)
-#         if self.flash:
-#             # efficient attention using Flash Attention CUDA kernels
-#             y = torch.nn.functional.scaled_dot_product_attention(q, k, v, attn_mask=None, dropout_p=self.dropout if self.training else 0, is_causal=True)
-#         else:
-#             # manual implementation of attention
-#             att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))
-#             att = att.masked_fill(self.bias[:,:,:T,:T] == 0, float('-inf'))
-#             att = F.softmax(att, dim=-1)
-#             att = self.attn_dropout(att)
-#             y = att @ v # (B, nh, T, T) x (B, nh, T, hs) -> (B, nh, T, hs)
-#         y = y.transpose(1, 2).contiguous().view(B, T, C) # re-assemble all head outputs side by side
-
-#         # output projection
-#         y = self.resid_dropout(self.c_proj(y))
-#         return y
-
 with torch.device('cuda'):
     num_heads = 8
-    heads_per_dim = 64
+    heads_per_dim = 64 * 2
     embed_dimension = num_heads * heads_per_dim
     dtype = torch.float16
     model = CausalSelfAttention(num_heads=num_heads, embed_dimension=embed_dimension, bias=False, is_causal=True, dropout=0.1).to(dtype)
     print(model)
-    print(f'Training? {model.training}')
-    batch_size = 32
-    max_sequence_len = 256
-    x = torch.randn(batch_size, max_sequence_len, embed_dimension, dtype=dtype)
+    batch_size = 16
+    max_sequence_len = 1024
+    x = torch.randn(batch_size, max_sequence_len, embed_dimension, dtype=dtype, requires_grad=True)
 
-    # config = ModelConfig(n_embd = 3072 // 2)
-    # batch_size, sequence_length, embedding_dim = 16 // 2, 1024 // 2, config.n_embd
-
-    # model = CausalSelfAttention(config)
-    jmodel_def = thunder.jit(model)
+    jmodel_def = thunder.jit(model, executors=['torchcompile', 'nvfuser'])
     jmodel_auto = thunder.jit(model, autotune_type='runtime')
-    y = jmodel_def(x)
-    y = jmodel_auto(x)
+
+    warm_up_iters = 2
+    iters = 10
+    stream = torch.cuda.current_stream()
+
+    for _ in range(warm_up_iters):
+        y = jmodel_auto(x)
+        yy = jmodel_def(x)
+        yyy = model(x)
+        torch.autograd.grad(y, x, grad_outputs=torch.ones_like(y))
+        torch.autograd.grad(yy, x, grad_outputs=torch.ones_like(y))
+
+    print('deviation auto:', (jmodel_auto(x) - model(x)).abs().max().item())
+    print('deviation def:', (jmodel_def(x) - model(x)).abs().max().item())
+
+    print('\n\n')
+
+    for i in range(1):
+
+        start_events = [torch.cuda.Event(enable_timing=True) for _ in range(iters)]
+        middle_events = [torch.cuda.Event(enable_timing=True) for _ in range(iters)]
+        end_events = [torch.cuda.Event(enable_timing=True) for _ in range(iters)]
+
+        for i in range(iters):
+            torch.cuda.empty_cache()
+            torch.cuda._sleep(1_000_000)
+            start_events[i].record(stream)
+            y = jmodel_auto(x)
+            middle_events[i].record(stream)
+            torch.autograd.grad(y, x, grad_outputs=torch.ones_like(y))
+            end_events[i].record(stream)
+
+        torch.cuda.synchronize()
+        fw = [s.elapsed_time(e) for s, e in zip(start_events, middle_events)]
+        bw = [s.elapsed_time(e) for s, e in zip(middle_events, end_events)]
+        tot = [s.elapsed_time(e) for s, e in zip(start_events, end_events)]
+        fw_time = sum(fw)
+        bw_time = sum(bw)
+        tot_time = sum(tot)
+        print(f'Auto fw: {fw_time / iters}')
+        print(f'Auto bw: {bw_time / iters}')
+        print(f'Auto tot: {tot_time / iters}')
+        print('\n')
+
+        start_events = [torch.cuda.Event(enable_timing=True) for _ in range(iters)]
+        middle_events = [torch.cuda.Event(enable_timing=True) for _ in range(iters)]
+        end_events = [torch.cuda.Event(enable_timing=True) for _ in range(iters)]
+
+        for i in range(iters):
+            torch.cuda.empty_cache()
+            torch.cuda._sleep(1_000_000)
+            start_events[i].record(stream)
+            y = jmodel_def(x)
+            middle_events[i].record(stream)
+            torch.autograd.grad(y, x, grad_outputs=torch.ones_like(y))
+            end_events[i].record(stream)
+
+        torch.cuda.synchronize()
+        fw = [s.elapsed_time(e) for s, e in zip(start_events, middle_events)]
+        bw = [s.elapsed_time(e) for s, e in zip(middle_events, end_events)]
+        tot = [s.elapsed_time(e) for s, e in zip(start_events, end_events)]
+        fw_time = sum(fw)
+        bw_time = sum(bw)
+        tot_time = sum(tot)
+        print(f'Default fw: {fw_time / iters}')
+        print(f'Default bw: {bw_time / iters}')
+        print(f'Default tot: {tot_time / iters}')
+        print('-------------------------------------------------------')
+
+        c, m, o = benchmark_trace(thunder.last_traces(jmodel_def)[-1], apply_del_last_used=False, snapshot=True, snapshot_name='def_fw')
+        print(f'Executing default fw trace:\n{c} ms, {m / (2**30)} GB')
+        del o
+        c, m, o = benchmark_trace(thunder.last_traces(jmodel_auto)[-1], apply_del_last_used=False, snapshot=True, snapshot_name='auto_fw')
+        print(f'Executing auto fw trace:\n{c} ms, {m / (2**30)} GB')
+        del o
+        c, m, o = benchmark_trace(thunder.last_backward_traces(jmodel_def)[-1], apply_del_last_used=False, snapshot=True, snapshot_name='def_bw')
+        print(f'Executing default bw trace:\n{c} ms, {m / (2**30)} GB')
+        del o
+        c, m, o = benchmark_trace(thunder.last_backward_traces(jmodel_auto)[-1], apply_del_last_used=False, snapshot=True, snapshot_name='auto_bw')
+        print(f'Executing auto bw trace:\n{c} ms, {m / (2**30)} GB')
+        del o
+
+    print('\n\n\n\n\n\n')
+    print(f'{thunder.last_traces(jmodel_def)[-1]}')
+    print('###############################################################################')
+    print(f'{thunder.last_traces(jmodel_auto)[-1]}')
+
+    print('\n\n')
+    print(f'{thunder.last_backward_traces(jmodel_def)[-1]}')
+    print('###############################################################################')
+    print(f'{thunder.last_backward_traces(jmodel_auto)[-1]}')
+
+    from torch.profiler import profile, record_function, ProfilerActivity
+    with profile(activities=[
+            ProfilerActivity.CPU, ProfilerActivity.CUDA], record_shapes=True) as prof:
+        with record_function("def"):
+            y = jmodel_def(x)
+            grad_outputs = torch.ones_like(y)
+            torch.autograd.grad(y, x, grad_outputs=grad_outputs)
+
+    print(prof.key_averages().table(sort_by="cuda_time_total", row_limit=10))
+
+    with profile(activities=[
+            ProfilerActivity.CPU, ProfilerActivity.CUDA], record_shapes=True) as prof:
+        with record_function("auto"):
+            y = jmodel_auto(x)
+            grad_outputs = torch.ones_like(y)
+            torch.autograd.grad(y, x, grad_outputs=grad_outputs)
+
+    print(prof.key_averages().table(sort_by="cuda_time_total", row_limit=10))
 
