@@ -41,17 +41,17 @@ with torch.device('cuda'):
     print('deviation auto:', (jmodel_auto(x) - model(x)).abs().max().item())
     print('deviation def:', (jmodel_def(x) - model(x)).abs().max().item())
 
-    print('\n\n')
-    c, m, o = benchmark_trace(thunder.last_traces(jmodel_def)[-1], apply_del_last_used=False, snapshot=True, snapshot_name='def_fw')
+    print('########################################')
+    c, m, o = benchmark_trace(thunder.last_traces(jmodel_def)[-1], apply_del_last_used=False, snapshot=True, snapshot_name='MLP_def_fw')
     print(f'Executing default fw trace:\n{c} ms, {m / (2**30)} GB')
     del o
-    c, m, o = benchmark_trace(thunder.last_traces(jmodel_auto)[-1], apply_del_last_used=False, snapshot=True, snapshot_name='auto_fw')
+    c, m, o = benchmark_trace(thunder.last_traces(jmodel_auto)[-1], apply_del_last_used=False, snapshot=True, snapshot_name='MLP_auto_fw')
     print(f'Executing auto fw trace:\n{c} ms, {m / (2**30)} GB')
     del o
-    c, m, o = benchmark_trace(thunder.last_backward_traces(jmodel_def)[-1], apply_del_last_used=False, snapshot=True, snapshot_name='def_bw')
+    c, m, o = benchmark_trace(thunder.last_backward_traces(jmodel_def)[-1], apply_del_last_used=False, snapshot=True, snapshot_name='MLP_def_bw')
     print(f'Executing default bw trace:\n{c} ms, {m / (2**30)} GB')
     del o
-    c, m, o = benchmark_trace(thunder.last_backward_traces(jmodel_auto)[-1], apply_del_last_used=False, snapshot=True, snapshot_name='auto_bw')
+    c, m, o = benchmark_trace(thunder.last_backward_traces(jmodel_auto)[-1], apply_del_last_used=False, snapshot=True, snapshot_name='MLP_auto_bw')
     print(f'Executing auto bw trace:\n{c} ms, {m / (2**30)} GB')
     del o
 
@@ -65,22 +65,22 @@ with torch.device('cuda'):
     print('###############################################################################')
     print(f'{thunder.last_backward_traces(jmodel_auto)[-1]}')
 
-    from torch.profiler import profile, record_function, ProfilerActivity
-    with profile(activities=[
-            ProfilerActivity.CPU, ProfilerActivity.CUDA], record_shapes=True) as prof:
-        with record_function("def"):
-            y = jmodel_def(x)
-            grad_outputs = torch.ones_like(y)
-            torch.autograd.grad(y, x, grad_outputs=grad_outputs)
+    # from torch.profiler import profile, record_function, ProfilerActivity
+    # with profile(activities=[
+    #         ProfilerActivity.CPU, ProfilerActivity.CUDA], record_shapes=True) as prof:
+    #     with record_function("def"):
+    #         y = jmodel_def(x)
+    #         grad_outputs = torch.ones_like(y)
+    #         torch.autograd.grad(y, x, grad_outputs=grad_outputs)
 
-    print(prof.key_averages().table(sort_by="cuda_time_total", row_limit=10))
+    # print(prof.key_averages().table(sort_by="cuda_time_total", row_limit=10))
 
-    with profile(activities=[
-            ProfilerActivity.CPU, ProfilerActivity.CUDA], record_shapes=True) as prof:
-        with record_function("auto"):
-            y = jmodel_auto(x)
-            grad_outputs = torch.ones_like(y)
-            torch.autograd.grad(y, x, grad_outputs=grad_outputs)
+    # with profile(activities=[
+    #         ProfilerActivity.CPU, ProfilerActivity.CUDA], record_shapes=True) as prof:
+    #     with record_function("auto"):
+    #         y = jmodel_auto(x)
+    #         grad_outputs = torch.ones_like(y)
+    #         torch.autograd.grad(y, x, grad_outputs=grad_outputs)
 
-    print(prof.key_averages().table(sort_by="cuda_time_total", row_limit=10))
+    # print(prof.key_averages().table(sort_by="cuda_time_total", row_limit=10))
 
