@@ -1065,13 +1065,13 @@ def benchmark_trace(trace: TraceCtx, iters: int = 1, show_func = False, apply_de
         #         print(f'{type(out)}')
 
         def thunder_to_torch_float_dtype(tp, byte: int) -> torch.dtype:
-            if isinstance(tp, type(thunder.bfloat16)):
-                # Casual self attention test want float 16 but proxy has bloat16?
-                return torch.float16
             if byte == 1:
                 raise AssertionError('Not implmented: 8 bit float')
             elif (byte == 2):
-                return torch.float16
+                if isinstance(tp, type(thunder.bfloat16)):
+                    return torch.float16
+                else:
+                    return torch.float16
             elif (byte == 4):
                 return torch.float32
             elif byte == 8:
