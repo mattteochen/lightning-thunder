@@ -36,9 +36,6 @@ with torch.device('cuda'):
 
     jmodel_def = thunder.jit(model)
     jmodel_auto = thunder.jit(model, autotune_type='memory')
-    warm_up_iters = 2
-    iters = 10
-    stream = torch.cuda.current_stream()
 
     y = model(x)
     print('deviation auto:', (jmodel_auto(x) - model(x)).abs().max().item())
