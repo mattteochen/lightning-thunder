@@ -1167,12 +1167,11 @@ def benchmark_trace(trace: TraceCtx, iters: int = 1, show_func = False, apply_de
         def p(args):
             for e in args:
                 if not isinstance(e, Sequence):
-                    if isinstance(e, torch.Tensor):
-                        print(f'{e.dtype} -> {e.size()}')
+                    print(f'{e.name} -> {e}')
                 else:
                     print('rec')
                     p(e)
-        p(input_args)
+        p(trace.args)
 
         trace_tok = set_tracectx(trace)
 
