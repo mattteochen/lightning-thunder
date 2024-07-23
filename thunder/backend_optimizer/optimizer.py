@@ -752,7 +752,7 @@ class BackendOptimizer():
 
                     # Benchmark this placement
                     trc, keys, placements = get_placed_trace(map_time, increasing_symbols)
-                    cost, mem, out = benchmark_trace(trc, iters=1)
+                    cost, mem, out = benchmark_trace(trc, iters=3)
                     del out
                     self.log(f'Placed trace (cost = {cost} ms, mem = {mem/(2**30)} GB)\n{trc}')
                     if cost < best_res_time.measure:
