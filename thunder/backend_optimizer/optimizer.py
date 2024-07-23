@@ -1069,7 +1069,8 @@ def benchmark_trace(trace: TraceCtx, iters: int = 1, show_func = False, apply_de
                 raise AssertionError('Not implmented: 8 bit float')
             elif (byte == 2):
                 if isinstance(tp, type(thunder.bfloat16)):
-                    return torch.float16
+                    print('BFLOAT')
+                    return torch.bfloat16
                 else:
                     return torch.float16
             elif (byte == 4):
