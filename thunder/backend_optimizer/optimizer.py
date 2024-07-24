@@ -51,7 +51,7 @@ class BackendOptimizer():
         self.log_file_name: str = log_file_name
         self.optimal_trace_mem: TraceCtx = trace
         self.optimal_trace_time: TraceCtx = trace
-        self.cached_optimal_fw_trace: TraceCtx | None = None
+        self.cached_optimal_fw_trace: TraceCtx | None = cached_fw_trace
         self.optimized_traces_mem: list[dict[str | Hashable, TraceCtx]] = []
         self.optimized_traces_mem_benchmark_only: list[dict[str | Hashable, TraceCtx]] = []
         self.optimized_traces_time: list[dict[str | Hashable, TraceCtx]] = []
@@ -685,7 +685,8 @@ class BackendOptimizer():
 
                     # Benchmark this placement
                     trc, keys, placements = get_placed_trace(dict_time_strat, increasing_symbols)
-                    _, trc = rematerialize_forward_and_backward(self.cached_optimal_fw_trace, trc)
+                    if self.trace_type == TraceType.BW and self.cached_optimal_fw_trace is not None:
+                        _, trc = rematerialize_forward_and_backward(self.cached_optimal_fw_trace, trc)
                     cost, mem, out = benchmark_trace(trc, iters=3)
                     del out
                     self.log(f'Placed trace (cost = {cost} ms, mem = {mem/(2**30)} GB)\n{trc}')
@@ -705,6 +706,7 @@ class BackendOptimizer():
                     if mem > worst_res_mem.measure:
                         worst_res_mem.measure = mem
 
+                    # TODO (matteochen): consider if this can increase placement
                     # From bottom to up (this will exclude the full region as being handled in the for cycle above)
                     # -> First iteration is the one with len(fusion_region) - 1
                     # -> Last iteration gives no fusion regions
@@ -715,14 +717,27 @@ class BackendOptimizer():
 
                     # Benchmark this placement
                     # trc, keys, placements = get_placed_trace(dict_time_strat, increasing_symbols)
-                    # cost, out = benchmark_trace(trc, iters=2)
+                    # if self.trace_type == TraceType.BW and self.cached_optimal_fw_trace is not None:
+                    #     _, trc = rematerialize_forward_and_backward(self.cached_optimal_fw_trace, trc)
+                    # cost, mem, out = benchmark_trace(trc, iters=3)
                     # del out
-                    # self.log(f'Placed trace (cost = {cost } ms)\n{trc}')
-                    # if cost < best_time:
-                    #     best_time = cost
-                    #     best_trc = trc
-                    #     best_placement = placements
-                    #     best_keys = keys
+                    # self.log(f'Placed trace (cost = {cost} ms, mem = {mem/(2**30)} GB)\n{trc}')
+                    # if cost < best_res_time.measure:
+                    #     best_res_time.measure = cost
+                    #     best_res_time.trace = trc
+                    #     best_placement_time = placements
+                    #     best_keys_time = keys
+                    # if cost > worst_res_time.measure:
+                    #     worst_res_time.measure = cost
+
+                    # if mem < best_res_mem.measure:
+                    #     best_res_mem.measure = mem
+                    #     best_res_mem.trace = trc
+                    #     best_placement_mem = placements
+                    #     best_keys_mem = keys
+                    # if mem > worst_res_mem.measure:
+                    #     worst_res_mem.measure = mem
+
                 if best_placement_time is None or best_keys_time is None:
                     raise AssertionError('Failed to get best placement')
                 if best_placement_mem is None or best_keys_mem is None:
@@ -777,20 +792,34 @@ class BackendOptimizer():
                     raise AssertionError(f"Type not handled: {type(bsym.output)}")
 
             # Swap return bsym otherwise with no call to remat, we will trace the wrong memory occupation for forward trace
-            test_trc = from_trace(self.trace)
-            test_trc.bound_symbols = list(self.trace.bound_symbols)
-            test_trc.bound_symbols.pop()
-            test_trc.bound_symbols.append(self.trace.bound_symbols[-1].from_bsym(args=return_not_used_vars(test_trc)))
-            trc = self.place_optimizers(test_trc, executors_mem)
-            c, m, o = benchmark_trace(trc)
-            del o
-            self.log(f'Debug MEM, mem = {m/(2**30)} GB:\n{trc}')
-            self.optimized_traces_mem_benchmark_only.append({ex.name: trc})
-            trc = self.place_optimizers(test_trc, executors_time)
-            c, m, o = benchmark_trace(trc)
-            del o
-            self.log(f'Debug TIME, time = {c} ms:\n{trc}')
-            self.optimized_traces_time_benchmark_only.append({ex.name: trc})
+            if self.trace_type == TraceType.FW:
+                test_trc = from_trace(self.trace)
+                test_trc.bound_symbols = list(self.trace.bound_symbols)
+                test_trc.bound_symbols.pop()
+                test_trc.bound_symbols.append(self.trace.bound_symbols[-1].from_bsym(args=return_not_used_vars(test_trc)))
+                trc = self.place_optimizers(test_trc, executors_mem)
+                c, m, o = benchmark_trace(trc)
+                del o
+                self.log(f'Debug MEM, mem = {m/(2**30)} GB:\n{trc}')
+                self.optimized_traces_mem_benchmark_only.append({ex.name: trc})
+                trc = self.place_optimizers(test_trc, executors_time)
+                c, m, o = benchmark_trace(trc)
+                del o
+                self.log(f'Debug TIME, time = {c} ms:\n{trc}')
+                self.optimized_traces_time_benchmark_only.append({ex.name: trc})
+            else:
+                trc = self.place_optimizers(self.trace, executors_mem)
+                _, trc = rematerialize_forward_and_backward(self.cached_optimal_fw_trace, trc)
+                c, m, o = benchmark_trace(trc)
+                del o
+                self.log(f'Debug MEM, mem = {m/(2**30)} GB:\n{trc}')
+                self.optimized_traces_mem_benchmark_only.append({ex.name: trc})
+                trc = self.place_optimizers(self.trace, executors_time)
+                _, trc = rematerialize_forward_and_backward(self.cached_optimal_fw_trace, trc)
+                c, m, o = benchmark_trace(trc)
+                del o
+                self.log(f'Debug TIME, time = {c} ms:\n{trc}')
+                self.optimized_traces_time_benchmark_only.append({ex.name: trc})
 
             # Save executors in order to generate real fw and bw trace with correct output
             self.placement_options_time.append(executors_time)
@@ -839,10 +868,10 @@ class BackendOptimizer():
                 label = k
                 trace = v
 
-            trace_time, _, res = benchmark_trace(trace, iters=10)
+            trace_time, trace_mem, res = benchmark_trace(trace, iters=10)
             del res
-            self.debug_msg += f'Trace name = [{label}] - Time = {trace_time} ms\n{trace}\n\n'
-            self.log(f'Benchmark trace "{label}" (time = {trace_time} ms:\n{trace}')
+            self.debug_msg += f'Trace name = [{label}] - Time = {trace_time} ms - Mem = {trace_mem / (2**30)} GB\n{trace}\n\n'
+            self.log(f'Benchmark trace (target TIME) "{label}" (time = {trace_time} ms, mem = {trace_mem / (2**30)} GB:\n{trace}')
             if trace_time < tm.measure:
                 tm.measure = trace_time
                 tm.trace = trace
@@ -857,10 +886,10 @@ class BackendOptimizer():
                 label = k
                 trace = v
 
-            _, trace_mem, res = benchmark_trace(trace, iters=10)
+            trace_time, trace_mem, res = benchmark_trace(trace, iters=10)
             del res
-            self.debug_msg += f'Trace name = [{label}] - Mem = {trace_mem / (2**30)} GB\n{trace}\n\n'
-            self.log(f'Benchmark trace "{label}" (mem = {trace_mem / (2 ** 30)} GB):\n{trace}')
+            self.debug_msg += f'Trace name = [{label}] - Mem = {trace_mem / (2**30)} GB - Time = {trace_time} ms\n{trace}\n\n'
+            self.log(f'Benchmark trace (target MEM) "{label}" (time = {trace_time} ms, mem = {trace_mem / (2**30)} GB:\n{trace}')
             if trace_mem < mem.measure:
                 mem.measure = trace_mem
                 mem.trace = trace
@@ -1120,8 +1149,9 @@ def benchmark_trace(trace: TraceCtx, iters: int = 1, show_func = False, apply_de
     executable = trace.python_callable()
     if show_func:
         print(inspect.getsource(executable))
-    t = 0.0
-    m = 0.0
+
+    t = float('inf')
+    m = float('inf')
     answer = None
     try:
         t, m, answer = compute_time_cost_ms(executable, iters, *input_args)
@@ -1131,10 +1161,13 @@ def benchmark_trace(trace: TraceCtx, iters: int = 1, show_func = False, apply_de
         if 'call_method UserDefinedObjectVariable(set) __contains__ [UserDefinedObjectVariable()] {}' in str(e):
             print('Executing with torch compile no full graph (this might still fail), see: https://github.com/Lightning-AI/lightning-thunder/issues/664')
             torch_compiled = torch.compile(executable, fullgraph=False)
-            t, m, answer = compute_time_cost_ms(torch_compiled, iters, *input_args)
+            try:
+                t, m, answer = compute_time_cost_ms(torch_compiled, iters, *input_args)
+            except Exception as e:
+                print(f'Compiled trace execution still failed:\n{e}')
         else:
-            raise e
-
-    reset_tracectx(trace_tok)
+            raise AssertionError(f'Unhandled exception occured:\n{e}')
+    finally:
+        reset_tracectx(trace_tok)
 
     return t, m, answer
