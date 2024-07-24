@@ -1641,8 +1641,8 @@ def eval_trace(trace, *args, symbol_mapper=symbol_to_eval, with_env=False, **kwa
 
     for symbol in trace.bound_symbols:
         if symbol.sym.id in transform_skip_list:
-            args = tree_map(read, symbol.args)
             continue
+        args = tree_map(read, symbol.args)
         kwargs = tree_map(read, symbol.kwargs)
         prim_func = symbol_mapper(symbol)
         if prim_func is None:
