@@ -1603,15 +1603,19 @@ def eval_trace(trace, *args, symbol_mapper=symbol_to_eval, with_env=False, **kwa
         result of evaluating the trace
     """
 
+    if len(trace.bound_symbols) == 1 and trace.bound_symbols[0].sym.name == 'return':
+        print('LEN 1')
+
     print('################## EVAL TRACE START')
     print('TRACE')
     print(trace)
     print('TRACE BSYM')
     for b in trace.bound_symbols:
         if isinstance(b.output, TensorProxy):
-            print(f'{b.sym.name}, out: {b.output.name}, args:{b.args}')
+            print(f'TensorProxy-->{b.sym.name}, out: {b.output.name}, args:{b.args}')
         else:
-            print(f'{b.sym.name}, args:{b.args}')
+            print(f'Else-->{b.sym.name}, args:{b.args}')
+        print('---------------')
     print(args)
     print('args')
     print('kwargs')
