@@ -1604,6 +1604,8 @@ def eval_trace(trace, *args, symbol_mapper=symbol_to_eval, with_env=False, **kwa
     """
 
     print('################## EVAL TRACE START')
+    if len(trace.bound_symbols) == 0:
+        print('ZERO')
     print('TRACE')
     print(trace)
     print('TRACE BSYM')
