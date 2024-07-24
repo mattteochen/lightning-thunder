@@ -1627,6 +1627,7 @@ def eval_trace(trace, *args, symbol_mapper=symbol_to_eval, with_env=False, **kwa
         env[v.name] = val
 
     safe_map_flat(write, list(trace.args), list(args))
+    print('END FIRST WRITE')
     safe_map_flat(write, list(trace.kwargs.values()), list(kwargs.values()))
 
     for symbol in trace.bound_symbols:
