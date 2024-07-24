@@ -18,12 +18,12 @@ import torch
 # import concurrent.futures
 
 class OptimizerType(Enum):
-    MEMORY = 1
-    RUNTIME = 2
+    MEMORY = 0
+    RUNTIME = 1
 
 class TraceType(Enum):
-    FW = 1
-    BW = 2
+    FW = 0
+    BW = 1
 
 class OptimizerNode():
     def __init__(self, node: Node):
@@ -51,6 +51,8 @@ class BackendOptimizer():
         self.log_file_name: str = log_file_name
         self.optimal_trace_mem: TraceCtx = trace
         self.optimal_trace_time: TraceCtx = trace
+        self.cached_optimal_fw_trace_mem: TraceCtx | None = None
+        self.cached_optimal_fw_trace_time: TraceCtx | None = None
         self.optimized_traces_mem: list[dict[str | Hashable, TraceCtx]] = []
         self.optimized_traces_mem_benchmark_only: list[dict[str | Hashable, TraceCtx]] = []
         self.optimized_traces_time: list[dict[str | Hashable, TraceCtx]] = []
@@ -66,7 +68,12 @@ class BackendOptimizer():
         self.optimizer_type: OptimizerType = optimizer_type
         self.trace_type = trace_type
 
-        self.log(f'New trace to optimize (strat = {self.optimizer_type}):\n{self.trace}')
+        if self.trace_type == TraceType.FW:
+            self.log(f'New forward trace to optimize (strat = {self.optimizer_type}):\n{self.trace}')
+        else:
+            self.log(f'New backward trace to optimize (strat = {self.optimizer_type}):\n{self.trace}')
+            if self.cached_optimal_fw_trace_mem is None or self.cached_optimal_fw_trace_time is None:
+                raise AssertionError('Optimized forward trace not available. Backward trace optimization rely on optimized forward trace')
         self.log('Executors:')
         for o in self.executors:
             self.log(f'{o.name} -> is operator = {isinstance(o, OperatorExecutor)}, is fusion = {isinstance(o, FusionExecutor)}')
@@ -519,6 +526,7 @@ class BackendOptimizer():
 
     def build_placement_options_fusion_regions(self, increment_factor:int = 1):
         from thunder.executors.data_dependent_partition import Node, fuse_bound_symbols
+        from thunder.core.rematerialization import rematerialize_forward_and_backward
 
         def sequence_hash(s: Sequence) -> str:
             name = ""
@@ -546,85 +554,8 @@ class BackendOptimizer():
             trc = from_trace(self.trace)
             trc.bound_symbols = list(bound_symbols_in)
 
-            # for b in trc.bound_symbols:
-            #     print(b.sym.name)
-
-            # print(f'trc:\n{trc}')
-
-            # def find_original_return_tensors(trace_in: TraceCtx) -> list[Any]:
-            #     return_bsym = trace_in.bound_symbols[-1]
-            #     if return_bsym.sym.name != 'return':
-            #         raise AssertionError(f'Expected return symbol got {return_bsym.sym.name}')
-
-            #     ans = []
-            #     if isinstance(return_bsym.args, tuple):
-            #         # forward trace
-            #         if isinstance(return_bsym.args[0], dict):
-            #             ans.append(return_bsym.args[0]['output'])
-            #         # backward trace
-            #         else:
-            #             ans.extend([s for s in return_bsym.args if s is not None])
-            #     else:
-            #         raise AssertionError('Not supported')
-
-            #     return ans
-
-            # def find_last_out_tensor(trace_in: TraceCtx):
-            #     m = 0
-            #     t = None
-            #     for b in trace_in.bound_symbols:
-            #         if b.sym.name == 'return':
-            #             continue
-            #         if isinstance(b.output, TensorProxy):
-            #             if is_possible_out(b.output.name) and int(b.output.name[1:]) > m:
-            #                 m = int(b.output.name[1:])
-            #                 t = b.output
-            #         # else:
-            #         #     raise AssertionError(f'Not implemented, type = {type(b.output)}')
-            #     if t is None:
-            #         raise AssertionError('Max tensor output not found')
-            #     print(f'max tensor out name: {t}')
-            #     return t
-
-            # def is_tensor_in_bsyms(t: TensorProxy | tuple):
-            #     def handle_tuple(tup: tuple):
-            #         for e in tup:
-            #             if isinstance(e, TensorProxy):
-            #                 for b in trc.bound_symbols:
-            #                     if b is not None:
-            #                         if isinstance(b.output, TensorProxy):
-            #                             if b.output.name == e.name:
-            #                                 return b.output
-            #             else:
-            #                 raise AssertionError('Not supported')
-
-            #     if isinstance(t, TensorProxy):
-            #         for b in trc.bound_symbols:
-            #             if b is not None:
-            #                 if isinstance(b.output, TensorProxy):
-            #                     if b.output.name == t.name:
-            #                         return b.output
-            #         return None
-            #     else:
-            #         handle_tuple(t)
-
-
-            # tensors = []
-            # for b in bound_symbols_in:
-            #     if isinstance(b.output, TensorProxy):
-            #         tensors.append(b.output)
-            # We include always the last tensor as output of the partial trace + all the already
-            # available out tensor present in the original trace in order to not be discarded from the dce
-            # tensors = [find_last_out_tensor(trc)]
-            # original_returns = find_original_return_tensors(self.trace)
-            # for t in original_returns:
-            #     # TODO (matteochen): improve this
-            #     res = is_tensor_in_bsyms(t)
-            #     if res is not None:
-            #         tensors.append(res)
-
             # For this partial trace we have to return all not used tensors otherwise the dce will cut them out
-            tensors = return_not_used(trc)
+            tensors = return_not_used_vars(trc)
 
             forced_return_bsym = self.trace.bound_symbols[-1].from_bsym(args=tensors)
 
@@ -633,7 +564,7 @@ class BackendOptimizer():
             keys = []
             for bsym in  trc.bound_symbols:
                 if bsym.sym.name == 'return':
-                    raise AssertionError('return statement should not be here')
+                    raise AssertionError('Return statement should not be here')
                     executor_configuration.append(empty_executor)
                     keys.append('return')
                 elif isinstance(bsym.output, Sequence):
@@ -707,8 +638,8 @@ class BackendOptimizer():
                 if len(group) > 0:
                     print('\n')
 
-            map_time: dict[str, Executor] = {}
-            map_mem: dict[str, Executor] = {}
+            dict_time_strat: dict[str, Executor] = {}
+            dict_mem_strat: dict[str, Executor] = {}
             increasing_symbols = []
             for group_id, group in enumerate(bound_symbol_groups):
                 self.log(f'Group id: {group_id}')
@@ -725,11 +656,11 @@ class BackendOptimizer():
                     name = current_bsym.sym.name
                     ex_for_this = get_default_executor(current_bsym)
                     if name == 'return':
-                        map_time['return'] = ex_for_this
-                        map_mem['return'] = ex_for_this
+                        dict_time_strat['return'] = ex_for_this
+                        dict_mem_strat['return'] = ex_for_this
                         # Add the modified return statement at the end of the for loop
                         break
-                    match_bsym_output(current_bsym, map_time, map_mem, ex)
+                    match_bsym_output(current_bsym, dict_time_strat, dict_mem_strat, ex)
                     continue
 
                 # Inside groups we should have alwasy tensors as out
@@ -744,19 +675,19 @@ class BackendOptimizer():
                 best_keys_time = None
                 best_placement_mem = None
                 best_keys_mem = None
-                # Each iteration of this loop will have map_time = map_mem, hence we use and fill only map_time
-                # Best time and best mem will be recorded separatedly though
                 for i in range(0, len(group)):
                     # From top to bottom (this will include the whole region)
                     # -> First iteration is the one with fusion region with single element
                     # -> Last iteration gives the complete fusion region
                     for j in range(0, i+1, increment_factor):
-                        match_bsym_output(group[j], map_time, map_mem, ex)
+                        match_bsym_output(group[j], dict_time_strat, dict_mem_strat, ex)
                     for k in range(i+1, len(group), increment_factor):
-                        match_bsym_output(group[k], map_time, map_mem, get_default_executor(group[k]))
+                        match_bsym_output(group[k], dict_time_strat, dict_mem_strat, get_default_executor(group[k]))
 
                     # Benchmark this placement
-                    trc, keys, placements = get_placed_trace(map_time, increasing_symbols)
+                    trc, keys, placements = get_placed_trace(dict_time_strat, increasing_symbols)
+                    # None values for cached fw traces are checked in the constructor
+                    _, trc = rematerialize_forward_and_backward(self.cached_optimal_fw_trace_time if self.strat == OptimizerType.RUNTIME else self.cached_optimal_fw_trace_mem, trc)
                     cost, mem, out = benchmark_trace(trc, iters=3)
                     del out
                     self.log(f'Placed trace (cost = {cost} ms, mem = {mem/(2**30)} GB)\n{trc}')
@@ -780,12 +711,12 @@ class BackendOptimizer():
                     # -> First iteration is the one with len(fusion_region) - 1
                     # -> Last iteration gives no fusion regions
                     # for j in range(0, i+1, increment_factor):
-                    #     map_time[group[j].output.name] = get_default_executor(group[j])
+                    #     dict_time_strat[group[j].output.name] = get_default_executor(group[j])
                     # for k in range(i+1, len(group), increment_factor):
-                    #     map_time[group[k].output.name] = ex
+                    #     dict_time_strat[group[k].output.name] = ex
 
                     # Benchmark this placement
-                    # trc, keys, placements = get_placed_trace(map_time, increasing_symbols)
+                    # trc, keys, placements = get_placed_trace(dict_time_strat, increasing_symbols)
                     # cost, out = benchmark_trace(trc, iters=2)
                     # del out
                     # self.log(f'Placed trace (cost = {cost } ms)\n{trc}')
@@ -807,51 +738,51 @@ class BackendOptimizer():
 
                 # Update our dict
                 for n, p in zip(best_keys_time, best_placement_time):
-                    map_time |= {n: p}
+                    dict_time_strat |= {n: p}
                 # Update our dict
                 for n, p in zip(best_keys_mem, best_placement_mem):
-                    map_mem |= {n: p}
+                    dict_mem_strat |= {n: p}
 
             # self.log('End of group search')
-            # pprint.pprint(map_time)
+            # pprint.pprint(dict_time_strat)
 
             # print('map cmp')
-            # for k in map_time.keys():
-            #     if k not in map_mem:
-            #         pprint.pprint(map_time)
-            #         pprint.pprint(map_mem)
+            # for k in dict_time_strat.keys():
+            #     if k not in dict_mem_strat:
+            #         pprint.pprint(dict_time_strat)
+            #         pprint.pprint(dict_mem_strat)
             #         raise AssertionError(f"cannot find {k}")
-            # pprint.pprint(map_time)
-            # pprint.pprint(map_mem)
+            # pprint.pprint(dict_time_strat)
+            # pprint.pprint(dict_mem_strat)
 
             # Generate the placement
             executors_time = []
             executors_mem = []
             for bsym in  self.trace.bound_symbols:
                 if bsym.sym.name == 'return':
-                    if 'return' not in map_time or 'return' not in map_mem:
-                        raise AssertionError(f'Expected key return in mapping {map_time} and {map_mem}')
-                    executors_time.append(map_time['return'])
-                    executors_mem.append(map_mem['return'])
+                    if 'return' not in dict_time_strat or 'return' not in dict_mem_strat:
+                        raise AssertionError(f'Expected key return in mapping {dict_time_strat} and {dict_mem_strat}')
+                    executors_time.append(dict_time_strat['return'])
+                    executors_mem.append(dict_mem_strat['return'])
                 elif isinstance(bsym.output, Sequence):
                     seq_hash = sequence_hash(bsym.output)
-                    if seq_hash not in map_time or seq_hash not in map_mem:
-                        raise AssertionError(f'Expected key {seq_hash} in mapping {map_time} and {map_mem}')
-                    executors_time.append(map_time[seq_hash])
-                    executors_mem.append(map_mem[seq_hash])
+                    if seq_hash not in dict_time_strat or seq_hash not in dict_mem_strat:
+                        raise AssertionError(f'Expected key {seq_hash} in mapping {dict_time_strat} and {dict_mem_strat}')
+                    executors_time.append(dict_time_strat[seq_hash])
+                    executors_mem.append(dict_mem_strat[seq_hash])
                 elif isinstance(bsym.output, CollectionProxy) or isinstance(bsym.output, TensorProxy) or isinstance(bsym.output, IntegerProxy) or isinstance(bsym.output, FloatProxy):
-                    if bsym.output.name not in map_time or bsym.output.name not in map_mem:
-                        raise AssertionError(f'Expected key {bsym.output.name} in mapping {map_time} and {map_mem}')
-                    executors_time.append(map_time[bsym.output.name])
-                    executors_mem.append(map_mem[bsym.output.name])
+                    if bsym.output.name not in dict_time_strat or bsym.output.name not in dict_mem_strat:
+                        raise AssertionError(f'Expected key {bsym.output.name} in mapping {dict_time_strat} and {dict_mem_strat}')
+                    executors_time.append(dict_time_strat[bsym.output.name])
+                    executors_mem.append(dict_mem_strat[bsym.output.name])
                 else:
                     raise AssertionError(f"Type not handled: {type(bsym.output)}")
 
-            # Swap return bsym otherwise with no call to remat, we will trace the wrong memory occupation
+            # Swap return bsym otherwise with no call to remat, we will trace the wrong memory occupation for forward trace
             test_trc = from_trace(self.trace)
             test_trc.bound_symbols = list(self.trace.bound_symbols)
             test_trc.bound_symbols.pop()
-            test_trc.bound_symbols.append(self.trace.bound_symbols[-1].from_bsym(args=return_not_used(test_trc)))
+            test_trc.bound_symbols.append(self.trace.bound_symbols[-1].from_bsym(args=return_not_used_vars(test_trc)))
             trc = self.place_optimizers(test_trc, executors_mem)
             c, m, o = benchmark_trace(trc)
             del o
@@ -973,7 +904,7 @@ class BackendOptimizer():
                 file.write(self.debug_msg)
                 file.close()
 
-def return_not_used(trace_in: TraceCtx) -> list[TensorProxy]:
+def return_not_used_vars(trace_in: TraceCtx) -> list[TensorProxy]:
     def is_in_sequence(seq: Sequence[Any], t:TensorProxy):
         for e in seq:
             if isinstance(e, TensorProxy) and e.name == t.name:
