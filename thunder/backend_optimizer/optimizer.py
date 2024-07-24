@@ -21,6 +21,10 @@ class OptimizerType(Enum):
     MEMORY = 1
     RUNTIME = 2
 
+class TraceType(Enum):
+    FW = 1
+    BW = 2
+
 class OptimizerNode():
     def __init__(self, node: Node):
         self.node: Node = node
@@ -33,7 +37,7 @@ class BackendOptimizer():
     def log(self, what: str):
         print(f'================================================================================ Autotune: {what}')
 
-    def __init__(self, trace: TraceCtx, priority_executors: Sequence[Executor], produce_log=True, log_file_name='autotune_debug.log', visualizer: Visualizer | None = None, optimizer_type: OptimizerType = OptimizerType.RUNTIME) -> None:
+    def __init__(self, trace: TraceCtx, priority_executors: Sequence[Executor], trace_type: TraceType, produce_log=True, log_file_name='autotune_debug.log', visualizer: Visualizer | None = None, optimizer_type: OptimizerType = OptimizerType.RUNTIME) -> None:
         from thunder.core.transform_common import dce
         # Add more supported ones
         self.trace: TraceCtx = dce(trace)
@@ -60,6 +64,7 @@ class BackendOptimizer():
         self.supported_fusion_executors_by_fusion_strat: set = set(['nvfuser', 'torchcompile'])
         self.visualizer: Visualizer | None = visualizer
         self.optimizer_type: OptimizerType = optimizer_type
+        self.trace_type = trace_type
 
         self.log(f'New trace to optimize (strat = {self.optimizer_type}):\n{self.trace}')
         self.log('Executors:')

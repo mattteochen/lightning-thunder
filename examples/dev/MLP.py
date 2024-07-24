@@ -2,6 +2,10 @@ import torch
 import torch.nn as nn
 import thunder
 from thunder.backend_optimizer.optimizer import benchmark_trace
+# import logging
+
+# torch._logging.set_logs(dynamo = logging.DEBUG)
+# torch._dynamo.config.verbose = True
 
 class ModelConfig:
     def __init__(self, n_embd=256, n_head=8, dropout=0.1, block_size=64, bias=True):
