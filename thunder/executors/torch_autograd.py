@@ -105,7 +105,6 @@ class ThunderFunction(torch.autograd.Function):
             del grads
             return (None, None, None, None, None, *([None] * n_grads))
 
-# TODO (matteochen): add control for using autotuner or not
 def split_forward_backward(computation_trc: TraceCtx, compile_data, compile_stats, autotune_type, /, *flat_args):
     from thunder.core.rematerialization import rematerialize_all_gather, rematerialize_forward_and_backward
     from thunder.core.transforms import forward_and_backward_from_trace
@@ -113,6 +112,7 @@ def split_forward_backward(computation_trc: TraceCtx, compile_data, compile_stat
     from thunder.distributed.utils import sort_data_parallel_syncs, sort_waits, sort_communication_ops
     from thunder.executors.passes import del_last_used, transform_for_execution, autotune_transform_for_execution
     from thunder.visualizer.visualizer_helper import Visualizer
+    from thunder.backend_optimizer.optimizer import TraceType
 
     visualizer = Visualizer(produce_hidden=False)
 
@@ -174,6 +174,7 @@ def split_forward_backward(computation_trc: TraceCtx, compile_data, compile_stat
         fw_extrace = autotune_transform_for_execution(
             fw_trace,
             executors_list=compile_data.executors_list,
+            trace_type=TraceType.FW,
             autotune_type=autotune_type,
             visualizer=visualizer
         )
@@ -221,7 +222,9 @@ def split_forward_backward(computation_trc: TraceCtx, compile_data, compile_stat
         bw_extrace = autotune_transform_for_execution(
             bw_trace,
             executors_list=compile_data.executors_list,
+            trace_type=TraceType.BW,
             autotune_type=autotune_type,
+            cached_fw_trace=fw_extrace,
             visualizer=visualizer
         )
     else:

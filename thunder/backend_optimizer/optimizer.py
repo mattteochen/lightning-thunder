@@ -37,7 +37,7 @@ class BackendOptimizer():
     def log(self, what: str):
         print(f'================================================================================ Autotune: {what}')
 
-    def __init__(self, trace: TraceCtx, priority_executors: Sequence[Executor], trace_type: TraceType, produce_log=True, log_file_name='autotune_debug.log', visualizer: Visualizer | None = None, optimizer_type: OptimizerType = OptimizerType.RUNTIME) -> None:
+    def __init__(self, trace: TraceCtx, priority_executors: Sequence[Executor], trace_type: TraceType, cached_fw_trace: TraceCtx | None = None, produce_log=True, log_file_name='autotune_debug.log', visualizer: Visualizer | None = None, optimizer_type: OptimizerType = OptimizerType.RUNTIME) -> None:
         from thunder.core.transform_common import dce
         # Add more supported ones
         self.trace: TraceCtx = dce(trace)
@@ -51,8 +51,7 @@ class BackendOptimizer():
         self.log_file_name: str = log_file_name
         self.optimal_trace_mem: TraceCtx = trace
         self.optimal_trace_time: TraceCtx = trace
-        self.cached_optimal_fw_trace_mem: TraceCtx | None = None
-        self.cached_optimal_fw_trace_time: TraceCtx | None = None
+        self.cached_optimal_fw_trace: TraceCtx | None = None
         self.optimized_traces_mem: list[dict[str | Hashable, TraceCtx]] = []
         self.optimized_traces_mem_benchmark_only: list[dict[str | Hashable, TraceCtx]] = []
         self.optimized_traces_time: list[dict[str | Hashable, TraceCtx]] = []
@@ -72,7 +71,7 @@ class BackendOptimizer():
             self.log(f'New forward trace to optimize (strat = {self.optimizer_type}):\n{self.trace}')
         else:
             self.log(f'New backward trace to optimize (strat = {self.optimizer_type}):\n{self.trace}')
-            if self.cached_optimal_fw_trace_mem is None or self.cached_optimal_fw_trace_time is None:
+            if self.cached_optimal_fw_trace is None:
                 raise AssertionError('Optimized forward trace not available. Backward trace optimization rely on optimized forward trace')
         self.log('Executors:')
         for o in self.executors:
@@ -686,8 +685,7 @@ class BackendOptimizer():
 
                     # Benchmark this placement
                     trc, keys, placements = get_placed_trace(dict_time_strat, increasing_symbols)
-                    # None values for cached fw traces are checked in the constructor
-                    _, trc = rematerialize_forward_and_backward(self.cached_optimal_fw_trace_time if self.strat == OptimizerType.RUNTIME else self.cached_optimal_fw_trace_mem, trc)
+                    _, trc = rematerialize_forward_and_backward(self.cached_optimal_fw_trace, trc)
                     cost, mem, out = benchmark_trace(trc, iters=3)
                     del out
                     self.log(f'Placed trace (cost = {cost} ms, mem = {mem/(2**30)} GB)\n{trc}')
