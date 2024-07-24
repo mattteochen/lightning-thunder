@@ -688,9 +688,14 @@ class BackendOptimizer():
                     # for k in range(i+1, len(group), increment_factor):
                     #     match_bsym_output(group[k], dict_time_strat, dict_mem_strat, get_default_executor(group[k]))
 
-                    #Assign all to fuser
-                    for j in range(len(group)):
-                        match_bsym_output(group[j], dict_time_strat, dict_mem_strat, ex)
+                    if i == 0:
+                        #Assign all to fuser
+                        for j in range(len(group)):
+                            match_bsym_output(group[j], dict_time_strat, dict_mem_strat, ex)
+                    else:
+                        #Assign all to default
+                        for j in range(len(group)):
+                            match_bsym_output(group[j], dict_time_strat, dict_mem_strat, get_default_executor(group[j]))
 
                     # Benchmark this placement
                     trc, keys, placements = get_placed_trace(dict_time_strat, increasing_symbols)
@@ -746,7 +751,8 @@ class BackendOptimizer():
                     #     best_keys_mem = keys
                     # if mem > worst_res_mem.measure:
                     #     worst_res_mem.measure = mem
-                    break
+                    if i >= 2:
+                        break
 
                 if best_placement_time is None or best_keys_time is None:
                     raise AssertionError('Failed to get best placement')
