@@ -1612,8 +1612,8 @@ def eval_trace(trace, *args, symbol_mapper=symbol_to_eval, with_env=False, **kwa
             print(f'{b.sym.name}, out: {b.output.name}, args:{b.args}')
         else:
             print(f'{b.sym.name}, args:{b.args}')
-    print('args')
     print(args)
+    print('args')
     print('kwargs')
     print(kwargs)
     print('################## EVAL TRACE END')
@@ -1655,6 +1655,9 @@ def eval_trace(trace, *args, symbol_mapper=symbol_to_eval, with_env=False, **kwa
 
     if with_env:
         return tree_map(read, trace.output), env
+
+    ret = tree_map(read, trace.output)
+    print(f'ret type {type(ret)}')
 
     return tree_map(read, trace.output)
 
