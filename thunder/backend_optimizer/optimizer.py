@@ -587,6 +587,11 @@ class BackendOptimizer():
                 raise AssertionError(f'len trc.bound_symbols ({len(trc.bound_symbols)}) != len executor_configuration ({len(executor_configuration)}) != len keys ({len(keys)})')
 
             # self.log(f'Before placement trc:\n{trc}')
+
+            for b, e in zip(trc.bound_symbols, executor_configuration):
+                if isinstance(b.output, TensorProxy):
+                    print(f'{b.sym.name}: {b.output.name} -> {e.name}')
+
             placed_trace = self.place_optimizers(trc, executor_configuration)
             return placed_trace, keys, executor_configuration
 
