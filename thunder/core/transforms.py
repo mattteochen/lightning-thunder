@@ -1657,7 +1657,7 @@ def eval_trace(trace, *args, symbol_mapper=symbol_to_eval, with_env=False, **kwa
         return tree_map(read, trace.output), env
 
     ret = tree_map(read, trace.output)
-    print(f'ret type {type(ret)}')
+    print(f'ret type {type(ret)}: {ret}')
 
     return tree_map(read, trace.output)
 
