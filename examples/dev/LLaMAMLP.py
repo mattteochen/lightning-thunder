@@ -21,7 +21,7 @@ with torch.device('cuda'):
     b = 11008 * mult
     x = torch.randn(2, 2048, a, requires_grad=True)
     model = LLaMAMLP(a, b)
-    jmodel_def = thunder.jit(model)
+    jmodel_def = thunder.jit(model, executors=['torchcompile', 'nvfuser'])
     jmodel_auto = thunder.jit(model, autotune_type='runtime')
 
     y = model(x)

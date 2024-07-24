@@ -39,6 +39,7 @@ with torch.device('cuda'):
     model = MLP(config)
 
     jmodel_def = thunder.jit(model)
+    # This model fails under some circumstances after passed the placed traced under the rematelizer
     jmodel_auto = thunder.jit(model, autotune_type='memory')
 
     y = model(x)
