@@ -1612,9 +1612,9 @@ def eval_trace(trace, *args, symbol_mapper=symbol_to_eval, with_env=False, **kwa
             return x
 
     def write(v: Variable, val: Any, allow_duplicates=False) -> None:
-        print(f'WRITE {v.name}')
         if not isinstance(v, Variable):
             return
+        print(f'WRITE {v.name}')
         # Duplicates are allowed and overwritten
         if v.name in env:
             if allow_duplicates:
