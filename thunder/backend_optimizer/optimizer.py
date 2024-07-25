@@ -15,7 +15,6 @@ from typing import Any, Hashable
 import thunder
 import thunder.core.transforms as transforms
 import torch
-# import concurrent.futures
 
 class OptimizerType(Enum):
     MEMORY = 0
@@ -587,6 +586,11 @@ class BackendOptimizer():
                 raise AssertionError(f'len trc.bound_symbols ({len(trc.bound_symbols)}) != len executor_configuration ({len(executor_configuration)}) != len keys ({len(keys)})')
 
             # self.log(f'Before placement trc:\n{trc}')
+
+            for b, e in zip(trc.bound_symbols, executor_configuration):
+                if isinstance(b.output, TensorProxy):
+                    print(f'{b.sym.name}: {b.output.name} -> {e.name}')
+
             placed_trace = self.place_optimizers(trc, executor_configuration)
             return placed_trace, keys, executor_configuration
 
@@ -674,16 +678,16 @@ class BackendOptimizer():
                 best_keys_time = None
                 best_placement_mem = None
                 best_keys_mem = None
-                for i in range(0, len(group)):
-                    # From top to bottom (this will include the whole region)
-                    # -> First iteration is the one with fusion region with single element
-                    # -> Last iteration gives the complete fusion region
-                    for j in range(0, i+1, increment_factor):
-                        match_bsym_output(group[j], dict_time_strat, dict_mem_strat, ex)
-                    for k in range(i+1, len(group), increment_factor):
-                        match_bsym_output(group[k], dict_time_strat, dict_mem_strat, get_default_executor(group[k]))
 
-                    # Benchmark this placement
+                def measure_and_update():
+                    nonlocal best_res_time
+                    nonlocal best_placement_time
+                    nonlocal best_keys_time
+                    nonlocal worst_res_time
+                    nonlocal best_res_mem
+                    nonlocal best_placement_mem
+                    nonlocal best_keys_mem
+                    nonlocal worst_res_mem
                     trc, keys, placements = get_placed_trace(dict_time_strat, increasing_symbols)
                     if self.trace_type == TraceType.BW and self.cached_optimal_fw_trace is not None:
                         _, trc = rematerialize_forward_and_backward(self.cached_optimal_fw_trace, trc)
@@ -705,6 +709,38 @@ class BackendOptimizer():
                         best_keys_mem = keys
                     if mem > worst_res_mem.measure:
                         worst_res_mem.measure = mem
+
+                start_idx = 0
+                # TODO: investigate why <prims.embedding_backward> is failing with torchcompile if left alone
+                if ex.name == 'torchcompile':
+                    last_embedding_idx = -1
+                    for idx in range(0, len(group)):
+                        if group[idx].sym.name == 'embedding_backward':
+                            last_embedding_idx = idx
+                    self.log(f'last embedding {last_embedding_idx}')
+                    if last_embedding_idx != -1:
+                        # Until last_embedding_idx (included) assigned to current fusion ex
+                        for i in range(0, last_embedding_idx+1, 1):
+                            match_bsym_output(group[i], dict_time_strat, dict_mem_strat, ex)
+
+                        if last_embedding_idx == len(group)-1:
+                            # Benchmark
+                            measure_and_update()
+
+                        start_idx = last_embedding_idx+1
+
+                n_missing_bsyms = len(group) - start_idx
+                for i in range(0, n_missing_bsyms):
+                    # From top to bottom (this will include the whole region)
+                    # -> First iteration is the one with fusion region with single element
+                    # -> Last iteration gives the complete fusion region
+
+                    for j in range(start_idx, start_idx+i+1, increment_factor):
+                        match_bsym_output(group[j], dict_time_strat, dict_mem_strat, ex)
+                    for k in range(start_idx+i+1, len(group), increment_factor):
+                        match_bsym_output(group[k], dict_time_strat, dict_mem_strat, get_default_executor(group[k+start_idx]))
+                    # Benchmark
+                    measure_and_update()
 
                     # TODO (matteochen): consider if this can increase placement
                     # From bottom to up (this will exclude the full region as being handled in the for cycle above)
@@ -755,18 +791,6 @@ class BackendOptimizer():
                 # Update our dict
                 for n, p in zip(best_keys_mem, best_placement_mem):
                     dict_mem_strat |= {n: p}
-
-            # self.log('End of group search')
-            # pprint.pprint(dict_time_strat)
-
-            # print('map cmp')
-            # for k in dict_time_strat.keys():
-            #     if k not in dict_mem_strat:
-            #         pprint.pprint(dict_time_strat)
-            #         pprint.pprint(dict_mem_strat)
-            #         raise AssertionError(f"cannot find {k}")
-            # pprint.pprint(dict_time_strat)
-            # pprint.pprint(dict_mem_strat)
 
             # Generate the placement
             executors_time = []
@@ -825,6 +849,7 @@ class BackendOptimizer():
             self.placement_options_time.append(executors_time)
             self.placement_options_mem.append(executors_mem)
 
+    # TODO (matteochen): sometimes, using best mem fw trace will generate best runtime bw trace. We should manage this case
     def get_optimal_trace(self) -> TraceCtx:
         if self.optimizer_type == OptimizerType.RUNTIME:
             return self.optimal_trace_time
