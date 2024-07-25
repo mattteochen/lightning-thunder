@@ -28,6 +28,7 @@ from thunder.core.proxies import (
     Proxy,
     TensorProxy,
     FloatProxy,
+    tensorproxy,
     variableify,
     unvariableify,
     CollectionProxy,
@@ -1602,26 +1603,6 @@ def eval_trace(trace, *args, symbol_mapper=symbol_to_eval, with_env=False, **kwa
     Returns:
         result of evaluating the trace
     """
-
-    if len(trace.bound_symbols) == 1 and trace.bound_symbols[0].sym.name == 'return':
-        print('LEN 1')
-
-    print('################## EVAL TRACE START')
-    print('TRACE')
-    print(trace)
-    print('TRACE BSYM')
-    for b in trace.bound_symbols:
-        if isinstance(b.output, TensorProxy):
-            print(f'TensorProxy-->{b.sym.name}, out: {b.output.name}, args:{b.args}')
-        else:
-            print(f'Else-->{b.sym.name}, args:{b.args}')
-        print('---------------')
-    print('args')
-    print(args)
-    print('kwargs')
-    print(kwargs)
-    print('################## EVAL TRACE END')
-
     env = {}
 
     def read(x: Variable):
@@ -1633,7 +1614,6 @@ def eval_trace(trace, *args, symbol_mapper=symbol_to_eval, with_env=False, **kwa
     def write(v: Variable, val: Any, allow_duplicates=False) -> None:
         if not isinstance(v, Variable):
             return
-        print(f'WRITE {v.name}')
         # Duplicates are allowed and overwritten
         if v.name in env:
             if allow_duplicates:
@@ -1642,9 +1622,7 @@ def eval_trace(trace, *args, symbol_mapper=symbol_to_eval, with_env=False, **kwa
         env[v.name] = val
 
     safe_map_flat(write, list(trace.args), list(args))
-    print('END FIRST WRITE')
     safe_map_flat(write, list(trace.kwargs.values()), list(kwargs.values()))
-    print('END SECOND WRITE')
 
     for symbol in trace.bound_symbols:
         if symbol.sym.id in transform_skip_list:
@@ -1659,9 +1637,6 @@ def eval_trace(trace, *args, symbol_mapper=symbol_to_eval, with_env=False, **kwa
 
     if with_env:
         return tree_map(read, trace.output), env
-
-    ret = tree_map(read, trace.output)
-    print(f'ret type {type(ret)}: {ret}')
 
     return tree_map(read, trace.output)
 
