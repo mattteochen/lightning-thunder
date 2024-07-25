@@ -1616,8 +1616,8 @@ def eval_trace(trace, *args, symbol_mapper=symbol_to_eval, with_env=False, **kwa
         else:
             print(f'Else-->{b.sym.name}, args:{b.args}')
         print('---------------')
-    print(args)
     print('args')
+    print(args)
     print('kwargs')
     print(kwargs)
     print('################## EVAL TRACE END')
