@@ -28,7 +28,6 @@ from thunder.core.proxies import (
     Proxy,
     TensorProxy,
     FloatProxy,
-    tensorproxy,
     variableify,
     unvariableify,
     CollectionProxy,

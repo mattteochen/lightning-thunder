@@ -3,7 +3,6 @@ from typing import TYPE_CHECKING
 
 import torch
 
-from thunder.backend_optimizer.optimizer import benchmark_trace
 import thunder.core.utils as utils
 from thunder.core.prims import PrimIDs
 from thunder.core.proxies import TensorProxy, variableify
