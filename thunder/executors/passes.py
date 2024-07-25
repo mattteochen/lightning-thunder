@@ -136,13 +136,11 @@ def _transform_for_operator_executor_execution(trace: TraceCtx, executors_list: 
     return extrace
 
 # Autotuned transform_for_execution version
-def autotune_transform_for_execution(trace: TraceCtx, executors_list: Sequence[Executor], trace_type: TraceType, autotune_type: OptimizerType, cached_fw_trace: TraceCtx | None = None, visualizer: Visualizer | None = None) -> TraceCtx:
+def autotune_transform_for_execution(trace: TraceCtx, executors_list: Sequence[Executor], trace_type: TraceType, autotune_type: OptimizerType, cached_fw_trace: list[TraceCtx] = [], visualizer: Visualizer | None = None) -> tuple[TraceCtx, TraceCtx]:
     import torch
 
     # Recover the function name
     sig_name = cutils.get_siginfo_name(trace)
-
-    start_time_ns = time.perf_counter_ns()
 
     if torch.distributed.is_available():
         # Apply AllReduce bucketing if possible & needed
@@ -150,20 +148,21 @@ def autotune_transform_for_execution(trace: TraceCtx, executors_list: Sequence[E
 
         trace = apply_bucketing_to_grad_allreduce(trace)
 
-    trace = dce(trace)
-
     backend_optimizer = BackendOptimizer(trace, executors_list, trace_type, cached_fw_trace=cached_fw_trace, produce_log=True, log_file_name=f'autotune_transform_for_execution_{sig_name}.log', visualizer=visualizer, optimizer_type=autotune_type)
     backend_optimizer.optimize()
     backend_optimizer.benchmark_traces()
-    extrace = backend_optimizer.get_optimal_trace()
-
-    end_time_ns = time.perf_counter_ns()
-    elapsed_time_ns = end_time_ns - start_time_ns
-    elapsed_time_millis = elapsed_time_ns // 1000000
-
-    extrace.set_provenance(TraceProvenance(f"Autotuned transform for execution (strat: {autotune_type}) (took {elapsed_time_millis} milliseconds)"))
-    return extrace
-
+    # If in forward mode, we return both the runtime and memory optimized traces as they might influence differently on the backward pass
+    if trace_type == TraceType.FW:
+        fw_extrace_best_time, fw_extrace_best_mem = backend_optimizer.get_optimal_fw_traces_time_and_mem()
+        fw_extrace_best_time.set_provenance(TraceProvenance(f"Autotuned transform for execution (strat: {autotune_type}) (took {backend_optimizer.fw_trace_candidates.time_took} milliseconds)"))
+        fw_extrace_best_mem.set_provenance(TraceProvenance(f"Autotuned transform for execution (strat: {autotune_type}) (took {backend_optimizer.fw_trace_candidates.time_took} milliseconds)"))
+        return fw_extrace_best_time, fw_extrace_best_mem
+    # When optimizing the backward pass, the optimizer will return the best fw and bw traces based on the requested autotune_type, no need to choose the fw pass manually
+    else:
+        fw_extrace, bw_extrace = backend_optimizer.get_optimal_fw_bw_traces()
+        bw_extrace.set_provenance(TraceProvenance(f"Autotuned transform for execution (strat: {autotune_type}) (took {backend_optimizer.bw_trace_candidates.time_took} milliseconds)"))
+        # These are the optimal for the requested autotune_type
+        return fw_extrace, bw_extrace
 
 def transform_for_execution(trace: TraceCtx, executors_list: Sequence[Executor]) -> TraceCtx:
     import torch

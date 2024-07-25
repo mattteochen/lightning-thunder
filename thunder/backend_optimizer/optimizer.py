@@ -15,6 +15,7 @@ from typing import Any, Hashable
 import thunder
 import thunder.core.transforms as transforms
 import torch
+import time
 
 class OptimizerType(Enum):
     MEMORY = 0
@@ -32,14 +33,45 @@ class OptimizerNode():
     def add_candidate(self, ex: Executor, benchmark: float):
         self.candidate_executors[ex] = benchmark
 
+class TraceCandidates():
+    def __init__(self, best_time: TraceCtx | None = None, best_mem: TraceCtx | None = None) -> None:
+        self.best_time: TraceCtx | None = best_time
+        self.best_mem: TraceCtx | None = best_mem
+        self.time_took: float = 0
+
+    def __repr__(self) -> str:
+        return f'\nBest runtime candidate:\n{self.best_time}\nBest memory candidate:\n{self.best_mem}'
+
+    def attach_best_time_candidate(self, trace: TraceCtx):
+        self.best_time = trace
+
+    def attach_best_mem_candidate(self, trace: TraceCtx):
+        self.best_mem = trace
+
+    def assign_time_took(self, time: float):
+        self.time_took = time
+
+    def to_list(self) -> list[TraceCtx | None]:
+        return [self.best_time, self.best_mem]
+
+# TODO .......
+class OutputCandidates():
+    def __init__(self, fw: TraceCtx, bw: TraceCtx) -> None:
+        self.fw: TraceCtx = fw
+        self.bw: TraceCtx = bw
+
 class BackendOptimizer():
     def log(self, what: str):
         print(f'================================================================================ Autotune: {what}')
 
-    def __init__(self, trace: TraceCtx, priority_executors: Sequence[Executor], trace_type: TraceType, cached_fw_trace: TraceCtx | None = None, produce_log=True, log_file_name='autotune_debug.log', visualizer: Visualizer | None = None, optimizer_type: OptimizerType = OptimizerType.RUNTIME) -> None:
+    def __init__(self, trace: TraceCtx, priority_executors: Sequence[Executor], trace_type: TraceType, cached_fw_traces: list[TraceCtx] = [], produce_log=True, log_file_name='autotune_debug.log', visualizer: Visualizer | None = None, optimizer_type: OptimizerType = OptimizerType.RUNTIME) -> None:
         from thunder.core.transform_common import dce
-        # Add more supported ones
-        self.trace: TraceCtx = dce(trace)
+
+        if cached_fw_traces:
+            if len(cached_fw_traces) != 2:
+                raise AssertionError(f'Expected 2 cached forward traces (received {len(cached_fw_traces)})')
+
+        self.trace: TraceCtx = dce(trace) if trace_type == TraceType.FW else trace
         self.always_executors: tuple[Executor, ...] = get_always_executors()
         self.computation_graph: Graph = Graph(trace)
         self.debug_msg: str = ""
@@ -48,9 +80,9 @@ class BackendOptimizer():
         self.fusion_executors: Sequence[FusionExecutor] = [ex for ex in self.executors if isinstance(ex, FusionExecutor)]
         self.incremental_search_out_trace: TraceCtx
         self.log_file_name: str = log_file_name
-        self.optimal_trace_mem: TraceCtx = trace
-        self.optimal_trace_time: TraceCtx = trace
-        self.cached_optimal_fw_trace: TraceCtx | None = cached_fw_trace
+        self.fw_trace_candidates: TraceCandidates = TraceCandidates(cached_fw_traces[0] if cached_fw_traces else None, cached_fw_traces[1] if cached_fw_traces else None)
+        self.bw_trace_candidates: TraceCandidates = TraceCandidates()
+        self.cached_fw_trace: TraceCtx | None = None
         self.optimized_traces_mem: list[dict[str | Hashable, TraceCtx]] = []
         self.optimized_traces_mem_benchmark_only: list[dict[str | Hashable, TraceCtx]] = []
         self.optimized_traces_time: list[dict[str | Hashable, TraceCtx]] = []
@@ -70,8 +102,6 @@ class BackendOptimizer():
             self.log(f'New forward trace to optimize (strat = {self.optimizer_type}):\n{self.trace}')
         else:
             self.log(f'New backward trace to optimize (strat = {self.optimizer_type}):\n{self.trace}')
-            if self.cached_optimal_fw_trace is None:
-                raise AssertionError('Optimized forward trace not available. Backward trace optimization rely on optimized forward trace')
         self.log('Executors:')
         for o in self.executors:
             self.log(f'{o.name} -> is operator = {isinstance(o, OperatorExecutor)}, is fusion = {isinstance(o, FusionExecutor)}')
@@ -454,10 +484,11 @@ class BackendOptimizer():
     # TODO (matteochen): add config for exaustive search or incremental one
     def optimize(self, strat: OptimizationStrat = OptimizationStrat.BEST_FUSER):
         import thunder.core.codeutils as cutils
+        from thunder.executors.passes import transform_for_execution
+        from thunder.core.transform_common import replace_redundant_inputs
 
         self.strat = strat
 
-        from thunder.executors.passes import transform_for_execution
         def best_fuser():
             self.build_placement_options_fusion_regions()
 
@@ -513,14 +544,64 @@ class BackendOptimizer():
 
                 self.optimized_traces.append({option_str: trace})
 
-        if strat == self.OptimizationStrat.GREEDY:
-            greedy()
-        elif strat == self.OptimizationStrat.EXAUSTIVE:
-            exaustive()
-        elif strat == self.OptimizationStrat.BEST_FUSER:
-            best_fuser()
+        def call_optimizer():
+            if self.strat == self.OptimizationStrat.GREEDY:
+                greedy()
+            elif self.strat == self.OptimizationStrat.EXAUSTIVE:
+                exaustive()
+            else:
+                best_fuser()
+
+        start_time = time.perf_counter_ns()
+
+        # We have multiple cached optimized fw traces, find the best backward
+        if self.trace_type == TraceType.BW:
+            fw_traces = self.fw_trace_candidates.to_list()
+            # Cached the bw trace
+            cached_self_trace = from_trace(self.trace)
+            cached_self_trace.bound_symbols = list(self.trace.bound_symbols)
+            for t in fw_traces:
+                # Restore the original bw trace
+                self.trace = from_trace(cached_self_trace)
+                self.trace.bound_symbols = list(cached_self_trace.bound_symbols)
+                # Set the current active cached forward trace
+                self.cached_fw_trace = t
+
+                # Some of the optimization passes change proxies in the trace and
+                # any change in the forward trace must be reflected in the backward
+                # trace.
+                original_bw_saved_tensors_for_backward = self.trace.args[0][0]
+                new_fw_saved_tensors_for_backward = t.output[1][0]
+                swap_map = {
+                    variableify(x): y
+                    for x, y in zip(original_bw_saved_tensors_for_backward, new_fw_saved_tensors_for_backward)
+                    if variableify(x) != variableify(y)
+                }
+                new_bsyms = replace_redundant_inputs(swap_map, self.trace.bound_symbols)
+                # replace_redundant_inputs doesn't replace the output of
+                # UNPACK_SEQUENCE so we do it manually. Here we have certain
+                # assumptions about the structure of the backward trace.
+                assert self.trace.bound_symbols[0].sym.id == PrimIDs.UNPACK_TRIVIAL
+                assert self.trace.bound_symbols[0].kwargs["name"] == "saved_for_backward"
+                assert self.trace.bound_symbols[4].sym.id == PrimIDs.UNPACK_SEQUENCE
+                assert self.trace.bound_symbols[4].args[0].name == "C0"
+                new_bsyms[4] = new_bsyms[4].from_bsym_swap_proxies(
+                    swap_map,
+                    skip_inputs=False,
+                    skip_output=False,
+                    skip_subsymbols=False,
+                )
+                self.trace.bound_symbols = new_bsyms
+
+                call_optimizer()
         else:
-            raise AssertionError('Optimization strat not implemented')
+            call_optimizer()
+
+        end_time = time.perf_counter_ns()
+        if self.trace_type == TraceType.FW:
+            self.fw_trace_candidates.assign_time_took((end_time - start_time) // 1000000)
+        else:
+            self.bw_trace_candidates.assign_time_took((end_time - start_time) // 1000000)
 
     def build_placement_options_fusion_regions(self, increment_factor:int = 1):
         from thunder.executors.data_dependent_partition import Node, fuse_bound_symbols
@@ -689,8 +770,8 @@ class BackendOptimizer():
                     nonlocal best_keys_mem
                     nonlocal worst_res_mem
                     trc, keys, placements = get_placed_trace(dict_time_strat, increasing_symbols)
-                    if self.trace_type == TraceType.BW and self.cached_optimal_fw_trace is not None:
-                        _, trc = rematerialize_forward_and_backward(self.cached_optimal_fw_trace, trc)
+                    if self.trace_type == TraceType.BW and self.cached_fw_trace is not None:
+                        _, trc = rematerialize_forward_and_backward(self.cached_fw_trace, trc)
                     cost, mem, out = benchmark_trace(trc, iters=3)
                     del out
                     self.log(f'Placed trace (cost = {cost} ms, mem = {mem/(2**30)} GB)\n{trc}')
@@ -833,13 +914,13 @@ class BackendOptimizer():
                 self.optimized_traces_time_benchmark_only.append({ex.name: trc})
             else:
                 trc = self.place_optimizers(self.trace, executors_mem)
-                _, trc = rematerialize_forward_and_backward(self.cached_optimal_fw_trace, trc)
+                _, trc = rematerialize_forward_and_backward(self.cached_fw_trace, trc)
                 c, m, o = benchmark_trace(trc)
                 del o
                 self.log(f'Debug MEM, mem = {m/(2**30)} GB:\n{trc}')
                 self.optimized_traces_mem_benchmark_only.append({ex.name: trc})
                 trc = self.place_optimizers(self.trace, executors_time)
-                _, trc = rematerialize_forward_and_backward(self.cached_optimal_fw_trace, trc)
+                _, trc = rematerialize_forward_and_backward(self.cached_fw_trace, trc)
                 c, m, o = benchmark_trace(trc)
                 del o
                 self.log(f'Debug TIME, time = {c} ms:\n{trc}')
@@ -849,12 +930,11 @@ class BackendOptimizer():
             self.placement_options_time.append(executors_time)
             self.placement_options_mem.append(executors_mem)
 
-    # TODO (matteochen): sometimes, using best mem fw trace will generate best runtime bw trace. We should manage this case
-    def get_optimal_trace(self) -> TraceCtx:
-        if self.optimizer_type == OptimizerType.RUNTIME:
-            return self.optimal_trace_time
-        else:
-            return self.optimal_trace_mem
+    def get_optimal_fw_traces_time_and_mem(self) -> tuple[TraceCtx, TraceCtx]:
+        return self.optimal_trace_time, self.optimal_trace_mem
+
+    def get_optimal_fw_bw_traces(self) -> tuple[TraceCtx, TraceCtx]:
+        return None
 
     def bsym_assigned(self, bsym: BoundSymbol) -> bool:
         return isinstance(bsym.sym.executor, OperatorExecutor) or isinstance(bsym.sym.executor, FusionExecutor)
@@ -932,7 +1012,6 @@ class BackendOptimizer():
         del o
         self.log(f'best mem: {c} ms,  {m/(2**30)} GB')
 
-        # TODO (matteochen): use time or mem strat
         if self.strat == self.OptimizationStrat.GREEDY:
             self.optimal_trace_time = tm.trace
             self.optimal_trace_mem = mem.trace
@@ -941,15 +1020,20 @@ class BackendOptimizer():
             t = None
             for _, v in d.items():
                 t = v
-            self.optimal_trace_time = t
+            if t is None:
+                raise AssertionError('None trace')
+            if self.trace_type == TraceType.FW:
+                self.fw_trace_candidates.attach_best_time_candidate(t)
             d = self.optimized_traces_mem[mem.index]
             t = None
             for _, v in d.items():
                 t = v
-            self.optimal_trace_mem = t
+            if t is None:
+                raise AssertionError('None trace')
+            if self.trace_type == TraceType.FW:
+                self.fw_trace_candidates.attach_best_mem_candidate(t)
 
-        self.log(f'Saved best trace time:\n{self.optimal_trace_time}')
-        self.log(f'Saved best trace mem:\n{self.optimal_trace_mem}')
+        self.log(self.fw_trace_candidates.__repr__())
 
         if self.produce_log:
             with open(self.log_file_name, 'w') as file:

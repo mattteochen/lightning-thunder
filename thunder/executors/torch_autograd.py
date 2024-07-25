@@ -112,7 +112,7 @@ def split_forward_backward(computation_trc: TraceCtx, compile_data, compile_stat
     from thunder.distributed.utils import sort_data_parallel_syncs, sort_waits, sort_communication_ops
     from thunder.executors.passes import del_last_used, transform_for_execution, autotune_transform_for_execution
     from thunder.visualizer.visualizer_helper import Visualizer
-    from thunder.backend_optimizer.optimizer import TraceType
+    from thunder.backend_optimizer.optimizer import BackendOptimizer, TraceType
 
     visualizer = Visualizer(produce_hidden=False)
 
@@ -170,47 +170,52 @@ def split_forward_backward(computation_trc: TraceCtx, compile_data, compile_stat
     # TODO Restore request for no rematerialization
 
     visualizer.set_fw_initial_trace(fw_trace)
+    fw_extrace_candidates: list[TraceCtx] = []
     if autotune_type is not None:
-        fw_extrace = autotune_transform_for_execution(
+        fw_extrace_candidates = list(autotune_transform_for_execution(
             fw_trace,
             executors_list=compile_data.executors_list,
             trace_type=TraceType.FW,
             autotune_type=autotune_type,
             visualizer=visualizer
-        )
+        ))
     else:
-        fw_extrace = transform_for_execution(
+        fw_extrace_candidates.append(transform_for_execution(
             fw_trace,
             executors_list=compile_data.executors_list
-        )
-    fw_traces.append(fw_extrace)
-    visualizer.set_fw_optimized_trace(fw_extrace)
+        ))
 
-    # Some of the optimization passes change proxies in the trace and
-    # any change in the forward trace must be reflected in the backward
-    # trace.
-    original_bw_saved_tensors_for_backward = bw_trace.args[0][0]
-    new_fw_saved_tensors_for_backward = fw_extrace.output[1][0]
-    swap_map = {
-        variableify(x): y
-        for x, y in zip(original_bw_saved_tensors_for_backward, new_fw_saved_tensors_for_backward)
-        if variableify(x) != variableify(y)
-    }
-    new_bsyms = replace_redundant_inputs(swap_map, bw_trace.bound_symbols)
-    # replace_redundant_inputs doesn't replace the output of
-    # UNPACK_SEQUENCE so we do it manually. Here we have certain
-    # assumptions about the structure of the backward trace.
-    assert bw_trace.bound_symbols[0].sym.id == PrimIDs.UNPACK_TRIVIAL
-    assert bw_trace.bound_symbols[0].kwargs["name"] == "saved_for_backward"
-    assert bw_trace.bound_symbols[4].sym.id == PrimIDs.UNPACK_SEQUENCE
-    assert bw_trace.bound_symbols[4].args[0].name == "C0"
-    new_bsyms[4] = new_bsyms[4].from_bsym_swap_proxies(
-        swap_map,
-        skip_inputs=False,
-        skip_output=False,
-        skip_subsymbols=False,
-    )
-    bw_trace.bound_symbols = new_bsyms
+    # If in default mode, otherwise the best fw will be returned only at the end
+    if autotune_type is None:
+        fw_traces.append(fw_extrace_candidates[0])
+
+    # Autotuner will take care of this
+    if autotune_type is None:
+        # Some of the optimization passes change proxies in the trace and
+        # any change in the forward trace must be reflected in the backward
+        # trace.
+        original_bw_saved_tensors_for_backward = bw_trace.args[0][0]
+        new_fw_saved_tensors_for_backward = fw_extrace.output[1][0]
+        swap_map = {
+            variableify(x): y
+            for x, y in zip(original_bw_saved_tensors_for_backward, new_fw_saved_tensors_for_backward)
+            if variableify(x) != variableify(y)
+        }
+        new_bsyms = replace_redundant_inputs(swap_map, bw_trace.bound_symbols)
+        # replace_redundant_inputs doesn't replace the output of
+        # UNPACK_SEQUENCE so we do it manually. Here we have certain
+        # assumptions about the structure of the backward trace.
+        assert bw_trace.bound_symbols[0].sym.id == PrimIDs.UNPACK_TRIVIAL
+        assert bw_trace.bound_symbols[0].kwargs["name"] == "saved_for_backward"
+        assert bw_trace.bound_symbols[4].sym.id == PrimIDs.UNPACK_SEQUENCE
+        assert bw_trace.bound_symbols[4].args[0].name == "C0"
+        new_bsyms[4] = new_bsyms[4].from_bsym_swap_proxies(
+            swap_map,
+            skip_inputs=False,
+            skip_output=False,
+            skip_subsymbols=False,
+        )
+        bw_trace.bound_symbols = new_bsyms
 
     if getattr(compile_data.fn, "use_fsdp", False):
         bw_trace = _fsdp_comm_bucketing.apply_bucketing_to_backward_trace(bw_trace)
