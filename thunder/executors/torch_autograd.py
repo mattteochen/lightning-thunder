@@ -3,6 +3,7 @@ from typing import TYPE_CHECKING
 
 import torch
 
+from thunder.backend_optimizer.optimizer import OptimizerType
 import thunder.core.utils as utils
 from thunder.core.prims import PrimIDs
 from thunder.core.proxies import TensorProxy, variableify
@@ -112,9 +113,7 @@ def split_forward_backward(computation_trc: TraceCtx, compile_data, compile_stat
     from thunder.distributed.utils import sort_data_parallel_syncs, sort_waits, sort_communication_ops
     from thunder.executors.passes import del_last_used, transform_for_execution, autotune_transform_for_execution
     from thunder.visualizer.visualizer_helper import Visualizer
-    from thunder.backend_optimizer.optimizer import BackendOptimizer, TraceType
-
-    visualizer = Visualizer(produce_hidden=False)
+    from thunder.backend_optimizer.optimizer import TraceType, BackendOptimizer
 
     utils.check(compile_data is not None, lambda: "`compile_data` is required")
     # NOTE: This function is rather slow, so it's intended to be used
@@ -166,31 +165,38 @@ def split_forward_backward(computation_trc: TraceCtx, compile_data, compile_stat
         _fsdp_comm_bucketing = FSDPCommBucketing(compile_data, computation_trc)
         fw_trace = _fsdp_comm_bucketing.apply_bucketing_to_forward_trace(fw_trace)
 
+    do_apply_bucketing_bw_trace: bool = getattr(compile_data.fn, "use_fsdp", False)
+
     # Now we can run the optimization passes on the forward trace
-    # TODO Restore request for no rematerialization
+    visualizer = Visualizer(produce_hidden=False)
+    backend_optimizer_ctx: BackendOptimizer | None = (
+        None
+        if autotune_type is None
+        else BackendOptimizer(
+            priority_executors=compile_data.executors_list,
+            apply_bucketing_bw_trace=do_apply_bucketing_bw_trace,
+            produce_log=True,
+            visualizer=visualizer,
+            optimizer_type=autotune_type,
+        )
+    )
 
     visualizer.set_fw_initial_trace(fw_trace)
-    fw_extrace_candidates: list[TraceCtx] = []
-    if autotune_type is not None:
-        fw_extrace_candidates = list(autotune_transform_for_execution(
-            fw_trace,
-            executors_list=compile_data.executors_list,
-            trace_type=TraceType.FW,
-            autotune_type=autotune_type,
-            visualizer=visualizer
-        ))
-    else:
-        fw_extrace_candidates.append(transform_for_execution(
-            fw_trace,
-            executors_list=compile_data.executors_list
-        ))
+    # Get optimzied fw trace
+    fw_extrace = (
+        transform_for_execution(fw_trace, executors_list=compile_data.executors_list)
+        if autotune_type is None
+        else autotune_transform_for_execution(
+            optimizer_context=backend_optimizer_ctx, trace=fw_trace, trace_type=TraceType.FW
+        )
+    )
 
     # If in default mode, otherwise the best fw will be returned only at the end
     if autotune_type is None:
-        fw_traces.append(fw_extrace_candidates[0])
+        fw_traces.append(fw_extrace)
+        visualizer.set_fw_optimized_trace(fw_extrace)
 
-    # Autotuner will take care of this
-    if autotune_type is None:
+        # NOTE: autotuner will take care of this
         # Some of the optimization passes change proxies in the trace and
         # any change in the forward trace must be reflected in the backward
         # trace.
@@ -217,21 +223,19 @@ def split_forward_backward(computation_trc: TraceCtx, compile_data, compile_stat
         )
         bw_trace.bound_symbols = new_bsyms
 
-    if getattr(compile_data.fn, "use_fsdp", False):
-        bw_trace = _fsdp_comm_bucketing.apply_bucketing_to_backward_trace(bw_trace)
+        if do_apply_bucketing_bw_trace:
+            bw_trace = _fsdp_comm_bucketing.apply_bucketing_to_backward_trace(bw_trace)
 
     # Now we can run the optimization passes on the backward trace
     # TODO Restore request for no rematerialization
+
     visualizer.set_bw_initial_trace(bw_trace)
     if autotune_type is not None:
-        bw_extrace = autotune_transform_for_execution(
-            bw_trace,
-            executors_list=compile_data.executors_list,
-            trace_type=TraceType.BW,
-            autotune_type=autotune_type,
-            cached_fw_trace=fw_extrace,
-            visualizer=visualizer
+        fw_extrace, bw_extrace = autotune_transform_for_execution(
+            optimizer_context=backend_optimizer_ctx, trace=bw_trace, trace_type=TraceType.BW
         )
+        fw_traces.append(fw_extrace)
+        visualizer.set_bw_optimized_trace(fw_extrace)
     else:
         bw_extrace = transform_for_execution(
             bw_trace,
@@ -240,6 +244,7 @@ def split_forward_backward(computation_trc: TraceCtx, compile_data, compile_stat
     bw_traces.append(bw_extrace)
     visualizer.set_bw_optimized_trace(bw_extrace)
 
+    # TODO Restore request for no rematerialization
     fw_extrace, bw_extrace = rematerialize_forward_and_backward(fw_extrace, bw_extrace)
     fw_traces.append(fw_extrace)
     bw_traces.append(bw_extrace)

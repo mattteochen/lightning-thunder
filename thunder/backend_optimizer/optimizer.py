@@ -9,7 +9,7 @@ from thunder.core.proxies import CollectionProxy, FloatProxy, IntegerProxy, Prox
 from thunder.core.symbol import BoundSymbol, Symbol
 from thunder.core.trace import from_trace, set_tracectx, reset_tracectx, get_tracectx, TraceCtx
 from thunder.executors.data_dependent_partition import Graph, Node
-from thunder.extend import Executor, FusionExecutor, OperatorExecutor, get_all_executors, get_always_executors, resolve_executors
+from thunder.extend import Executor, FusionExecutor, OperatorExecutor, get_always_executors, resolve_executors
 from thunder.visualizer.visualizer_helper import Visualizer
 from typing import Any, Hashable
 import thunder
@@ -17,15 +17,24 @@ import thunder.core.transforms as transforms
 import torch
 import time
 
+
 class OptimizerType(Enum):
     MEMORY = 0
     RUNTIME = 1
+
 
 class TraceType(Enum):
     FW = 0
     BW = 1
 
-class OptimizerNode():
+
+class OptimizationAlgorithm(Enum):
+    EXAUSTIVE = 0
+    GREEDY = 1
+    BEST_FUSER = 2
+
+
+class OptimizerNode:
     def __init__(self, node: Node):
         self.node: Node = node
         self.candidate_executors: dict[Hashable, float] = {}
@@ -33,14 +42,18 @@ class OptimizerNode():
     def add_candidate(self, ex: Executor, benchmark: float):
         self.candidate_executors[ex] = benchmark
 
-class TraceCandidates():
+
+class TraceCandidates:
     def __init__(self, best_time: TraceCtx | None = None, best_mem: TraceCtx | None = None) -> None:
         self.best_time: TraceCtx | None = best_time
         self.best_mem: TraceCtx | None = best_mem
         self.time_took: float = 0
 
     def __repr__(self) -> str:
-        return f'\nBest runtime candidate:\n{self.best_time}\nBest memory candidate:\n{self.best_mem}'
+        return f"\nBest runtime candidate:\n{self.best_time}\nBest memory candidate:\n{self.best_mem}"
+
+    def is_set(self) -> bool:
+        return False if self.best_time is None or self.best_mem is None else True
 
     def attach_best_time_candidate(self, trace: TraceCtx):
         self.best_time = trace
@@ -54,137 +67,180 @@ class TraceCandidates():
     def to_list(self) -> list[TraceCtx | None]:
         return [self.best_time, self.best_mem]
 
-# TODO .......
-class OutputCandidates():
-    def __init__(self, fw: TraceCtx, bw: TraceCtx) -> None:
+
+class FinalOutputCandidates:
+    def __init__(self, *, fw: TraceCtx, bw: TraceCtx, cost: float) -> None:
         self.fw: TraceCtx = fw
         self.bw: TraceCtx = bw
+        self.tot_cost: float = cost
 
-class BackendOptimizer():
-    def log(self, what: str):
-        print(f'================================================================================ Autotune: {what}')
+    def __repr__(self) -> str:
+        return f"Forward trace:\n{self.fw.__repr__()}\nBackward trace:{self.bw.__repr__()}"
 
-    def __init__(self, trace: TraceCtx, priority_executors: Sequence[Executor], trace_type: TraceType, cached_fw_traces: list[TraceCtx] = [], produce_log=True, log_file_name='autotune_debug.log', visualizer: Visualizer | None = None, optimizer_type: OptimizerType = OptimizerType.RUNTIME) -> None:
-        from thunder.core.transform_common import dce
 
-        if cached_fw_traces:
-            if len(cached_fw_traces) != 2:
-                raise AssertionError(f'Expected 2 cached forward traces (received {len(cached_fw_traces)})')
-
-        self.trace: TraceCtx = dce(trace) if trace_type == TraceType.FW else trace
-        self.always_executors: tuple[Executor, ...] = get_always_executors()
-        self.computation_graph: Graph = Graph(trace)
-        self.debug_msg: str = ""
-        self.empty_executor_hashable_placeholder: str = 'empty'
-        self.executors: Sequence[Executor] = resolve_executors(['nvfuser', 'torchcompile', 'sdpa', 'cudnn', 'torch', 'python'])
-        self.fusion_executors: Sequence[FusionExecutor] = [ex for ex in self.executors if isinstance(ex, FusionExecutor)]
-        self.incremental_search_out_trace: TraceCtx
-        self.log_file_name: str = log_file_name
-        self.fw_trace_candidates: TraceCandidates = TraceCandidates(cached_fw_traces[0] if cached_fw_traces else None, cached_fw_traces[1] if cached_fw_traces else None)
-        self.bw_trace_candidates: TraceCandidates = TraceCandidates()
-        self.cached_fw_trace: TraceCtx | None = None
+# Benchmark only traces will contain traces after the rematerialization call with fw and bw calls, reproducing what will be the real traces after the autotune pass
+# Non benchmark traces will contain traces after the placement (default) with no call to remat
+# We have duplciated those in order to maintain thunder compilation flow as the output from the autotuner will be the traces with no pass through rematerialization
+# TODO (matteochen): currently the GREEDY strat is using this data structure, fix this
+class FusionStratHelper:
+    def __init__(self) -> None:
+        self.supported_executors: set = set(["nvfuser", "torchcompile"])
         self.optimized_traces_mem: list[dict[str | Hashable, TraceCtx]] = []
         self.optimized_traces_mem_benchmark_only: list[dict[str | Hashable, TraceCtx]] = []
         self.optimized_traces_time: list[dict[str | Hashable, TraceCtx]] = []
         self.optimized_traces_time_benchmark_only: list[dict[str | Hashable, TraceCtx]] = []
-        self.partial_costs: dict[TraceCtx, float] = {}
+
+
+class ExecutorPlacementOptions:
+    def __init__(self) -> None:
         self.placement_options_mem: list[list[Executor]] = []
         self.placement_options_time: list[list[Executor]] = []
+
+
+class BackendOptimizer:
+    def log(self, what: str):
+        print(f"================================================================================ Autotune: {what}")
+
+    def __init__(
+        self,
+        *,
+        priority_executors: Sequence[Executor],
+        produce_log=True,
+        apply_bucketing_bw_trace: bool,
+        log_file_name="autotune_debug.log",
+        visualizer: Visualizer | None = None,
+        optimizer_type: OptimizerType = OptimizerType.RUNTIME,
+    ) -> None:
+        print(f"OO {optimizer_type}")
+        self.always_executors: tuple[Executor, ...] = get_always_executors()
+        self.empty_executor_hashable_placeholder: str = "empty"
+        self.executors: Sequence[Executor] = resolve_executors(
+            ["nvfuser", "torchcompile", "sdpa", "cudnn", "torch", "python"]
+        )
         self.priority_executors: Sequence[Executor] = priority_executors
-        self.produce_log: bool = produce_log
-        self.strat = None
-        self.supported_fusion_executors_by_fusion_strat: set = set(['nvfuser', 'torchcompile'])
+        self.fusion_executors: Sequence[FusionExecutor] = [
+            ex for ex in self.executors if isinstance(ex, FusionExecutor)
+        ]
+
+        self.debug_msg: str = ""
+        self.partial_costs: dict[TraceCtx, float] = {}
         self.visualizer: Visualizer | None = visualizer
+        self.log_file_name: str = log_file_name
+        self.produce_log: bool = produce_log
+
         self.optimizer_type: OptimizerType = optimizer_type
-        self.trace_type = trace_type
+        self.optimization_algorithm: OptimizationAlgorithm | None = None
 
-        if self.trace_type == TraceType.FW:
-            self.log(f'New forward trace to optimize (strat = {self.optimizer_type}):\n{self.trace}')
-        else:
-            self.log(f'New backward trace to optimize (strat = {self.optimizer_type}):\n{self.trace}')
-        self.log('Executors:')
-        for o in self.executors:
-            self.log(f'{o.name} -> is operator = {isinstance(o, OperatorExecutor)}, is fusion = {isinstance(o, FusionExecutor)}')
+        self.cached_fw_trace: TraceCtx | None = None
+        self.fw_trace_candidates: TraceCandidates = TraceCandidates()
+        self.bw_trace_candidates: TraceCandidates = TraceCandidates()
+        self.out: list[FinalOutputCandidates] = []
 
-    class OptimizationStrat(Enum):
-        EXAUSTIVE = 1
-        GREEDY = 2
-        BEST_FUSER = 3
+        # Strat greedy
+        self.computation_graph: Graph
+        self.incremental_search_out_trace: TraceCtx
 
-    # TODO (matteochen): fix this
-    def __repr__(self) -> str:
-        return ''
+        # Strat fusion
+        self.fusion_strat_helper: FusionStratHelper = FusionStratHelper()
+        self.executor_placement_options: ExecutorPlacementOptions = ExecutorPlacementOptions()
 
-    def write(self, file_name):
-        with open(file_name, 'w') as file:
-            s = self.__repr__()
-            file.write(s)
-            file.close()
+        self.apply_bucketing_bw_trace: bool = apply_bucketing_bw_trace
+
+        self.log("Executors:")
+        for e in self.executors:
+            self.log(
+                f"{e.name} -> is operator = {isinstance(e, OperatorExecutor)}, is fusion = {isinstance(e, FusionExecutor)}"
+            )
 
     class SearchNode:
-        def __init__(self, symbol: BoundSymbolInterface, idx: int)-> None:
+        def __init__(self, symbol: BoundSymbolInterface, idx: int) -> None:
             self.symbol = symbol
             self.idx = idx
 
-    class TraceType(Enum):
-        COMPUTATIONAL = 0
-        FW = 1
-        BW = 2
+    # Currently this manages both time and memory
+    class Result:
+        def __init__(self) -> None:
+            self.tm: float = float("inf")
+            self.mem: float = float("inf")
+            self.trace: TraceCtx | None = None
+            self.label: str | Hashable = ""
+            self.index = -1
+
+    def attach_cached_fw_traces(self, cached_fw_traces: TraceCandidates) -> None:
+        self.cached_fw_traces = cached_fw_traces
+
+    def attach_trace(self, *, trace: TraceCtx, trace_type: TraceType):
+        from thunder.core.transform_common import dce
+
+        self.trace_type = trace_type
+        # dce for the backward trace will be passed afterwards
+        self.trace: TraceCtx = dce(trace) if trace_type == TraceType.FW else trace
+
+        match self.trace_type:
+            case TraceType.FW:
+                self.log(f"New forward trace to optimize (strat = {self.optimizer_type}):\n{self.trace}")
+            # TODO (matteochen): support bw trace optimization even though with no fw traces cached
+            case TraceType.BW:
+                self.log(f"New backward trace to optimize (strat = {self.optimizer_type}):\n{self.trace}")
+                if not self.fw_trace_candidates.is_set():
+                    raise AssertionError("Can not optimize backward traces before forward traces")
 
     # TODO (matteochen): this has a lot in common with the exaustive search, compact them
-    def build_placement_options_incremental(self, whoami: TraceType = TraceType.COMPUTATIONAL):
+    def build_placement_options_incremental(self, whoami: TraceType = TraceType.FW):
         import sys
 
         old_max_recursion = sys.getrecursionlimit()
         sys.setrecursionlimit(2000)
 
         # Last index inclusive
-        def benchmark_partial_trace(trace_in: TraceCtx, last_idx: int, configuration: list[Executor]) -> tuple[float, TraceCtx]:
-
+        def benchmark_partial_trace(
+            trace_in: TraceCtx, last_idx: int, configuration: list[Executor]
+        ) -> tuple[float, TraceCtx]:
             def safe_update_dict(d: dict, key_one, key_two, value):
                 if key_one not in d:
-                    d[key_one] = {
-                        key_two: value
-                    }
+                    d[key_one] = {key_two: value}
                 else:
                     d[key_one][key_two] = value
 
             # Retrive all output tensors from each subregion
             tensors = []
-            for i in range(last_idx+1):
+            for i in range(last_idx + 1):
                 if not isinstance(trace_in.bound_symbols[i], BoundSymbol):
-                    raise AssertionError('Expected BoundSymbol but received BoundSymbolInterface')
+                    raise AssertionError("Expected BoundSymbol but received BoundSymbolInterface")
                 s = trace_in.bound_symbols[i]
                 # For each bsym region we expect to output a Tensor
                 tensors.append(s.output)
 
-            forced_return_bsym = trace_in.bound_symbols[-1].from_bsym(args=tensors) # Should not be an Interface type at this point
+            forced_return_bsym = trace_in.bound_symbols[-1].from_bsym(
+                args=tensors
+            )  # Should not be an Interface type at this point
 
             t = from_trace(trace_in)
             # Cut the trace to the required depth
-            t.bound_symbols = list(trace_in.bound_symbols)[:last_idx+1]
+            t.bound_symbols = list(trace_in.bound_symbols)[: last_idx + 1]
 
             t.bound_symbols.append(forced_return_bsym)
-            configuration.append(Executor(name=self.empty_executor_hashable_placeholder)) # Empty executor for the forced_return
+            configuration.append(
+                Executor(name=self.empty_executor_hashable_placeholder)
+            )  # Empty executor for the forced_return
 
             # Place the assigned symbols
             placed_t = self.place_optimizers(t, configuration)
 
             cost, mem, answer = benchmark_trace(placed_t, iters=5)
             del answer
-            self.log(f'Executing partial trace for incremental benchmark:\n{placed_t}')
-            self.log(f'Symbol under test = {t.bound_symbols[-2].sym.name}')
-            self.log(f'Assigned executor = {configuration[-2].name}')
-            self.log(f'Time = {cost} ms')
+            self.log(f"Executing partial trace for incremental benchmark:\n{placed_t}")
+            self.log(f"Symbol under test = {t.bound_symbols[-2].sym.name}")
+            self.log(f"Assigned executor = {configuration[-2].name}")
+            self.log(f"Time = {cost} ms")
             # TODO (matteochen): log this to file
             safe_update_dict(self.partial_costs, whoami, t, cost)
             return cost, placed_t
 
         # We assign an internal id to each symbol based on its idx inside the bound_symbols list
         def search(node: self.SearchNode, configuration: list[Executor]):
-
             def continue_search():
-                if node.idx+1 < max_len:
+                if node.idx + 1 < max_len:
                     new_idx: int = node.idx + 1
                     new_symbol: BoundSymbolInterface = bound_symbols[new_idx]
                     search(self.SearchNode(new_symbol, new_idx), configuration)
@@ -192,22 +248,22 @@ class BackendOptimizer():
                     all_configurations.append(configuration)
 
             has_backend = False
-            min_cost = float('inf')
+            min_cost = float("inf")
             min_cost_ex = None
             ex: Executor
             # TODO (matteochen): do parallel for
             for ex in self.executors:
-                cost = float('inf')
+                cost = float("inf")
                 if not isinstance(node.symbol, BoundSymbol):
                     raise AssertionError("Receive a symbol which is not a BoundSymbol")
-                if (isinstance(ex, OperatorExecutor) and ex.can_execute(node.symbol)):
+                if isinstance(ex, OperatorExecutor) and ex.can_execute(node.symbol):
                     has_backend = True
 
                     configuration.append(ex)
                     cost, _ = benchmark_partial_trace(self.trace, node.idx, list(configuration))
                     configuration.pop()
 
-                if (isinstance(ex, FusionExecutor) and ex.can_fuse(node.symbol)):
+                if isinstance(ex, FusionExecutor) and ex.can_fuse(node.symbol):
                     has_backend = True
 
                     configuration.append(ex)
@@ -224,7 +280,7 @@ class BackendOptimizer():
             else:
                 if min_cost_ex is None:
                     raise AssertionError("Unexpected min cost executor or trace: None")
-                self.log(f'\nFor id: {node.idx} - {node.symbol.sym.name} -> best backend {min_cost_ex.name}\n')
+                self.log(f"\nFor id: {node.idx} - {node.symbol.sym.name} -> best backend {min_cost_ex.name}\n")
                 configuration.append(min_cost_ex)
                 continue_search()
 
@@ -245,35 +301,33 @@ class BackendOptimizer():
     # Fusion operators as nvFuser can be slower on the single trace region but can be faster by combining more of them,
     # try to fuse then and compare
     def try_to_fuse_after_executors_placement(self, trace_in: TraceCtx) -> TraceCtx:
-
         best_trace: TraceCtx = trace_in
         best_time, best_mem, answer = benchmark_trace(best_trace, iters=10)
         del answer
         trace_in_time = best_time
 
         for ex in self.fusion_executors:
-            self.log(f'Try to fuse executor {ex.name} with trace:\n{trace_in}')
+            self.log(f"Try to fuse executor {ex.name} with trace:\n{trace_in}")
             extrace = ex.fusion_pass(trace_in)
-            self.log(f'Fused trace:\n{extrace}')
+            self.log(f"Fused trace:\n{extrace}")
             extrace_time, extrace_mem, answer = benchmark_trace(extrace, iters=10)
             del answer
-            self.log(f'Fused trace time:{extrace_time} ms')
+            self.log(f"Fused trace time:{extrace_time} ms")
 
             if extrace_time < best_time:
                 best_time = extrace_time
                 best_trace = extrace
 
-        self.log(f'Trace in (time = {trace_in_time } ms):\n{trace_in}')
-        self.log(f'Best fused trace (time = {best_time } ms):\n{best_trace}')
+        self.log(f"Trace in (time = {trace_in_time } ms):\n{trace_in}")
+        self.log(f"Best fused trace (time = {best_time } ms):\n{best_trace}")
 
         return best_trace
 
     def build_placement_options_exaustive(self):
-
         # We assign an internal id to each symbol based on its idx inside the bound_symbols list
         def search(node: self.SearchNode, configuration):
             def continue_search():
-                if node.idx+1 < max_len:
+                if node.idx + 1 < max_len:
                     new_idx: int = node.idx + 1
                     new_symbol: BoundSymbolInterface = bound_symbols[new_idx]
                     search(self.SearchNode(new_symbol, new_idx), configuration)
@@ -285,12 +339,12 @@ class BackendOptimizer():
             for ex in self.executors:
                 if not isinstance(node.symbol, BoundSymbol):
                     raise AssertionError("Receive a symbol which is not a BoundSymbol")
-                if (isinstance(ex, OperatorExecutor) and ex.can_execute(node.symbol)):
+                if isinstance(ex, OperatorExecutor) and ex.can_execute(node.symbol):
                     has_backend = True
                     configuration.append(ex)
                     continue_search()
                     configuration.pop(-1)
-                if (isinstance(ex, FusionExecutor) and ex.can_fuse(node.symbol)):
+                if isinstance(ex, FusionExecutor) and ex.can_fuse(node.symbol):
                     has_backend = True
                     configuration.append(ex)
                     continue_search()
@@ -313,7 +367,6 @@ class BackendOptimizer():
             self.placement_options = all_configurations
 
     def place_optimizers(self, in_trace, executor_list: list[Executor]) -> TraceCtx:
-
         from thunder.executors.passes import _transform_for_operator_executor_execution
 
         swapmap: dict[Variable, Proxy] = {}
@@ -321,7 +374,6 @@ class BackendOptimizer():
         # During the fusion pass and CSE optimizatons some args in trace regions could be different from the cached args. Restore the correct arguments
         # https://pytorch-lightning.slack.com/archives/C06QA9M8L3C/p1720732254341999
         def restore_correct_args(trace_in: TraceCtx):
-
             def args_eq(a, b) -> bool:
                 if len(a) != len(b):
                     return False
@@ -331,7 +383,7 @@ class BackendOptimizer():
                             return False
                     elif type(obj_a) == type(obj_b) and not isinstance(obj_a, TensorProxy):
                         if obj_a != obj_b:
-                            raise AssertionError(f'What do you want to do here:\nobj_a:\n{obj_a}\nobj_b:{obj_b}')
+                            raise AssertionError(f"What do you want to do here:\nobj_a:\n{obj_a}\nobj_b:{obj_b}")
                 return True
 
             def clear(bsym: BoundSymbol, input):
@@ -362,7 +414,7 @@ class BackendOptimizer():
         def preserve_bsym(bsym: BoundSymbol) -> Any:
             trace: TraceCtx | None = get_tracectx()
             if trace is None:
-                raise AssertionError('None trace context')
+                raise AssertionError("None trace context")
             trace.scopes[-1].append(bsym)
             for p in chain(bsym.flat_proxy_outs, bsym.flat_proxy_args):
                 trace.names.add(p.name)
@@ -378,14 +430,13 @@ class BackendOptimizer():
 
             execution_transform: None | Callable = ex.get_execution_transform(bsym.sym)
             out: Any
-            # TODO: What is this?
             if execution_transform is not None:
                 out = execution_transform(*bsym.args, **bsym.kwargs)
             elif isinstance(ex, OperatorExecutor):
                 # Calls the operator executor's operation
                 op: Symbol | None = ex.implmap[bsym.sym.id].symbol
                 if op is None:
-                    raise AssertionError('op is None')
+                    raise AssertionError("op is None")
                 out = op(*bsym.args, **bsym.kwargs)
             elif isinstance(ex, FusionExecutor):
                 # Preserves the symbol as is (it will be handled in the fusion pass)
@@ -429,10 +480,6 @@ class BackendOptimizer():
             bound_symbols.append(nbsym)
         extrace.bound_symbols = bound_symbols
 
-        # extrace bound_symbols len could be modified by the visit above
-        # if len(executor_list) != len(extrace.bound_symbols):
-        #     raise AssertionError("len(executor_list) != len(extrace.bound_symbols)")
-
         for bsym in extrace.bound_symbols:
             if isinstance(bsym.output, TensorProxy):
                 t_name = bsym.output.name
@@ -446,18 +493,7 @@ class BackendOptimizer():
                     # This will leave out these symbols from the fusion pass
                     bsym.subsymbols = []
 
-        # for ex, bsym in zip(executor_list, extrace.bound_symbols):
-        #     if isinstance(ex, FusionExecutor):
-        #         unique_fusion_executors.add(ex)
-        #     elif isinstance(ex, OperatorExecutor):
-        #         if isinstance(bsym.output, TensorProxy):
-        #             t_proxy_name: str = bsym.output.name
-        #             cached_subsymbols[t_proxy_name] = list(bsym.subsymbols)
-        #             # This will leave out these symbols from the fusion pass
-        #             bsym.subsymbols = []
-
         # Perform fusion pass
-        # TODO (matteochen): filter for the current fusion operator as we wanna find the most efficient one
         for ex in unique_fusion_executors:
             extrace = ex.fusion_pass(extrace)
 
@@ -482,27 +518,51 @@ class BackendOptimizer():
         return extrace
 
     # TODO (matteochen): add config for exaustive search or incremental one
-    def optimize(self, strat: OptimizationStrat = OptimizationStrat.BEST_FUSER):
+    def optimize(self, strat: OptimizationAlgorithm = OptimizationAlgorithm.BEST_FUSER):
         import thunder.core.codeutils as cutils
         from thunder.executors.passes import transform_for_execution
         from thunder.core.transform_common import replace_redundant_inputs
+        from thunder.core.transform_common import dce
 
-        self.strat = strat
+        self.optimization_algorithm = strat
 
         def best_fuser():
+            # Reset fusion helpers
+            self.fusion_strat_helper = FusionStratHelper()
+            # Reset helpers data structures
+            self.executor_placement_options = ExecutorPlacementOptions()
+
             self.build_placement_options_fusion_regions()
 
-            if len(self.placement_options_time) != len(self.fusion_executors):
-                raise AssertionError("Unexpected time placement options size")
-            if len(self.placement_options_mem) != len(self.fusion_executors):
-                raise AssertionError("Unexpected mem placement options size")
+            if len(self.executor_placement_options.placement_options_time) != len(self.fusion_executors):
+                raise AssertionError(
+                    f"Unexpected time placement options size: {len(self.executor_placement_options.placement_options_time)}. Expected: {len(self.fusion_executors)}"
+                )
+            if len(self.executor_placement_options.placement_options_mem) != len(self.fusion_executors):
+                raise AssertionError(
+                    f"Unexpected mem placement options size: {len(self.executor_placement_options.placement_options_mem)}. Expected: {len(self.fusion_executors)}"
+                )
 
-            for placement, ex in zip(self.placement_options_time, self.fusion_executors):
-                self.optimized_traces_time.append({ex.name: self.place_optimizers(self.trace, placement)})
-            for placement, ex in zip(self.placement_options_mem, self.fusion_executors):
-                self.optimized_traces_mem.append({ex.name: self.place_optimizers(self.trace, placement)})
+            for placement, ex in zip(self.executor_placement_options.placement_options_time, self.fusion_executors):
+                self.fusion_strat_helper.optimized_traces_time.append(
+                    {ex.name: self.place_optimizers(self.trace, placement)}
+                )
+            for placement, ex in zip(self.executor_placement_options.placement_options_mem, self.fusion_executors):
+                self.fusion_strat_helper.optimized_traces_mem.append(
+                    {ex.name: self.place_optimizers(self.trace, placement)}
+                )
+
+            self.benchmark_traces()
+
+            # Cached computed fw traced placements
+            if self.trace_type == TraceType.FW:
+                self.cached_fw_traces = self.fw_trace_candidates
+                self.log(f"Caching fw traces\n{self.cached_fw_traces}")
 
         def greedy():
+            # Reset helpers data structures
+            self.executor_placement_options = ExecutorPlacementOptions()
+
             # 1. This builds one option by default
             self.build_placement_options_incremental()
 
@@ -512,17 +572,17 @@ class BackendOptimizer():
             option = self.placement_options[0]
             trace_greedy = self.place_optimizers(self.trace, option)
             # Append the unique trace
-            self.optimized_traces.append({'greedy': trace_greedy})
+            self.optimized_traces.append({"greedy": trace_greedy})
 
             # 2. Try to fuse additional regions from the greedy result
             # Attention, if all the fused traces perform worse that the greedy one, the greedy one is returned
             # TODO (matteochen): ignore a duplicated trace
             trace_greedy_fused = self.try_to_fuse_after_executors_placement(trace_greedy)
-            self.optimized_traces.append({'fused_greedy': trace_greedy_fused})
+            self.optimized_traces.append({"fused_greedy": trace_greedy_fused})
 
             # 3. Try the priority list approach
             trace_priority = transform_for_execution(self.trace, self.priority_executors)
-            self.optimized_traces.append({'priority_list': trace_priority})
+            self.optimized_traces.append({"priority_list": trace_priority})
 
             # There are no hidden placements hence do not call the visualizer
 
@@ -530,72 +590,85 @@ class BackendOptimizer():
             # This builds one option by default
             self.build_placement_options_exaustive()
 
-            self.log(f'Placement options size: {len(self.placement_options)}')
+            self.log(f"Placement options size: {len(self.placement_options)}")
 
             for option in self.placement_options:
                 option_str = [str(ex.name) for ex in option]
-                option_str = '-'.join(option_str)
+                option_str = "-".join(option_str)
                 trace = self.place_optimizers(self.trace, option)
 
                 if self.visualizer is not None:
                     sig_name = cutils.get_siginfo_name(trace)
                     # TODO (matteochen): consider adding more infos for naming
-                    self.visualizer.set_hidden_trace(f'hidden-{sig_name}-{option_str}', trace)
+                    self.visualizer.set_hidden_trace(f"hidden-{sig_name}-{option_str}", trace)
 
                 self.optimized_traces.append({option_str: trace})
 
-        def call_optimizer():
-            if self.strat == self.OptimizationStrat.GREEDY:
-                greedy()
-            elif self.strat == self.OptimizationStrat.EXAUSTIVE:
-                exaustive()
-            else:
-                best_fuser()
+        def match_optimizer_algorithm():
+            match self.optimization_algorithm:
+                case OptimizationAlgorithm.GREEDY:
+                    greedy()
+                case OptimizationAlgorithm.EXAUSTIVE:
+                    exaustive()
+                case OptimizationAlgorithm.BEST_FUSER:
+                    best_fuser()
 
         start_time = time.perf_counter_ns()
 
-        # We have multiple cached optimized fw traces, find the best backward
-        if self.trace_type == TraceType.BW:
-            fw_traces = self.fw_trace_candidates.to_list()
-            # Cached the bw trace
-            cached_self_trace = from_trace(self.trace)
-            cached_self_trace.bound_symbols = list(self.trace.bound_symbols)
-            for t in fw_traces:
-                # Restore the original bw trace
-                self.trace = from_trace(cached_self_trace)
-                self.trace.bound_symbols = list(cached_self_trace.bound_symbols)
-                # Set the current active cached forward trace
-                self.cached_fw_trace = t
+        match self.trace_type:
+            case TraceType.FW:
+                match_optimizer_algorithm()
+            # We have multiple cached optimized fw traces, find the best backward
+            case TraceType.BW:
+                fw_traces = self.fw_trace_candidates.to_list()
+                # Cached the bw trace as we need to modify the input trace during the loop
+                cached_self_trace = from_trace(self.trace)
+                cached_self_trace.bound_symbols = list(self.trace.bound_symbols)
+                for t in fw_traces:
+                    # Restore the original bw trace
+                    self.trace = from_trace(cached_self_trace)
+                    self.trace.bound_symbols = list(cached_self_trace.bound_symbols)
+                    # Set the current active cached forward trace
+                    self.cached_fw_trace = t
 
-                # Some of the optimization passes change proxies in the trace and
-                # any change in the forward trace must be reflected in the backward
-                # trace.
-                original_bw_saved_tensors_for_backward = self.trace.args[0][0]
-                new_fw_saved_tensors_for_backward = t.output[1][0]
-                swap_map = {
-                    variableify(x): y
-                    for x, y in zip(original_bw_saved_tensors_for_backward, new_fw_saved_tensors_for_backward)
-                    if variableify(x) != variableify(y)
-                }
-                new_bsyms = replace_redundant_inputs(swap_map, self.trace.bound_symbols)
-                # replace_redundant_inputs doesn't replace the output of
-                # UNPACK_SEQUENCE so we do it manually. Here we have certain
-                # assumptions about the structure of the backward trace.
-                assert self.trace.bound_symbols[0].sym.id == PrimIDs.UNPACK_TRIVIAL
-                assert self.trace.bound_symbols[0].kwargs["name"] == "saved_for_backward"
-                assert self.trace.bound_symbols[4].sym.id == PrimIDs.UNPACK_SEQUENCE
-                assert self.trace.bound_symbols[4].args[0].name == "C0"
-                new_bsyms[4] = new_bsyms[4].from_bsym_swap_proxies(
-                    swap_map,
-                    skip_inputs=False,
-                    skip_output=False,
-                    skip_subsymbols=False,
-                )
-                self.trace.bound_symbols = new_bsyms
+                    self.log(f"Cached fw trace:\n{self.cached_fw_trace}")
+                    self.log(f"Input bw trace:\n{self.trace}")
 
-                call_optimizer()
-        else:
-            call_optimizer()
+                    # Some of the optimization passes change proxies in the trace and
+                    # any change in the forward trace must be reflected in the backward
+                    # trace.
+                    original_bw_saved_tensors_for_backward = self.trace.args[0][0]
+                    new_fw_saved_tensors_for_backward = t.output[1][0]
+                    swap_map = {
+                        variableify(x): y
+                        for x, y in zip(original_bw_saved_tensors_for_backward, new_fw_saved_tensors_for_backward)
+                        if variableify(x) != variableify(y)
+                    }
+                    new_bsyms = replace_redundant_inputs(swap_map, self.trace.bound_symbols)
+                    # replace_redundant_inputs doesn't replace the output of
+                    # UNPACK_SEQUENCE so we do it manually. Here we have certain
+                    # assumptions about the structure of the backward trace.
+                    assert self.trace.bound_symbols[0].sym.id == PrimIDs.UNPACK_TRIVIAL
+                    assert self.trace.bound_symbols[0].kwargs["name"] == "saved_for_backward"
+                    assert self.trace.bound_symbols[4].sym.id == PrimIDs.UNPACK_SEQUENCE
+                    assert self.trace.bound_symbols[4].args[0].name == "C0"
+                    new_bsyms[4] = new_bsyms[4].from_bsym_swap_proxies(
+                        swap_map,
+                        skip_inputs=False,
+                        skip_output=False,
+                        skip_subsymbols=False,
+                    )
+                    self.trace.bound_symbols = new_bsyms
+
+                    if self.apply_bucketing_bw_trace:
+                        from thunder.distributed.transforms import FSDPCommBucketing
+
+                        self.trace = FSDPCommBucketing.apply_bucketing_to_backward_trace(self.trace)
+
+                    # Not called in the constructor for bw traces
+                    dce(self.trace)
+
+                    match_optimizer_algorithm()
 
         end_time = time.perf_counter_ns()
         if self.trace_type == TraceType.FW:
@@ -603,23 +676,28 @@ class BackendOptimizer():
         else:
             self.bw_trace_candidates.assign_time_took((end_time - start_time) // 1000000)
 
-    def build_placement_options_fusion_regions(self, increment_factor:int = 1):
+    def build_placement_options_fusion_regions(self, increment_factor: int = 1):
         from thunder.executors.data_dependent_partition import Node, fuse_bound_symbols
         from thunder.core.rematerialization import rematerialize_forward_and_backward
 
         def sequence_hash(s: Sequence) -> str:
             name = ""
             for e in s:
-                if isinstance(e, CollectionProxy) or isinstance(e, TensorProxy) or isinstance(e, IntegerProxy) or isinstance(e, FloatProxy):
+                if (
+                    isinstance(e, CollectionProxy)
+                    or isinstance(e, TensorProxy)
+                    or isinstance(e, IntegerProxy)
+                    or isinstance(e, FloatProxy)
+                ):
                     name += e.name
                 elif e is None:
                     name += "None"
                 else:
-                    raise AssertionError(f'What? Maybe nested Sequence. type = {type(e)}')
+                    raise AssertionError(f"What? Maybe nested Sequence. type = {type(e)}")
             return name
 
         # TODO (matteochen): Benchmark the optimal executor and call this optimal
-        def get_default_executor(bsym: BoundSymbol):
+        def get_optimal_executor(bsym: BoundSymbol):
             for ex in self.executors:
                 if isinstance(ex, FusionExecutor):
                     continue
@@ -628,8 +706,8 @@ class BackendOptimizer():
             return Executor(name=self.empty_executor_hashable_placeholder)
 
         def get_placed_trace(mapping: dict[str, Executor], bound_symbols_in: Sequence[BoundSymbol]):
-            self.log(f'Input mapping len = {len(mapping)}:')
-            self.log(f'Input bound_symbols len = {len(bound_symbols_in)}:')
+            # self.log(f'Input mapping len = {len(mapping)}:')
+            # self.log(f'Input bound_symbols len = {len(bound_symbols_in)}:')
             trc = from_trace(self.trace)
             trc.bound_symbols = list(bound_symbols_in)
 
@@ -641,48 +719,53 @@ class BackendOptimizer():
             executor_configuration = []
             empty_executor = Executor(name=self.empty_executor_hashable_placeholder)
             keys = []
-            for bsym in  trc.bound_symbols:
-                if bsym.sym.name == 'return':
-                    raise AssertionError('Return statement should not be here')
-                    executor_configuration.append(empty_executor)
-                    keys.append('return')
+            for bsym in trc.bound_symbols:
+                if bsym.sym.name == "return":
+                    raise AssertionError("Return statement should not be here")
+                    # executor_configuration.append(empty_executor)
+                    # keys.append('return')
                 elif isinstance(bsym.output, Sequence):
                     seq_hash = sequence_hash(bsym.output)
                     executor_configuration.append(mapping.get(seq_hash, empty_executor))
                     keys.append(seq_hash)
-                elif isinstance(bsym.output, CollectionProxy) or isinstance(bsym.output, TensorProxy) or isinstance(bsym.output, IntegerProxy) or isinstance(bsym.output, FloatProxy):
+                elif (
+                    isinstance(bsym.output, CollectionProxy)
+                    or isinstance(bsym.output, TensorProxy)
+                    or isinstance(bsym.output, IntegerProxy)
+                    or isinstance(bsym.output, FloatProxy)
+                ):
                     if bsym.output.name not in mapping:
-                        raise AssertionError(f'Expected key {bsym.output.name} in mapping {mapping}')
+                        raise AssertionError(f"Expected key {bsym.output.name} in mapping {mapping}")
                     executor_configuration.append(mapping[bsym.output.name])
                     keys.append(bsym.output.name)
                 else:
                     raise AssertionError(f"Type not handled: {type(bsym.output)}")
 
-            if trc.bound_symbols[-1].sym.name != 'return':
+            if trc.bound_symbols[-1].sym.name != "return":
                 trc.bound_symbols.append(forced_return_bsym)
                 executor_configuration.append(Executor(name=self.empty_executor_hashable_placeholder))
-                keys.append('return')
+                keys.append("return")
 
             if len(trc.bound_symbols) != len(executor_configuration) or len(keys) != len(executor_configuration):
-                raise AssertionError(f'len trc.bound_symbols ({len(trc.bound_symbols)}) != len executor_configuration ({len(executor_configuration)}) != len keys ({len(keys)})')
+                raise AssertionError(
+                    f"len trc.bound_symbols ({len(trc.bound_symbols)}) != len executor_configuration ({len(executor_configuration)}) != len keys ({len(keys)})"
+                )
 
-            # self.log(f'Before placement trc:\n{trc}')
-
-            for b, e in zip(trc.bound_symbols, executor_configuration):
-                if isinstance(b.output, TensorProxy):
-                    print(f'{b.sym.name}: {b.output.name} -> {e.name}')
+            # for b, e in zip(trc.bound_symbols, executor_configuration):
+            #     if isinstance(b.output, TensorProxy):
+            #         print(f'{b.sym.name}: {b.output.name} -> {e.name}')
 
             placed_trace = self.place_optimizers(trc, executor_configuration)
             return placed_trace, keys, executor_configuration
 
         ex: FusionExecutor
         for ex in self.fusion_executors:
+            if ex.name not in self.fusion_strat_helper.supported_executors:
+                raise AssertionError(f"Fusion operator not supported: {ex.name}")
 
-            if ex.name not in self.supported_fusion_executors_by_fusion_strat:
-                raise AssertionError(f'Fusion operator not supported: {ex.name}')
+            self.log(f"Searching best placement for fusion executor = {ex.name}")
 
-            self.log(f'Searching best placement for fusion executor = {ex.name}')
-            # TODO (matteochen): each executor has a custo def
+            # TODO (matteochen): each executor has a custom should fuse function, can we make this prettier?
             def _should_fuse_nvfuser(a: Node, b: Node):
                 def _can_fuse_node(n: Node):
                     # if already merged, then node can be fused
@@ -692,6 +775,7 @@ class BackendOptimizer():
                     can_fuse: bool = ex.can_fuse(bsym)
                     cuda_in_or_out: bool = ex.has_cuda_input_or_output(bsym)
                     return can_fuse and cuda_in_or_out
+
                 return _can_fuse_node(a) and _can_fuse_node(b)
 
             def _should_fuse_torchcompile(a: Node, b: Node):
@@ -700,51 +784,59 @@ class BackendOptimizer():
                         return True
                     bsym: BoundSymbol = n.group_bsyms[0]
                     return ex.can_fuse(bsym)
+
                 return _can_fuse_node(a) and _can_fuse_node(b)
 
             def match_bsym_output(bsym_in: BoundSymbol, time_dict: dict, mem_dict: dict, ex_in: Executor):
                 if isinstance(bsym_in.output, Sequence):
                     time_dict[sequence_hash(bsym_in.output)] = ex_in
                     mem_dict[sequence_hash(bsym_in.output)] = ex_in
-                elif isinstance(bsym_in.output, CollectionProxy) or isinstance(bsym_in.output, TensorProxy) or isinstance(bsym_in.output, IntegerProxy) or isinstance(bsym_in.output, FloatProxy):
+                elif (
+                    isinstance(bsym_in.output, CollectionProxy)
+                    or isinstance(bsym_in.output, TensorProxy)
+                    or isinstance(bsym_in.output, IntegerProxy)
+                    or isinstance(bsym_in.output, FloatProxy)
+                ):
                     time_dict[bsym_in.output.name] = ex_in
                     mem_dict[bsym_in.output.name] = ex_in
                 else:
-                    raise AssertionError(f'Type not handled: {type(bsym_in.output)}')
+                    raise AssertionError(f"Type not handled: {type(bsym_in.output)}")
 
-            bound_symbol_groups =fuse_bound_symbols(self.trace, _should_fuse_nvfuser if ex.name == 'nvfuser' else _should_fuse_torchcompile)
-            self.log(f'Num of groups = {len(bound_symbol_groups)}')
+            bound_symbol_groups = fuse_bound_symbols(
+                self.trace, _should_fuse_nvfuser if ex.name == "nvfuser" else _should_fuse_torchcompile
+            )
+            self.log(f"Num of groups = {len(bound_symbol_groups)}")
 
             for id, group in enumerate(bound_symbol_groups):
-                self.log(f'Group id: {id}')
+                self.log(f"Group id: {id}")
                 for sub in group:
-                    self.log(f'{sub.sym.name} -> out: {sub.output}')
+                    self.log(f"{sub.sym.name} -> out: {sub.output}")
                 if len(group) > 0:
-                    print('\n')
+                    print("\n")
 
             dict_time_strat: dict[str, Executor] = {}
             dict_mem_strat: dict[str, Executor] = {}
             increasing_symbols = []
             for group_id, group in enumerate(bound_symbol_groups):
-                self.log(f'Group id: {group_id}')
-                self.log(f'group start = {group[0].sym.name}')
-                self.log(f'group end = {group[-1].sym.name}')
+                self.log(f"Group id: {group_id}")
+                self.log(f"group start = {group[0].sym.name}")
+                self.log(f"group end = {group[-1].sym.name}")
 
-                if group[0].sym.name != 'return':
+                if group[0].sym.name != "return":
                     increasing_symbols += group
 
-                # Is not a fusion region, get the default executor
+                # Is not a fusion region, get the optimal executor
                 if len(group) < 2:
                     current_bsym = group[0]
-                    self.log(f'--> Single group: {current_bsym.sym.name}')
+                    self.log(f"--> Single group: {current_bsym.sym.name}")
                     name = current_bsym.sym.name
-                    ex_for_this = get_default_executor(current_bsym)
-                    if name == 'return':
-                        dict_time_strat['return'] = ex_for_this
-                        dict_mem_strat['return'] = ex_for_this
+                    optimal_ex = get_optimal_executor(current_bsym)
+                    if name == "return":
+                        dict_time_strat["return"] = optimal_ex
+                        dict_mem_strat["return"] = optimal_ex
                         # Add the modified return statement at the end of the for loop
                         break
-                    match_bsym_output(current_bsym, dict_time_strat, dict_mem_strat, ex)
+                    match_bsym_output(current_bsym, dict_time_strat, dict_mem_strat, optimal_ex)  # before was ex???
                     continue
 
                 # Inside groups we should have alwasy tensors as out
@@ -752,15 +844,17 @@ class BackendOptimizer():
                 best_res_mem = self.Result()
                 worst_res_time = self.Result()
                 worst_res_mem = self.Result()
+                # Only for visual
                 worst_res_mem.measure = 0
                 worst_res_time.measure = 0
 
+                # TODO (matteochen): Aggregate them
                 best_placement_time = None
                 best_keys_time = None
                 best_placement_mem = None
                 best_keys_mem = None
 
-                def measure_and_update():
+                def measure_and_update_result():
                     nonlocal best_res_time
                     nonlocal best_placement_time
                     nonlocal best_keys_time
@@ -774,41 +868,44 @@ class BackendOptimizer():
                         _, trc = rematerialize_forward_and_backward(self.cached_fw_trace, trc)
                     cost, mem, out = benchmark_trace(trc, iters=3)
                     del out
-                    self.log(f'Placed trace (cost = {cost} ms, mem = {mem/(2**30)} GB)\n{trc}')
-                    if cost < best_res_time.measure:
-                        best_res_time.measure = cost
+                    self.log(f"Placed trace (cost = {cost} ms, mem = {mem/(2**30)} GB)\n{trc}")
+                    if cost < best_res_time.tm or (cost == best_res_time.tm and mem < best_res_time.mem):
+                        best_res_time.tm = cost
+                        best_res_time.mem = mem
                         best_res_time.trace = trc
                         best_placement_time = placements
                         best_keys_time = keys
-                    if cost > worst_res_time.measure:
-                        worst_res_time.measure = cost
+                    if cost > worst_res_time.tm:
+                        worst_res_time.tm = cost
 
-                    if mem < best_res_mem.measure:
-                        best_res_mem.measure = mem
+                    if mem < best_res_mem.mem or (mem == best_res_mem.mem and cost < best_res_mem.tm):
+                        best_res_mem.tm = cost
+                        best_res_mem.mem = mem
                         best_res_mem.trace = trc
                         best_placement_mem = placements
                         best_keys_mem = keys
-                    if mem > worst_res_mem.measure:
-                        worst_res_mem.measure = mem
+                    if mem > worst_res_mem.mem:
+                        worst_res_mem.mem = mem
 
                 start_idx = 0
+                # This is to accomodate the following TODO
                 # TODO: investigate why <prims.embedding_backward> is failing with torchcompile if left alone
-                if ex.name == 'torchcompile':
+                if ex.name == "torchcompile":
                     last_embedding_idx = -1
                     for idx in range(0, len(group)):
-                        if group[idx].sym.name == 'embedding_backward':
+                        if group[idx].sym.name == "embedding_backward":
                             last_embedding_idx = idx
-                    self.log(f'last embedding {last_embedding_idx}')
+                    self.log(f"last embedding {last_embedding_idx}")
                     if last_embedding_idx != -1:
                         # Until last_embedding_idx (included) assigned to current fusion ex
-                        for i in range(0, last_embedding_idx+1, 1):
+                        for i in range(0, last_embedding_idx + 1, 1):
                             match_bsym_output(group[i], dict_time_strat, dict_mem_strat, ex)
 
-                        if last_embedding_idx == len(group)-1:
+                        if last_embedding_idx == len(group) - 1:
                             # Benchmark
-                            measure_and_update()
+                            measure_and_update_result()
 
-                        start_idx = last_embedding_idx+1
+                        start_idx = last_embedding_idx + 1
 
                 n_missing_bsyms = len(group) - start_idx
                 for i in range(0, n_missing_bsyms):
@@ -816,12 +913,14 @@ class BackendOptimizer():
                     # -> First iteration is the one with fusion region with single element
                     # -> Last iteration gives the complete fusion region
 
-                    for j in range(start_idx, start_idx+i+1, increment_factor):
+                    for j in range(start_idx, start_idx + i + 1, increment_factor):
                         match_bsym_output(group[j], dict_time_strat, dict_mem_strat, ex)
-                    for k in range(start_idx+i+1, len(group), increment_factor):
-                        match_bsym_output(group[k], dict_time_strat, dict_mem_strat, get_default_executor(group[k+start_idx]))
+                    for k in range(start_idx + i + 1, len(group), increment_factor):
+                        match_bsym_output(
+                            group[k], dict_time_strat, dict_mem_strat, get_optimal_executor(group[k + start_idx])
+                        )
                     # Benchmark
-                    measure_and_update()
+                    measure_and_update_result()
 
                     # TODO (matteochen): consider if this can increase placement
                     # From bottom to up (this will exclude the full region as being handled in the for cycle above)
@@ -833,35 +932,19 @@ class BackendOptimizer():
                     #     dict_time_strat[group[k].output.name] = ex
 
                     # Benchmark this placement
-                    # trc, keys, placements = get_placed_trace(dict_time_strat, increasing_symbols)
-                    # if self.trace_type == TraceType.BW and self.cached_optimal_fw_trace is not None:
-                    #     _, trc = rematerialize_forward_and_backward(self.cached_optimal_fw_trace, trc)
-                    # cost, mem, out = benchmark_trace(trc, iters=3)
-                    # del out
-                    # self.log(f'Placed trace (cost = {cost} ms, mem = {mem/(2**30)} GB)\n{trc}')
-                    # if cost < best_res_time.measure:
-                    #     best_res_time.measure = cost
-                    #     best_res_time.trace = trc
-                    #     best_placement_time = placements
-                    #     best_keys_time = keys
-                    # if cost > worst_res_time.measure:
-                    #     worst_res_time.measure = cost
-
-                    # if mem < best_res_mem.measure:
-                    #     best_res_mem.measure = mem
-                    #     best_res_mem.trace = trc
-                    #     best_placement_mem = placements
-                    #     best_keys_mem = keys
-                    # if mem > worst_res_mem.measure:
-                    #     worst_res_mem.measure = mem
+                    # measure_and_update_result()
 
                 if best_placement_time is None or best_keys_time is None:
-                    raise AssertionError('Failed to get best placement')
+                    raise AssertionError("Failed to get best time placement")
                 if best_placement_mem is None or best_keys_mem is None:
-                    raise AssertionError('Failed to get best placement')
+                    raise AssertionError("Failed to get best placement")
 
-                self.log(f'For group {group_id} best placement with time cost = {best_res_time.measure} ms (worst time = {worst_res_time.measure} ms):\n{best_res_time.trace}')
-                self.log(f'For group {group_id} best placement with mem cost = {best_res_mem.measure / (2**30)} GB (worst mem = {worst_res_mem.measure/(2**30)} GB) is:\n{best_res_mem.trace}')
+                self.log(
+                    f"For group {group_id} best placement with time cost = {best_res_time.tm} ms (worst time = {worst_res_time.tm} ms):\n{best_res_time.trace}"
+                )
+                self.log(
+                    f"For group {group_id} best placement with mem cost = {best_res_mem.mem / (2**30)} GB (worst mem = {worst_res_mem.mem/(2**30)} GB) is:\n{best_res_mem.trace}"
+                )
 
                 # for n, p in zip(best_keys, best_placement):
                 #     print(f'{n} -> {p.name}')
@@ -876,97 +959,112 @@ class BackendOptimizer():
             # Generate the placement
             executors_time = []
             executors_mem = []
-            for bsym in  self.trace.bound_symbols:
-                if bsym.sym.name == 'return':
-                    if 'return' not in dict_time_strat or 'return' not in dict_mem_strat:
-                        raise AssertionError(f'Expected key return in mapping {dict_time_strat} and {dict_mem_strat}')
-                    executors_time.append(dict_time_strat['return'])
-                    executors_mem.append(dict_mem_strat['return'])
+            for bsym in self.trace.bound_symbols:
+                if bsym.sym.name == "return":
+                    if "return" not in dict_time_strat or "return" not in dict_mem_strat:
+                        raise AssertionError(f"Expected key return in mapping {dict_time_strat} and {dict_mem_strat}")
+                    executors_time.append(dict_time_strat["return"])
+                    executors_mem.append(dict_mem_strat["return"])
                 elif isinstance(bsym.output, Sequence):
                     seq_hash = sequence_hash(bsym.output)
                     if seq_hash not in dict_time_strat or seq_hash not in dict_mem_strat:
-                        raise AssertionError(f'Expected key {seq_hash} in mapping {dict_time_strat} and {dict_mem_strat}')
+                        raise AssertionError(
+                            f"Expected key {seq_hash} in mapping {dict_time_strat} and {dict_mem_strat}"
+                        )
                     executors_time.append(dict_time_strat[seq_hash])
                     executors_mem.append(dict_mem_strat[seq_hash])
-                elif isinstance(bsym.output, CollectionProxy) or isinstance(bsym.output, TensorProxy) or isinstance(bsym.output, IntegerProxy) or isinstance(bsym.output, FloatProxy):
+                elif (
+                    isinstance(bsym.output, CollectionProxy)
+                    or isinstance(bsym.output, TensorProxy)
+                    or isinstance(bsym.output, IntegerProxy)
+                    or isinstance(bsym.output, FloatProxy)
+                ):
                     if bsym.output.name not in dict_time_strat or bsym.output.name not in dict_mem_strat:
-                        raise AssertionError(f'Expected key {bsym.output.name} in mapping {dict_time_strat} and {dict_mem_strat}')
+                        raise AssertionError(
+                            f"Expected key {bsym.output.name} in mapping {dict_time_strat} and {dict_mem_strat}"
+                        )
                     executors_time.append(dict_time_strat[bsym.output.name])
                     executors_mem.append(dict_mem_strat[bsym.output.name])
                 else:
                     raise AssertionError(f"Type not handled: {type(bsym.output)}")
 
-            # Swap return bsym otherwise with no call to remat, we will trace the wrong memory occupation for forward trace
+            # For the forward trace we benchmark (memory) the mocked return statement as we don't know which
+            # Tensor will be returned after the rematerialize_forward_and_backward() call in order to do not overestimate the memory consumption
             if self.trace_type == TraceType.FW:
-                test_trc = from_trace(self.trace)
-                test_trc.bound_symbols = list(self.trace.bound_symbols)
-                test_trc.bound_symbols.pop()
-                test_trc.bound_symbols.append(self.trace.bound_symbols[-1].from_bsym(args=return_not_used_vars(test_trc)))
-                trc = self.place_optimizers(test_trc, executors_mem)
-                c, m, o = benchmark_trace(trc)
+                trc = from_trace(self.trace)
+                trc.bound_symbols = list(self.trace.bound_symbols)
+                trc.bound_symbols.pop()
+                trc.bound_symbols.append(self.trace.bound_symbols[-1].from_bsym(args=return_not_used_vars(trc)))
+                # NOTE: Here the active trace to place will be 'trc' and not 'self.trace'
+                trc_time = self.place_optimizers(trc, executors_mem)
+                c, m, o = benchmark_trace(trc_time)
                 del o
-                self.log(f'Debug MEM, mem = {m/(2**30)} GB:\n{trc}')
-                self.optimized_traces_mem_benchmark_only.append({ex.name: trc})
-                trc = self.place_optimizers(test_trc, executors_time)
-                c, m, o = benchmark_trace(trc)
+                self.log(f"Debug MEM, mem = {m/(2**30)} GB:\n{trc_time}")
+                self.fusion_strat_helper.optimized_traces_mem_benchmark_only.append({ex.name: trc_time})
+                trc_mem = self.place_optimizers(trc, executors_time)
+                c, m, o = benchmark_trace(trc_mem)
                 del o
-                self.log(f'Debug TIME, time = {c} ms:\n{trc}')
-                self.optimized_traces_time_benchmark_only.append({ex.name: trc})
+                self.log(f"Debug TIME, time = {c} ms:\n{trc_mem}")
+                self.fusion_strat_helper.optimized_traces_time_benchmark_only.append({ex.name: trc_mem})
             else:
                 trc = self.place_optimizers(self.trace, executors_mem)
                 _, trc = rematerialize_forward_and_backward(self.cached_fw_trace, trc)
                 c, m, o = benchmark_trace(trc)
                 del o
-                self.log(f'Debug MEM, mem = {m/(2**30)} GB:\n{trc}')
-                self.optimized_traces_mem_benchmark_only.append({ex.name: trc})
+                self.log(f"Debug MEM, mem = {m/(2**30)} GB:\n{trc}")
+                self.fusion_strat_helper.optimized_traces_mem_benchmark_only.append({ex.name: trc})
                 trc = self.place_optimizers(self.trace, executors_time)
                 _, trc = rematerialize_forward_and_backward(self.cached_fw_trace, trc)
                 c, m, o = benchmark_trace(trc)
                 del o
-                self.log(f'Debug TIME, time = {c} ms:\n{trc}')
-                self.optimized_traces_time_benchmark_only.append({ex.name: trc})
+                self.log(f"Debug TIME, time = {c} ms:\n{trc}")
+                self.fusion_strat_helper.optimized_traces_time_benchmark_only.append({ex.name: trc})
 
             # Save executors in order to generate real fw and bw trace with correct output
-            self.placement_options_time.append(executors_time)
-            self.placement_options_mem.append(executors_mem)
+            self.executor_placement_options.placement_options_time.append(executors_time)
+            self.executor_placement_options.placement_options_mem.append(executors_mem)
 
     def get_optimal_fw_traces_time_and_mem(self) -> tuple[TraceCtx, TraceCtx]:
-        return self.optimal_trace_time, self.optimal_trace_mem
+        if self.fw_trace_candidates.best_time is None or self.fw_trace_candidates.best_mem is None:
+            raise AssertionError("Failed to obtain optimal fw traces")
+        return self.fw_trace_candidates.best_time, self.fw_trace_candidates.best_mem
 
     def get_optimal_fw_bw_traces(self) -> tuple[TraceCtx, TraceCtx]:
-        return None
+        # This is agnostic from the optimization strat as results are both floats
+        min_value: float = float("inf")
+        ans: FinalOutputCandidates | None = None
+        for pair in self.out:
+            if pair.tot_cost < min_value:
+                self.log(f"New best pair:\n{pair}")
+                min_value = pair.tot_cost
+                ans = pair
+        return ans.fw, ans.bw
 
     def bsym_assigned(self, bsym: BoundSymbol) -> bool:
         return isinstance(bsym.sym.executor, OperatorExecutor) or isinstance(bsym.sym.executor, FusionExecutor)
 
-    # Currently this manages both time and memory
-    class Result:
-        def __init__(self) -> None:
-            self.measure: float = float('inf')
-            self.trace: TraceCtx | None = None
-            self.label: str | Hashable = ""
-            self.index = -1
-
     def benchmark_traces(self):
-
         tm = self.Result()
         mem = self.Result()
 
-        self.debug_msg += 'Traces benchmarks:\n\n'
+        self.debug_msg += "Traces benchmarks:\n\n"
 
         source_mem = None
         source_time = None
-        if self.strat == self.OptimizationStrat.BEST_FUSER:
-            source_mem = self.optimized_traces_mem_benchmark_only
-            source_time = self.optimized_traces_time_benchmark_only
-        elif self.strat == self.OptimizationStrat.GREEDY:
-            source_mem = self.optimized_traces_mem
-            source_time = self.optimized_traces_time
-        else:
-            raise AssertionError('Not supported')
+        match self.optimization_algorithm:
+            case OptimizationAlgorithm.BEST_FUSER:
+                # TODO: handle requests for no remat when introduced in thunder (split_fw_bw)
+                source_mem = self.fusion_strat_helper.optimized_traces_mem_benchmark_only
+                source_time = self.fusion_strat_helper.optimized_traces_time_benchmark_only
+            case OptimizationAlgorithm.GREEDY:
+                # TODO (matteochen)
+                raise AssertionError("Not supported")
+            case OptimizationAlgorithm.EXAUSTIVE:
+                raise AssertionError("Not supported")
 
+        # Find best trace for runtime
         for i, trace_info in enumerate(source_time):
-
+            # Unpack the dict
             label = None
             trace = None
             for k, v in trace_info.items():
@@ -975,16 +1073,22 @@ class BackendOptimizer():
 
             trace_time, trace_mem, res = benchmark_trace(trace, iters=10)
             del res
-            self.debug_msg += f'Trace name = [{label}] - Time = {trace_time} ms - Mem = {trace_mem / (2**30)} GB\n{trace}\n\n'
-            self.log(f'Benchmark trace (target TIME) "{label}" (time = {trace_time} ms, mem = {trace_mem / (2**30)} GB:\n{trace}')
-            if trace_time < tm.measure:
-                tm.measure = trace_time
+            self.debug_msg += (
+                f"Trace name = [{label}] - Time = {trace_time} ms - Mem = {trace_mem / (2**30)} GB\n{trace}\n\n"
+            )
+            self.log(
+                f'Benchmark trace (target TIME) "{label}" (time = {trace_time} ms, mem = {trace_mem / (2**30)} GB:\n{trace}'
+            )
+            if trace_time < tm.tm:
+                tm.tm = trace_time
+                tm.mem = trace_mem
                 tm.trace = trace
                 tm.label = label
                 tm.index = i
 
+        # Find best trace for memory
         for i, trace_info in enumerate(source_mem):
-
+            # Unpack the dict
             label = None
             trace = None
             for k, v in trace_info.items():
@@ -993,55 +1097,128 @@ class BackendOptimizer():
 
             trace_time, trace_mem, res = benchmark_trace(trace, iters=10)
             del res
-            self.debug_msg += f'Trace name = [{label}] - Mem = {trace_mem / (2**30)} GB - Time = {trace_time} ms\n{trace}\n\n'
-            self.log(f'Benchmark trace (target MEM) "{label}" (time = {trace_time} ms, mem = {trace_mem / (2**30)} GB:\n{trace}')
-            if trace_mem < mem.measure:
-                mem.measure = trace_mem
+            self.debug_msg += (
+                f"Trace name = [{label}] - Mem = {trace_mem / (2**30)} GB - Time = {trace_time} ms\n{trace}\n\n"
+            )
+            self.log(
+                f'Benchmark trace (target MEM) "{label}" (time = {trace_time} ms, mem = {trace_mem / (2**30)} GB:\n{trace}'
+            )
+            if trace_mem < mem.mem:
+                mem.tm = trace_time
+                mem.mem = trace_mem
                 mem.trace = trace
                 mem.label = label
                 mem.index = i
 
-        self.log(f'Benchmark end: Best trace time "{tm.label} (time = {tm.measure} ms)":\n{tm.trace}')
-        self.log(f'Benchmark end: Best trace mem "{mem.label} (mem = {mem.measure / (2 ** 30)} GB)":\n{mem.trace}')
+        self.log(f'Benchmark end: Best trace time "{tm.label} (time = {tm.tm} ms)":\n{tm.trace}')
+        self.log(f'Benchmark end: Best trace mem "{mem.label} (mem = {mem.mem / (2 ** 30)} GB)":\n{mem.trace}')
 
-        self.log('Strat comparison')
+        # TODO (matteochen): remove this
+        self.log("Strat comparison")
         c, m, o = benchmark_trace(tm.trace)
         del o
-        self.log(f'best time: {c} ms,  {m/(2**30)} GB')
+        self.log(f"best time: {c} ms,  {m/(2**30)} GB")
         c, m, o = benchmark_trace(mem.trace)
         del o
-        self.log(f'best mem: {c} ms,  {m/(2**30)} GB')
+        self.log(f"best mem: {c} ms,  {m/(2**30)} GB")
 
-        if self.strat == self.OptimizationStrat.GREEDY:
-            self.optimal_trace_time = tm.trace
-            self.optimal_trace_mem = mem.trace
-        elif self.strat == self.OptimizationStrat.BEST_FUSER:
-            d = self.optimized_traces_time[tm.index]
-            t = None
-            for _, v in d.items():
-                t = v
-            if t is None:
-                raise AssertionError('None trace')
-            if self.trace_type == TraceType.FW:
-                self.fw_trace_candidates.attach_best_time_candidate(t)
-            d = self.optimized_traces_mem[mem.index]
-            t = None
-            for _, v in d.items():
-                t = v
-            if t is None:
-                raise AssertionError('None trace')
-            if self.trace_type == TraceType.FW:
-                self.fw_trace_candidates.attach_best_mem_candidate(t)
+        match self.optimization_algorithm:
+            case OptimizationAlgorithm.GREEDY:
+                raise AssertionError("Not implemented")
+            case OptimizationAlgorithm.BEST_FUSER:
+                # Here we have to recover the traces without the pass through remat in order to be compliant
+                # with thunder flow as we might have request for no remat
 
-        self.log(self.fw_trace_candidates.__repr__())
+                d = self.fusion_strat_helper.optimized_traces_time[tm.index]
+                t = None
+                # Unpack dict
+                for _, v in d.items():
+                    t = v
+                if t is None:
+                    raise AssertionError("None trace")
+
+                match self.trace_type:
+                    case TraceType.FW:
+                        self.fw_trace_candidates.attach_best_time_candidate(t)
+                    case TraceType.BW:
+                        self.bw_trace_candidates.attach_best_time_candidate(t)
+
+                d = self.fusion_strat_helper.optimized_traces_mem[mem.index]
+                t = None
+                # Unpack dict
+                for _, v in d.items():
+                    t = v
+                if t is None:
+                    raise AssertionError("None trace")
+
+                match self.trace_type:
+                    case TraceType.FW:
+                        self.fw_trace_candidates.attach_best_mem_candidate(t)
+                    case TraceType.BW:
+                        self.bw_trace_candidates.attach_best_mem_candidate(t)
+
+        match self.trace_type:
+            case TraceType.FW:
+                self.log(self.fw_trace_candidates.__repr__())
+            case TraceType.BW:
+                self.log(self.bw_trace_candidates.__repr__())
+
+        # Now, finally build the pair fw and bw traces for the requested strat
+        if self.trace_type == TraceType.BW:
+            forward_time, forward_memory, _ = benchmark_trace(self.cached_fw_trace, iters=10)
+            match self.optimizer_type:
+                case OptimizerType.RUNTIME:
+                    # Used the computed benchmark from above
+                    if tm.tm < mem.tm:
+                        self.log(f"out candidate times: (fw){forward_time} ms, (bw){tm.tm} ms")
+                        self.out.append(
+                            FinalOutputCandidates(
+                                fw=self.cached_fw_trace,
+                                bw=self.bw_trace_candidates.best_time,
+                                cost=forward_time + tm.tm,
+                            )
+                        )
+                    else:
+                        self.log(f"out candidate times: (fw){forward_time} ms, (bw){mem.tm} ms")
+                        self.out.append(
+                            FinalOutputCandidates(
+                                fw=self.cached_fw_trace,
+                                bw=self.bw_trace_candidates.best_mem,
+                                cost=forward_time + mem.tm,
+                            )
+                        )
+                case OptimizerType.MEMORY:
+                    # Used the computed benchmark from above
+                    if tm.mem < mem.mem:
+                        self.log(f"out candidate mem: (fw){forward_memory / (2**30)} GB, (bw){tm.mem} GB")
+                        self.out.append(
+                            FinalOutputCandidates(
+                                fw=self.cached_fw_trace,
+                                bw=self.bw_trace_candidates.best_time,
+                                cost=forward_memory + tm.mem,
+                            )
+                        )
+                    else:
+                        self.log(f"out candidate mem: (fw){forward_memory} GB, (bw){mem.mem} GB")
+                        self.out.append(
+                            FinalOutputCandidates(
+                                fw=self.cached_fw_trace,
+                                bw=self.bw_trace_candidates.best_mem,
+                                cost=forward_memory + mem.mem,
+                            )
+                        )
 
         if self.produce_log:
-            with open(self.log_file_name, 'w') as file:
+            import time
+
+            timestamp: str = str(time.time())
+            with open(f"{timestamp}-{self.log_file_name}", "w") as file:
                 file.write(self.debug_msg)
                 file.close()
 
+
 def return_not_used_vars(trace_in: TraceCtx) -> list[TensorProxy]:
-    def is_in_sequence(seq: Sequence[Any], t:TensorProxy):
+    def is_in_sequence(seq: Sequence[Any], t: TensorProxy):
         for e in seq:
             if isinstance(e, TensorProxy) and e.name == t.name:
                 return True
@@ -1049,7 +1226,7 @@ def return_not_used_vars(trace_in: TraceCtx) -> list[TensorProxy]:
 
     # Check if this naming is always valid
     def is_possible_out(name: str):
-        if not name.startswith('t'):
+        if not name.startswith("t"):
             return False
         num = name[1:]
         return num.isdigit()
@@ -1064,23 +1241,30 @@ def return_not_used_vars(trace_in: TraceCtx) -> list[TensorProxy]:
         if not is_possible_out(b.output.name):
             continue
         for test in trace_in.bound_symbols:
-            if test.args is not None and (isinstance(test.args, tuple) or isinstance(test.args, list)) and is_in_sequence(test.args, b.output):
+            if (
+                test.args is not None
+                and (isinstance(test.args, tuple) or isinstance(test.args, list))
+                and is_in_sequence(test.args, b.output)
+            ):
                 f = True
                 break
         if not f:
             ans.append(b.output)
     return ans
 
+
 # This will benchmark the input trace with the del_last_used call
 # TODO (matteochen): move into utils module
-def benchmark_trace(trace: TraceCtx, iters: int = 1, show_func = False, apply_del_last_used = True, snapshot = False, snapshot_name = "") -> tuple[float, float, Any]:
+def benchmark_trace(
+    trace: TraceCtx, iters: int = 1, show_func=False, apply_del_last_used=True, snapshot=False, snapshot_name=""
+) -> tuple[float, float, Any]:
     from thunder.executors.passes import del_last_used
     import inspect
 
     input_args = []
 
     if trace.bound_symbols[-1].sym.id != PrimIDs.RETURN:
-        raise AssertionError('Missing return statement')
+        raise AssertionError("Missing return statement")
 
     def compute_time_cost_ms(fn: Callable, iters: int, *args) -> tuple[float, float, Any]:
         try:
@@ -1110,7 +1294,9 @@ def benchmark_trace(trace: TraceCtx, iters: int = 1, show_func = False, apply_de
                 start_events[i].record(stream)
                 fn(*args)
                 end_events[i].record(stream)
-                max_allocated_bytes = max(max_allocated_bytes, torch.cuda.max_memory_allocated(torch.cuda.current_device()))
+                max_allocated_bytes = max(
+                    max_allocated_bytes, torch.cuda.max_memory_allocated(torch.cuda.current_device())
+                )
 
             torch.cuda.synchronize()
             times = [s.elapsed_time(e) for s, e in zip(start_events, end_events)]
@@ -1118,16 +1304,17 @@ def benchmark_trace(trace: TraceCtx, iters: int = 1, show_func = False, apply_de
             return tot_time, max_allocated_bytes, out
         except Exception as e:
             import inspect
+
             trc = inspect.getsource(fn)
-            print(f'#FN EXECUTION FAILED:\n{trc}')
+            print(f"#FN EXECUTION FAILED:\n{trc}")
             raise e
 
-    def print_input_args(args, level=0, show_content = False):
+    def print_input_args(args, level=0, show_content=False):
         for e in args:
             if isinstance(e, tuple) or isinstance(e, list):
-                print_input_args(e, level=level+1)
+                print_input_args(e, level=level + 1)
             else:
-                print(f'level {level}', type(e))
+                print(f"level {level}", type(e))
 
     # def print_trace_execution_output(out: Any, show_content=False):
     #     if isinstance(out, tuple):
@@ -1138,38 +1325,38 @@ def benchmark_trace(trace: TraceCtx, iters: int = 1, show_func = False, apply_de
 
     def thunder_to_torch_float_dtype(tp: dtype, byte: int) -> torch.dtype:
         if byte == 1:
-            raise AssertionError('Not implmented: 8 bit float')
+            raise AssertionError("Not implmented: 8 bit float")
         # Dispatch flaot 16 type 1 from type 2
-        elif (byte == 2):
+        elif byte == 2:
             if tp._name == thunder.bfloat16._name:
                 return torch.bfloat16
             else:
                 return torch.float16
-        elif (byte == 4):
+        elif byte == 4:
             return torch.float32
         elif byte == 8:
             return torch.float64
         else:
-            raise AssertionError(f'Not supported byte = {byte}')
+            raise AssertionError(f"Not supported byte = {byte}")
 
     def thunder_to_torch_int_dtype(byte: int) -> torch.dtype:
         if byte == 1:
             return torch.int8
-        elif (byte == 2):
+        elif byte == 2:
             return torch.int16
-        elif (byte == 4):
+        elif byte == 4:
             return torch.int32
-        elif (byte == 8):
+        elif byte == 8:
             return torch.int64
         else:
-            raise AssertionError(f'Not supported byte = {byte}')
+            raise AssertionError(f"Not supported byte = {byte}")
 
     # TODO (matteochen): use more appropriate mock int and float
     def transform_input_tuple(t: tuple, level=0) -> tuple:
         res = []
         for e in t:
             if type(e) is tuple:
-                res.append(transform_input_tuple(e, level+1))
+                res.append(transform_input_tuple(e, level + 1))
             else:
                 if isinstance(e, TensorProxy):
                     res.append(transform_tensor(e))
@@ -1182,7 +1369,7 @@ def benchmark_trace(trace: TraceCtx, iters: int = 1, show_func = False, apply_de
                     res.append(0.0 if e.value is None else e.value)
                 else:
                     # TODO (matteochen): support more data types
-                    raise AssertionError(f'Input arg type not recognized: {type(e)}')
+                    raise AssertionError(f"Input arg type not recognized: {type(e)}")
         return tuple(res)
 
     def transform_tensor(arg: TensorProxy) -> torch.Tensor:
@@ -1196,13 +1383,19 @@ def benchmark_trace(trace: TraceCtx, iters: int = 1, show_func = False, apply_de
         requires_grad = arg.requires_grad
         if dtype is not None and is_float_dtype(dtype):
             torch_dtype = thunder_to_torch_float_dtype(dtype, dtype.bytes)
-            tensor: torch.Tensor = torch.randn(*shape, dtype=torch_dtype, device=device.device_str(), requires_grad=requires_grad)
+            tensor: torch.Tensor = torch.randn(
+                *shape, dtype=torch_dtype, device=device.device_str(), requires_grad=requires_grad
+            )
         elif dtype is not None and is_signedinteger_dtype(dtype):
             torch_dtype = thunder_to_torch_int_dtype(dtype.bytes)
-            tensor: torch.Tensor = torch.randint(0, 10, shape, dtype=torch_dtype, device=device.device_str(), requires_grad=requires_grad)
+            tensor: torch.Tensor = torch.randint(
+                0, 10, shape, dtype=torch_dtype, device=device.device_str(), requires_grad=requires_grad
+            )
         elif dtype is not None and is_boolean_dtype(dtype):
             # TODO (matteochen): maybe random?
-            tensor: torch.Tensor = torch.zeros(*shape, dtype=torch.bool, device=device.device_str(), requires_grad=requires_grad)
+            tensor: torch.Tensor = torch.zeros(
+                *shape, dtype=torch.bool, device=device.device_str(), requires_grad=requires_grad
+            )
         else:
             # TODO (matteochen): support other types
             raise AssertionError(f"dtype {dtype} not supported yet")
@@ -1226,9 +1419,9 @@ def benchmark_trace(trace: TraceCtx, iters: int = 1, show_func = False, apply_de
             elif isinstance(arg, FloatProxy):
                 input_args.append(0.0 if arg.value is None else arg.value)
             else:
-                raise AssertionError(f'Input arg type not recognized: {type(arg)}')
+                raise AssertionError(f"Input arg type not recognized: {type(arg)}")
     else:
-        raise AssertionError('Unexpexcted args type')
+        raise AssertionError("Unexpexcted args type")
 
     # Always benchmark trace after a deletion last used pass as the final trace out will passed under this stage
     if apply_del_last_used:
@@ -1259,23 +1452,25 @@ def benchmark_trace(trace: TraceCtx, iters: int = 1, show_func = False, apply_de
     if show_func:
         print(inspect.getsource(executable))
 
-    t = float('inf')
-    m = float('inf')
+    t = float("inf")
+    m = float("inf")
     answer = None
     try:
         t, m, answer = compute_time_cost_ms(executable, iters, *input_args)
     except Exception as e:
         # https://github.com/Lightning-AI/lightning-thunder/issues/664
-        print(f'Exception:\n{e}')
-        if 'call_method UserDefinedObjectVariable(set) __contains__ [UserDefinedObjectVariable()] {}' in str(e):
-            print('Executing with torch compile no full graph (this might still fail), see: https://github.com/Lightning-AI/lightning-thunder/issues/664')
+        print(f"Exception:\n{e}")
+        if "call_method UserDefinedObjectVariable(set) __contains__ [UserDefinedObjectVariable()] {}" in str(e):
+            print(
+                "Executing with torch compile no full graph (this might still fail), see: https://github.com/Lightning-AI/lightning-thunder/issues/664"
+            )
             torch_compiled = torch.compile(executable, fullgraph=False)
             try:
                 t, m, answer = compute_time_cost_ms(torch_compiled, iters, *input_args)
             except Exception as e:
-                print(f'Compiled trace execution still failed:\n{e}')
+                print(f"Compiled trace execution still failed:\n{e}")
         else:
-            raise AssertionError(f'Unhandled exception occured:\n{e}')
+            print(f"Unknown exception occured:\n{e}")
     finally:
         reset_tracectx(trace_tok)
 
