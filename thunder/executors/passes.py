@@ -23,7 +23,7 @@ from thunder.core.trace import get_tracectx
 from thunder.executors.pythonex import clear_mutable_collection
 
 from thunder.extend import Executor, get_all_executors, get_always_executors, OperatorExecutor, FusionExecutor
-from thunder.backend_optimizer.optimizer import BackendOptimizer, OptimizerType
+from thunder.backend_optimizer.optimizer import BackendOptimizer, OptimizerType, TraceCandidates, TraceType
 from thunder.visualizer.graphviz import create_graphviz_pdf
 from thunder.visualizer.visualizer_helper import Visualizer
 
@@ -136,13 +136,15 @@ def _transform_for_operator_executor_execution(trace: TraceCtx, executors_list: 
     return extrace
 
 # Autotuned transform_for_execution version
-def autotune_transform_for_execution(trace: TraceCtx, executors_list: Sequence[Executor], autotune_type: OptimizerType, visualizer: Visualizer | None = None) -> TraceCtx:
+def autotune_transform_for_execution(
+    *, optimizer_context: BackendOptimizer, trace: TraceCtx, trace_type: TraceType
+) -> tuple[TraceCtx, TraceCtx] | None:
     import torch
+
+    start_time_ns = time.perf_counter_ns()
 
     # Recover the function name
     sig_name = cutils.get_siginfo_name(trace)
-
-    start_time_ns = time.perf_counter_ns()
 
     if torch.distributed.is_available():
         # Apply AllReduce bucketing if possible & needed
@@ -150,20 +152,39 @@ def autotune_transform_for_execution(trace: TraceCtx, executors_list: Sequence[E
 
         trace = apply_bucketing_to_grad_allreduce(trace)
 
-    trace = dce(trace)
-
-    backend_optimizer = BackendOptimizer(trace, executors_list, produce_log=True, log_file_name=f'autotune_transform_for_execution_{sig_name}.log', visualizer=visualizer, optimizer_type=autotune_type)
-    backend_optimizer.optimize()
-    backend_optimizer.benchmark_traces()
-    extrace = backend_optimizer.get_optimal_trace()
+    # Attach new trace and set the debug file name
+    optimizer_context.attach_trace(trace=trace, trace_type=trace_type)
+    optimizer_context.log_file_name = f'autotune_transform_for_execution_{sig_name}.log'
+    # Forward traces are cached inside the context
+    optimizer_context.optimize()
+    match trace_type:
+        case TraceType.FW:
+            # Nothing more left
+            pass
+        # When optimizing the backward pass, the optimizer will return the best fw and bw traces based on the requested autotune_type, no need to choose the fw pass manually
+        case TraceType.BW:
+            fw_extrace, bw_extrace = optimizer_context.get_optimal_fw_bw_traces()
 
     end_time_ns = time.perf_counter_ns()
     elapsed_time_ns = end_time_ns - start_time_ns
     elapsed_time_millis = elapsed_time_ns // 1000000
 
-    extrace.set_provenance(TraceProvenance(f"Autotuned transform for execution (strat: {autotune_type}) (took {elapsed_time_millis} milliseconds)"))
-    return extrace
-
+    # Assign the trace provenance
+    match trace_type:
+        case TraceType.FW:
+            fw_extrace_time, fw_extrace_mem = optimizer_context.get_optimal_fw_traces_time_and_mem()
+            fw_extrace_time.set_provenance(
+                TraceProvenance(f"Autotuned transform for execution (took {elapsed_time_millis} milliseconds)")
+            )
+            fw_extrace_mem.set_provenance(
+                TraceProvenance(f"Autotuned transform for execution (took {elapsed_time_millis} milliseconds)")
+            )
+            return None
+        case TraceType.BW:
+            bw_extrace.set_provenance(
+                TraceProvenance(f"Autotuned transform for execution (took {elapsed_time_millis} milliseconds)")
+            )
+            return fw_extrace, bw_extrace
 
 def transform_for_execution(trace: TraceCtx, executors_list: Sequence[Executor]) -> TraceCtx:
     import torch
