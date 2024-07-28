@@ -133,7 +133,6 @@ class BackendOptimizer:
 
         # Strat greedy
         self.computation_graph: Graph
-        self.incremental_search_out_trace: TraceCtx
 
         # Strat fusion
         self.fusion_strat_helper: FusionStratHelper = FusionStratHelper()
@@ -184,8 +183,7 @@ class BackendOptimizer:
                     raise AssertionError(
                         "Can not optimize backward traces before forward traces")
 
-    # TODO (matteochen): this has a lot in common with the exaustive search, compact them
-    def build_placement_options_greedy(self, whoami: TraceType = TraceType.FW):
+    def build_placement_options_greedy(self):
         import sys
 
         old_max_recursion = sys.getrecursionlimit()
