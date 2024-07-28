@@ -114,7 +114,6 @@ class BackendOptimizer:
         visualizer: Visualizer | None = None,
         optimizer_type: OptimizerType = OptimizerType.RUNTIME,
     ) -> None:
-        print(f"OO {optimizer_type}")
         self.always_executors: tuple[Executor, ...] = get_always_executors()
         self.empty_executor_hashable_placeholder: str = "empty"
         self.executors: Sequence[Executor] = resolve_executors(
@@ -968,7 +967,7 @@ class BackendOptimizer:
                     for k in range(start_idx + i + 1, len(group), increment_factor):
                         match_bsym_output(
                             group[k], dict_time_strat, dict_mem_strat, get_optimal_executor(
-                                group[k + start_idx])
+                                group[k])
                         )
                     # Benchmark
                     measure_and_update_result()
