@@ -9,7 +9,7 @@ from thunder.core.proxies import CollectionProxy, FloatProxy, IntegerProxy, Prox
 from thunder.core.symbol import BoundSymbol, Symbol
 from thunder.core.trace import from_trace, set_tracectx, reset_tracectx, get_tracectx, TraceCtx
 from thunder.executors.data_dependent_partition import Graph, Node
-from thunder.extend import Executor, FusionExecutor, OperatorExecutor, get_always_executors, resolve_executors
+from thunder.extend import Executor, FusionExecutor, OperatorExecutor, get_always_executors
 from thunder.visualizer.visualizer_helper import Visualizer
 from typing import Any, Hashable
 import thunder
@@ -30,9 +30,8 @@ class TraceType(Enum):
 
 
 class OptimizationAlgorithm(Enum):
-    EXAUSTIVE = 0
-    GREEDY = 1
-    BEST_FUSER = 2
+    GREEDY = 0
+    BEST_FUSER = 1
 
 
 class OptimizerNode:
@@ -48,7 +47,6 @@ class TraceCandidates:
     def __init__(self, best_time: TraceCtx | None = None, best_mem: TraceCtx | None = None) -> None:
         self.best_time: TraceCtx | None = best_time
         self.best_mem: TraceCtx | None = best_mem
-        self.time_took: float = 0
 
     def __repr__(self) -> str:
         return f"\nBest runtime candidate:\n{self.best_time}\nBest memory candidate:\n{self.best_mem}"
@@ -62,11 +60,8 @@ class TraceCandidates:
     def attach_best_mem_candidate(self, trace: TraceCtx):
         self.best_mem = trace
 
-    def assign_time_took(self, time: float):
-        self.time_took = time
-
-    def to_list(self) -> list[TraceCtx | None]:
-        return [self.best_time, self.best_mem]
+    def iterable(self) -> tuple[TraceCtx | None, TraceCtx | None]:
+        return self.best_time, self.best_mem
 
 
 class FinalOutputCandidates:
@@ -190,7 +185,7 @@ class BackendOptimizer:
                         "Can not optimize backward traces before forward traces")
 
     # TODO (matteochen): this has a lot in common with the exaustive search, compact them
-    def build_placement_options_incremental(self, whoami: TraceType = TraceType.FW):
+    def build_placement_options_greedy(self, whoami: TraceType = TraceType.FW):
         import sys
 
         old_max_recursion = sys.getrecursionlimit()
@@ -335,51 +330,6 @@ class BackendOptimizer:
         self.log(f"Best fused trace (time = {best_time } ms):\n{best_trace}")
 
         return best_trace
-
-    def build_placement_options_exaustive(self):
-        # We assign an internal id to each symbol based on its idx inside the bound_symbols list
-        def search(node: self.SearchNode, configuration):
-            def continue_search():
-                if node.idx + 1 < max_len:
-                    new_idx: int = node.idx + 1
-                    new_symbol: BoundSymbolInterface = bound_symbols[new_idx]
-                    search(self.SearchNode(new_symbol, new_idx), configuration)
-                else:
-                    all_configurations.append(list(configuration))
-
-            ex: Executor
-            has_backend = False
-            for ex in self.executors:
-                if not isinstance(node.symbol, BoundSymbol):
-                    raise AssertionError(
-                        "Receive a symbol which is not a BoundSymbol")
-                if isinstance(ex, OperatorExecutor) and ex.can_execute(node.symbol):
-                    has_backend = True
-                    configuration.append(ex)
-                    continue_search()
-                    configuration.pop(-1)
-                if isinstance(ex, FusionExecutor) and ex.can_fuse(node.symbol):
-                    has_backend = True
-                    configuration.append(ex)
-                    continue_search()
-                    configuration.pop(-1)
-
-            if not has_backend:
-                configuration.append(empty_executor)
-                continue_search()
-                configuration.pop(-1)
-
-        bound_symbols: list[BoundSymbolInterface] = self.trace.bound_symbols
-        max_len = len(bound_symbols)
-
-        all_configurations: list[list[Executor]] = []
-        # Is the name reserved?
-        empty_executor = Executor(
-            name=self.empty_executor_hashable_placeholder)
-
-        if len(bound_symbols) > 0:
-            search(self.SearchNode(bound_symbols[0], 0), [])
-            self.placement_options = all_configurations
 
     def place_optimizers(self, in_trace, executor_list: list[Executor]) -> TraceCtx:
         from thunder.executors.passes import _transform_for_operator_executor_execution
@@ -540,20 +490,19 @@ class BackendOptimizer:
 
     # TODO (matteochen): add config for exaustive search or incremental one
     def optimize(self, strat: OptimizationAlgorithm = OptimizationAlgorithm.BEST_FUSER):
-        import thunder.core.codeutils as cutils
         from thunder.executors.passes import transform_for_execution
         from thunder.core.transform_common import replace_redundant_inputs
         from thunder.core.transform_common import dce
 
         self.optimization_algorithm = strat
 
-        def best_fuser():
+        def optmize_best_fuser():
             # Reset fusion helpers
             self.fusion_strat_helper = FusionStratHelper()
             # Reset helpers data structures
             self.executor_placement_options = ExecutorPlacementOptions()
 
-            self.build_placement_options_fusion_regions()
+            self.build_placement_options_best_fuser()
 
             if len(self.executor_placement_options.placement_options_time) != len(self.fusion_executors):
                 raise AssertionError(
@@ -580,12 +529,12 @@ class BackendOptimizer:
                 self.cached_fw_traces = self.fw_trace_candidates
                 self.log(f"Caching fw traces\n{self.cached_fw_traces}")
 
-        def greedy():
+        def optimize_greedy():
             # Reset helpers data structures
             self.executor_placement_options = ExecutorPlacementOptions()
 
             # 1. This builds one option by default
-            self.build_placement_options_incremental()
+            self.build_placement_options_greedy()
 
             if len(self.placement_options) != 1:
                 raise AssertionError("Unexpected placement options size")
@@ -609,33 +558,15 @@ class BackendOptimizer:
 
             # There are no hidden placements hence do not call the visualizer
 
-        def exaustive():
-            # This builds one option by default
-            self.build_placement_options_exaustive()
-
-            self.log(f"Placement options size: {len(self.placement_options)}")
-
-            for option in self.placement_options:
-                option_str = [str(ex.name) for ex in option]
-                option_str = "-".join(option_str)
-                trace = self.place_optimizers(self.trace, option)
-
-                if self.visualizer is not None:
-                    sig_name = cutils.get_siginfo_name(trace)
-                    # TODO (matteochen): consider adding more infos for naming
-                    self.visualizer.set_hidden_trace(
-                        f"hidden-{sig_name}-{option_str}", trace)
-
-                self.optimized_traces.append({option_str: trace})
+            # Run benchmarks
+            self.benchmark_traces()
 
         def match_optimizer_algorithm():
             match self.optimization_algorithm:
                 case OptimizationAlgorithm.GREEDY:
-                    greedy()
-                case OptimizationAlgorithm.EXAUSTIVE:
-                    exaustive()
+                    optimize_greedy()
                 case OptimizationAlgorithm.BEST_FUSER:
-                    best_fuser()
+                    optmize_best_fuser()
 
         start_time = time.perf_counter_ns()
 
@@ -644,7 +575,7 @@ class BackendOptimizer:
                 match_optimizer_algorithm()
             # We have multiple cached optimized fw traces, find the best backward
             case TraceType.BW:
-                fw_traces = self.fw_trace_candidates.to_list()
+                fw_traces = self.fw_trace_candidates.iterable()
                 # Cached the bw trace as we need to modify the input trace during the loop
                 cached_self_trace = from_trace(self.trace)
                 cached_self_trace.bound_symbols = list(
@@ -706,7 +637,7 @@ class BackendOptimizer:
             self.bw_trace_candidates.assign_time_took(
                 (end_time - start_time) // 1000000)
 
-    def build_placement_options_fusion_regions(self, increment_factor: int = 1):
+    def build_placement_options_best_fuser(self, increment_factor: int = 1):
         from thunder.executors.data_dependent_partition import Node, fuse_bound_symbols
         from thunder.core.rematerialization import rematerialize_forward_and_backward
 
