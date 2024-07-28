@@ -14,6 +14,7 @@ from thunder.visualizer.visualizer_helper import Visualizer
 from typing import Any, Hashable
 import thunder
 import thunder.core.transforms as transforms
+import concurrent.futures
 import torch
 import time
 
@@ -1321,7 +1322,6 @@ def return_not_used_vars(trace_in: TraceCtx) -> list[TensorProxy]:
     return ans
 
 
-# This will benchmark the input trace with the del_last_used call
 # TODO (matteochen): move into utils module
 def benchmark_trace(
     trace: TraceCtx, iters: int = 1, show_func=False, apply_del_last_used=True, snapshot=False, snapshot_name=""
@@ -1396,6 +1396,7 @@ def benchmark_trace(
     #     else:
     #         print(f'{type(out)}')
 
+    # TODO (matteochen): convert this into dict
     def thunder_to_torch_float_dtype(tp: dtype, byte: int) -> torch.dtype:
         if byte == 1:
             raise AssertionError("Not implmented: 8 bit float")
@@ -1412,6 +1413,7 @@ def benchmark_trace(
         else:
             raise AssertionError(f"Not supported byte = {byte}")
 
+    # TODO (matteochen): convert this into dict
     def thunder_to_torch_int_dtype(byte: int) -> torch.dtype:
         if byte == 1:
             return torch.int8
@@ -1441,7 +1443,6 @@ def benchmark_trace(
                 elif isinstance(e, FloatProxy):
                     res.append(0.0 if e.value is None else e.value)
                 else:
-                    # TODO (matteochen): support more data types
                     raise AssertionError(
                         f"Input arg type not recognized: {type(e)}")
         return tuple(res)
@@ -1471,7 +1472,6 @@ def benchmark_trace(
                 *shape, dtype=torch.bool, device=device.device_str(), requires_grad=requires_grad
             )
         else:
-            # TODO (matteochen): support other types
             raise AssertionError(f"dtype {dtype} not supported yet")
 
         return tensor

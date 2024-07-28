@@ -324,6 +324,6 @@ def split_forward_backward(computation_trc: TraceCtx, compile_data, compile_stat
     visualizer.set_fw_final_trace(fw_extrace)
     visualizer.set_bw_final_trace(bw_extrace)
 
-    visualizer.produce()
+    # visualizer.produce()
 
     return fw_extrace, bw_extrace

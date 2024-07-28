@@ -4,25 +4,24 @@ import thunder
 import torch
 from thunder.backend_optimizer.optimizer import benchmark_trace
 
-layers = [4, 8, 16, 32]
+class Test:
+    def __init__(self, layers: int, autotune_type: str) -> None:
+        self.layers = layers
+        self.autotune_type = autotune_type
 
-for l in layers:
-    print('Layers:', l)
+layers = [Test(2, 'runtime')]
+
+for test in layers:
+    print('Layers:', test.layers)
     cfg = Config.from_name('Llama-2-7b-hf')
-    cfg.n_layer = l
+    cfg.n_layer = test.layers
     torch.set_default_dtype(torch.bfloat16)
     with torch.device('cuda'):
         model = GPT(cfg)
         x = torch.randint(1, model.config.vocab_size, (1, 512))
         jmodel_def = thunder.jit(model)
-        jmodel_auto = thunder.jit(model, autotune_type='runtime')
-        y = jmodel_def(x)
-        yy = jmodel_auto(x)
+        jmodel_auto = thunder.jit(model, autotune_type=test.autotune_type)
 
-        jmodel_def = thunder.jit(model)
-        jmodel_auto = thunder.jit(model, autotune_type='runtime')
-
-        y = model(x)
         print('deviation auto:', (jmodel_auto(x) - model(x)).abs().max().item())
         print('deviation def:', (jmodel_def(x) - model(x)).abs().max().item())
 
