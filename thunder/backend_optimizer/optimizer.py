@@ -569,8 +569,6 @@ class BackendOptimizer:
                 case OptimizationAlgorithm.BEST_FUSER:
                     optmize_best_fuser()
 
-        start_time = time.perf_counter_ns()
-
         match self.trace_type:
             case TraceType.FW:
                 match_optimizer_algorithm()
@@ -629,14 +627,6 @@ class BackendOptimizer:
                     dce(self.trace)
 
                     match_optimizer_algorithm()
-
-        end_time = time.perf_counter_ns()
-        if self.trace_type == TraceType.FW:
-            self.fw_trace_candidates.assign_time_took(
-                (end_time - start_time) // 1000000)
-        else:
-            self.bw_trace_candidates.assign_time_took(
-                (end_time - start_time) // 1000000)
 
     def build_placement_options_best_fuser(self, increment_factor: int = 1):
         from thunder.executors.data_dependent_partition import Node, fuse_bound_symbols
