@@ -5,7 +5,7 @@ import torch
 from thunder.backend_optimizer.optimizer import benchmark_trace
 
 cfg = Config.from_name('Llama-2-7b-hf')
-cfg.n_layer = 1 # fewer layers
+cfg.n_layer = 8 # fewer layers
 torch.set_default_dtype(torch.bfloat16)
 
 with torch.device('cuda'):
@@ -13,14 +13,7 @@ with torch.device('cuda'):
     x = torch.randint(1, model.config.vocab_size, (1, 512))
     jmodel_def = thunder.jit(model)
     jmodel_auto = thunder.jit(model, autotune_type='runtime')
-    y = jmodel_def(x)
-    yy = jmodel_auto(x)
 
-    jmodel_def = thunder.jit(model)
-    # This model fails under some circumstances after passed the placed traced under the rematelizer
-    jmodel_auto = thunder.jit(model, autotune_type='memory')
-
-    y = model(x)
     print('deviation auto:', (jmodel_auto(x) - model(x)).abs().max().item())
     print('deviation def:', (jmodel_def(x) - model(x)).abs().max().item())
 

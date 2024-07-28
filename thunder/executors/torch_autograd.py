@@ -235,7 +235,15 @@ def split_forward_backward(computation_trc: TraceCtx, compile_data, compile_stat
     bw_traces.append(bw_extrace)
     visualizer.set_bw_optimized_trace(bw_extrace)
 
+    print('before remat fw')
+    print(fw_extrace)
+    print('before remat bw')
+    print(bw_extrace)
     fw_extrace, bw_extrace = rematerialize_forward_and_backward(fw_extrace, bw_extrace)
+    print('after remat fw')
+    print(fw_extrace)
+    print('after remat bw')
+    print(bw_extrace)
     fw_traces.append(fw_extrace)
     bw_traces.append(bw_extrace)
 
@@ -314,6 +322,6 @@ def split_forward_backward(computation_trc: TraceCtx, compile_data, compile_stat
     visualizer.set_fw_final_trace(fw_extrace)
     visualizer.set_bw_final_trace(bw_extrace)
 
-    visualizer.produce()
+    # visualizer.produce()
 
     return fw_extrace, bw_extrace
