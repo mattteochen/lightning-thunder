@@ -117,10 +117,7 @@ class BackendOptimizer:
     ) -> None:
         self.always_executors: tuple[Executor, ...] = get_always_executors()
         self.empty_executor_hashable_placeholder: str = "empty"
-        self.executors: Sequence[Executor] = resolve_executors(
-            ["nvfuser", "torchcompile", "sdpa", "cudnn", "torch", "python"]
-        )
-        self.priority_executors: Sequence[Executor] = priority_executors
+        self.executors: Sequence[Executor] = priority_executors
         self.fusion_executors: Sequence[FusionExecutor] = [
             ex for ex in self.executors if isinstance(ex, FusionExecutor)
         ]
@@ -607,7 +604,7 @@ class BackendOptimizer:
 
             # 3. Try the priority list approach
             trace_priority = transform_for_execution(
-                self.trace, self.priority_executors)
+                self.trace, self.executors)
             self.optimized_traces.append({"priority_list": trace_priority})
 
             # There are no hidden placements hence do not call the visualizer
