@@ -127,6 +127,7 @@ class BackendOptimizer:
         self.optimization_algorithm: OptimizationAlgorithm | None = None
 
         self.cached_fw_trace: TraceCtx | None = None
+        self.cached_fw_traces: TraceCandidates | None = None
         self.fw_trace_candidates: TraceCandidates = TraceCandidates()
         self.bw_trace_candidates: TraceCandidates = TraceCandidates()
         self.out: list[FinalOutputCandidates] = []
@@ -525,7 +526,9 @@ class BackendOptimizer:
             # Cached computed fw traced placements
             if self.trace_type == TraceType.FW:
                 self.cached_fw_traces = self.fw_trace_candidates
-                self.log(f"Caching fw traces\n{self.cached_fw_traces}")
+                ct, mt, _ = benchmark_trace(self.cached_fw_traces.best_time, iters=10)
+                cm, mm, _ = benchmark_trace(self.cached_fw_traces.best_time, iters=10)
+                self.log(f"Caching fw traces (best time = {ct} ms, best mem {mm / (2**30)} GB)\n{self.cached_fw_traces}")
 
         def optimize_greedy():
             # Reset helpers data structures
@@ -1047,8 +1050,6 @@ class BackendOptimizer:
             case OptimizationAlgorithm.GREEDY:
                 # TODO (matteochen)
                 raise AssertionError("Not supported")
-            case OptimizationAlgorithm.EXAUSTIVE:
-                raise AssertionError("Not supported")
 
         # Find best trace for runtime
         for i, trace_info in enumerate(source_time):
@@ -1104,7 +1105,7 @@ class BackendOptimizer:
             f'Benchmark end: Best trace mem "{mem.label} (mem = {mem.mem / (2 ** 30)} GB)":\n{mem.trace}')
 
         # TODO (matteochen): remove this
-        self.log("Strat comparison")
+        self.log(f"Strat comparison: {self.trace_type}")
         c, m, o = benchmark_trace(tm.trace)
         del o
         self.log(f"best time: {c} ms,  {m/(2**30)} GB")
