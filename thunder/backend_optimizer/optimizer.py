@@ -728,7 +728,7 @@ class BackendOptimizer:
             return name
 
         # TODO (matteochen): Benchmark the optimal executor and call this optimal
-        def get_optimal_executor(bsym: BoundSymbol):
+        def get_first_available_executor(bsym: BoundSymbol):
             for ex in self.executors:
                 if isinstance(ex, FusionExecutor):
                     continue
@@ -870,7 +870,7 @@ class BackendOptimizer:
                     current_bsym = group[0]
                     self.log(f"--> Single group: {current_bsym.sym.name}")
                     name = current_bsym.sym.name
-                    optimal_ex = get_optimal_executor(current_bsym)
+                    optimal_ex = get_first_available_executor(current_bsym)
                     if name == "return":
                         dict_time_strat["return"] = optimal_ex
                         dict_mem_strat["return"] = optimal_ex
@@ -964,7 +964,7 @@ class BackendOptimizer:
                             group[j], dict_time_strat, dict_mem_strat, ex)
                     for k in range(start_idx + i + 1, len(group), increment_factor):
                         match_bsym_output(
-                            group[k], dict_time_strat, dict_mem_strat, get_optimal_executor(
+                            group[k], dict_time_strat, dict_mem_strat, get_first_available_executor(
                                 group[k])
                         )
                     # Benchmark
@@ -1496,7 +1496,6 @@ def benchmark_trace(
     else:
         raise AssertionError("Unexpexcted args type")
 
-    # Always benchmark trace after a deletion last used pass as the final trace out will passed under this stage
     if apply_del_last_used:
         trace = del_last_used(trace)
 
