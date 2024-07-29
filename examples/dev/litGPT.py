@@ -19,10 +19,9 @@ for test in layers:
     with torch.device('cuda'):
         model = GPT(cfg)
         x = torch.randint(1, model.config.vocab_size, (1, 512))
-        executors = ['nvfuser', 'torchcompile', 'sdpa', 'cudnn', 'torch', 'python']
 
-        jmodel_def = thunder.jit(model, executors=executors)
-        jmodel_auto = thunder.jit(model, autotune_type=test.autotune_type, executors=executors)
+        jmodel_def = thunder.jit(model)
+        jmodel_auto = thunder.jit(model, autotune_type=test.autotune_type, executors = ['nvfuser', 'torchcompile', 'sdpa', 'cudnn', 'torch', 'python'])
 
         print('deviation auto:', (jmodel_auto(x) - model(x)).abs().max().item())
         print('deviation def:', (jmodel_def(x) - model(x)).abs().max().item())

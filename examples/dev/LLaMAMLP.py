@@ -20,11 +20,11 @@ with torch.device('cuda'):
     a = 4096 * mult
     b = 11008 * mult
     x = torch.randn(2, 2048, a, requires_grad=True)
-    executors = ['nvfuser', 'torchcompile', 'sdpa', 'cudnn', 'torch', 'python']
+
     model = LLaMAMLP(a, b)
 
-    jmodel_def = thunder.jit(model, executors=executors)
-    jmodel_auto = thunder.jit(model, autotune_type='runtime', executors=executors)
+    jmodel_def = thunder.jit(model)
+    jmodel_auto = thunder.jit(model, autotune_type='runtime', executors = ['nvfuser', 'torchcompile', 'sdpa', 'cudnn', 'torch', 'python'])
 
     y = model(x)
     print('deviation auto:', (jmodel_auto(x) - model(x)).abs().max().item())

@@ -1,4 +1,3 @@
-from sys import executable
 import torch
 import torch.nn as nn
 import thunder
@@ -36,13 +35,12 @@ with torch.device('cuda'):
     config = ModelConfig(n_embd=embeddings)
     dtype = torch.float32
     x = torch.randn(16, 1024, embeddings, requires_grad=True)
-    executors = ['nvfuser', 'torchcompile', 'sdpa', 'cudnn', 'torch', 'python']
 
     model = MLP(config)
 
-    jmodel_def = thunder.jit(model, executors=executors)
+    jmodel_def = thunder.jit(model)
     # This model fails under some circumstances after passed the placed traced under the rematelizer
-    jmodel_auto = thunder.jit(model, autotune_type='memory', executors=executors)
+    jmodel_auto = thunder.jit(model, autotune_type='emory', executors = ['nvfuser', 'torchcompile', 'sdpa', 'cudnn', 'torch', 'python'])
 
     y = model(x)
     print('deviation auto:', (jmodel_auto(x) - model(x)).abs().max().item())
