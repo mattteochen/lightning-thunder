@@ -1019,6 +1019,8 @@ class BackendOptimizer:
                 self.log(f"New best pair:\n{pair}")
                 min_value = pair.tot_cost
                 ans = pair
+        if ans is None:
+            raise AssertionError('Best pair not found')
         return ans.fw, ans.bw
 
     def bsym_assigned(self, bsym: BoundSymbol) -> bool:
@@ -1044,12 +1046,8 @@ class BackendOptimizer:
         # Find best trace for runtime
         for i, trace_info in enumerate(source_time):
             # Unpack the dict
-            label = None
-            trace = None
-            for k, v in trace_info.items():
-                label = k
-                trace = v
-
+            label = list(trace_info.keys())[0]
+            trace = list(trace_info.values())[0]
             trace_time, trace_mem, res = benchmark_trace(trace, iters=10)
             del res
             self.debug_msg += (
@@ -1068,11 +1066,8 @@ class BackendOptimizer:
         # Find best trace for memory
         for i, trace_info in enumerate(source_mem):
             # Unpack the dict
-            label = None
-            trace = None
-            for k, v in trace_info.items():
-                label = k
-                trace = v
+            label = list(trace_info.keys())[0]
+            trace = list(trace_info.values())[0]
 
             trace_time, trace_mem, res = benchmark_trace(trace, iters=10)
             del res
@@ -1110,28 +1105,18 @@ class BackendOptimizer:
                 # Here we have to recover the traces without the pass through remat in order to be compliant
                 # with thunder flow as we might have request for no remat
 
-                d = self.fusion_strat_helper.optimized_traces_time[tm.index]
-                t = None
                 # Unpack dict
-                for _, v in d.items():
-                    t = v
-                if t is None:
-                    raise AssertionError("None trace")
-
+                d = self.fusion_strat_helper.optimized_traces_time[tm.index]
+                t = list(d.values())[0]
                 match self.trace_type:
                     case TraceType.FW:
                         self.fw_trace_candidates.attach_best_time_candidate(t)
                     case TraceType.BW:
                         self.bw_trace_candidates.attach_best_time_candidate(t)
 
-                d = self.fusion_strat_helper.optimized_traces_mem[mem.index]
-                t = None
                 # Unpack dict
-                for _, v in d.items():
-                    t = v
-                if t is None:
-                    raise AssertionError("None trace")
-
+                d = self.fusion_strat_helper.optimized_traces_mem[mem.index]
+                t = list(d.values())[0]
                 match self.trace_type:
                     case TraceType.FW:
                         self.fw_trace_candidates.attach_best_mem_candidate(t)
