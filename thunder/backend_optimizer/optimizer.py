@@ -16,7 +16,6 @@ import thunder
 import thunder.core.transforms as transforms
 import concurrent.futures
 import torch
-import time
 
 
 class OptimizerType(Enum):
