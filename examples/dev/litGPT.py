@@ -9,11 +9,13 @@ class Test:
         self.layers = layers
         self.autotune_type = autotune_type
 
-layers = [Test(2, 'runtime')]
+layers = [Test(1, 'runtime')]
+
+model_name = 'Llama-2-7b-hf'
 
 for test in layers:
     print('Layers:', test.layers)
-    cfg = Config.from_name('Llama-2-7b-hf')
+    cfg = Config.from_name(model_name)
     cfg.n_layer = test.layers
     torch.set_default_dtype(torch.bfloat16)
     with torch.device('cuda'):
@@ -23,22 +25,18 @@ for test in layers:
         jmodel_def = thunder.jit(model)
         jmodel_auto = thunder.jit(model, autotune_type=test.autotune_type, executors = ['nvfuser', 'torchcompile', 'sdpa', 'cudnn', 'torch', 'python'])
 
-        print('deviation auto:', (jmodel_auto(x) - model(x)).abs().max().item())
         print('deviation def:', (jmodel_def(x) - model(x)).abs().max().item())
+        print('deviation auto:', (jmodel_auto(x) - model(x)).abs().max().item())
 
         print('Results ########################################')
-        c, m, o = benchmark_trace(thunder.last_traces(jmodel_def)[-1], apply_del_last_used=False, snapshot=True, snapshot_name='llama-2-7b-hf_def_fw')
+        c, m, _ = benchmark_trace(thunder.last_traces(jmodel_def)[-1], apply_del_last_used=False, snapshot=True, snapshot_name=model_name)
         print(f'Executing default fw trace:\n{c} ms, {m / (2**30)} GB')
-        del o
-        c, m, o = benchmark_trace(thunder.last_traces(jmodel_auto)[-1], apply_del_last_used=False, snapshot=True, snapshot_name='llama-2-7b-hf_auto_fw')
+        c, m, _ = benchmark_trace(thunder.last_traces(jmodel_auto)[-1], apply_del_last_used=False, snapshot=True, snapshot_name=model_name)
         print(f'Executing auto fw trace:\n{c} ms, {m / (2**30)} GB')
-        del o
-        c, m, o = benchmark_trace(thunder.last_backward_traces(jmodel_def)[-1], apply_del_last_used=False, snapshot=True, snapshot_name='llama-2-7b-hf_def_bw')
+        c, m, _ = benchmark_trace(thunder.last_backward_traces(jmodel_def)[-1], apply_del_last_used=False, snapshot=True, snapshot_name=model_name)
         print(f'Executing default bw trace:\n{c} ms, {m / (2**30)} GB')
-        del o
-        c, m, o = benchmark_trace(thunder.last_backward_traces(jmodel_auto)[-1], apply_del_last_used=False, snapshot=True, snapshot_name='llama-2-7b-hf_auto_bw')
+        c, m, _ = benchmark_trace(thunder.last_backward_traces(jmodel_auto)[-1], apply_del_last_used=False, snapshot=True, snapshot_name=model_name)
         print(f'Executing auto bw trace:\n{c} ms, {m / (2**30)} GB')
-        del o
 
         print('\n\n\n\n\n\n')
         print(f'{thunder.last_traces(jmodel_def)[-1]}')
