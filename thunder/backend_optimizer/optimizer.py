@@ -139,6 +139,8 @@ class BackendOptimizer:
 
         self.apply_bucketing_bw_trace: bool = apply_bucketing_bw_trace
 
+        self.benchmark_iters = 10
+
         self.log("Executors:")
         for e in self.executors:
             self.log(
@@ -224,7 +226,7 @@ class BackendOptimizer:
             # Place the assigned symbols
             placed_t = self.place_optimizers(t, configuration)
 
-            cost, mem, answer = benchmark_trace(placed_t, iters=5)
+            cost, mem, answer = benchmark_trace(placed_t, self.benchmark_iters)
             del answer
             self.log(
                 f"Executing partial trace for incremental benchmark:\n{placed_t}")
@@ -306,7 +308,7 @@ class BackendOptimizer:
     # try to fuse then and compare
     def try_to_fuse_after_executors_placement(self, trace_in: TraceCtx) -> TraceCtx:
         best_trace: TraceCtx = trace_in
-        best_time, best_mem, answer = benchmark_trace(best_trace, iters=10)
+        best_time, best_mem, answer = benchmark_trace(best_trace, self.benchmark_iters)
         del answer
         trace_in_time = best_time
 
@@ -315,7 +317,7 @@ class BackendOptimizer:
             extrace = ex.fusion_pass(trace_in)
             self.log(f"Fused trace:\n{extrace}")
             extrace_time, extrace_mem, answer = benchmark_trace(
-                extrace, iters=10)
+                extrace, self.benchmark_iters)
             del answer
             self.log(f"Fused trace time:{extrace_time} ms")
 
@@ -573,6 +575,9 @@ class BackendOptimizer:
                     self.log(f'Backward optimization with fw from {label}')
                     fw_traces = candidate.iterable()
                     for trc in fw_traces:
+
+                        # TODO (matteochen): unify below with the original block
+
                         # Restore the original bw trace
                         self.trace = from_trace(cached_self_trace)
                         self.trace.bound_symbols = list(
@@ -826,7 +831,7 @@ class BackendOptimizer:
                     if self.trace_type == TraceType.BW and self.active_fw_trace is not None:
                         _, trc = rematerialize_forward_and_backward(
                             self.active_fw_trace, trc)
-                    cost, mem, out = benchmark_trace(trc, iters=3)
+                    cost, mem, out = benchmark_trace(trc, self.benchmark_iters)
                     del out
                     self.log(
                         f"Placed trace (cost = {cost} ms, mem = {mem/(2**30)} GB)\n{trc}")
@@ -1037,13 +1042,13 @@ class BackendOptimizer:
                         trc_mem = list(pair_mem.values())[0]
                         label = list(pair_time.keys())[0]
                         # TODO (matteochen): remove the benchmark here as will done later on the bw pass
-                        c, m, _ = benchmark_trace(trc_time, iters=10)
+                        c, m, _ = benchmark_trace(trc_time, self.benchmark_iters)
                         self.log(
                             f'Benchmark fw end: Trace = [{label}] (time = {c} ms, mem = {m / (2**30)} GB)":\n{trc_time}')
                         self.debug_msg += (
                                 f"Trace name = [{label}] - Target: TIME - Time = {c} ms - Mem = {m / (2**30)} GB\n{trc_time}\n\n"
                         )
-                        c, m, _ = benchmark_trace(trc_mem, iters=10)
+                        c, m, _ = benchmark_trace(trc_mem, self.benchmark_iters)
                         self.log(
                             f'Benchmark fw end: Trace = [{label}] (time = {c} ms, mem = {m / (2**30)} GB)":\n{trc_mem}')
                         self.debug_msg += (
@@ -1062,7 +1067,7 @@ class BackendOptimizer:
                 # Unpack the dict
                 label = list(pair.keys())[0]
                 trace = list(pair.values())[0]
-                trace_time, trace_mem, res = benchmark_trace(trace, iters=10)
+                trace_time, trace_mem, res = benchmark_trace(trace, self.benchmark_iters)
                 self.debug_msg += (
                         f"Trace name = [{label}] - Target: TIME - Time = {trace_time} ms - Mem = {trace_mem / (2**30)} GB\n{trace}\n\n"
                 )
@@ -1082,7 +1087,7 @@ class BackendOptimizer:
                 label = list(pair.keys())[0]
                 trace = list(pair.values())[0]
 
-                trace_time, trace_mem, res = benchmark_trace(trace, iters=10)
+                trace_time, trace_mem, res = benchmark_trace(trace, self.benchmark_iters)
                 del res
                 self.debug_msg += (
                     f"Trace name = [{label}] - Target: MEM - Mem = {trace_mem / (2**30)} GB - Time = {trace_time} ms\n{trace}\n\n"
@@ -1128,7 +1133,7 @@ class BackendOptimizer:
             # Now, finally build the pair fw and bw traces for the requested strat
             # The current fw trace is set by the caller and we take it as is. All current bw traces optimizations are made with the fw trace set by the caller
             forward_time, forward_memory, _ = benchmark_trace(
-                self.active_fw_trace, iters=10)
+                self.active_fw_trace, self.benchmark_iters)
             match self.optimizer_type:
                 case OptimizerType.RUNTIME:
                     # Used the computed benchmark from above
