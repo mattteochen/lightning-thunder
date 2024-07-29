@@ -747,18 +747,18 @@ class BackendOptimizer:
 
                 return _can_fuse_node(a) and _can_fuse_node(b)
 
-            def match_bsym_output(bsym_in: BoundSymbol, time_dict: dict, mem_dict: dict, ex_in: Executor):
+            def match_bsym_output(bsym_in: BoundSymbol, dicts: list[dict], ex_in: Executor):
                 if isinstance(bsym_in.output, Sequence):
-                    time_dict[sequence_hash(bsym_in.output)] = ex_in
-                    mem_dict[sequence_hash(bsym_in.output)] = ex_in
+                    for d in dicts:
+                        d[sequence_hash(bsym_in.output)] = ex_in
                 elif (
                     isinstance(bsym_in.output, CollectionProxy)
                     or isinstance(bsym_in.output, TensorProxy)
                     or isinstance(bsym_in.output, IntegerProxy)
                     or isinstance(bsym_in.output, FloatProxy)
                 ):
-                    time_dict[bsym_in.output.name] = ex_in
-                    mem_dict[bsym_in.output.name] = ex_in
+                    for d in dicts:
+                        d[bsym_in.output.name] = ex_in
                 else:
                     raise AssertionError(
                         f"Type not handled: {type(bsym_in.output)}")
@@ -786,20 +786,52 @@ class BackendOptimizer:
                 if group[0].sym.name != "return":
                     increasing_symbols += group
 
-                # Is not a fusion region, get the optimal executor
+                # Is not a fusion region, get the optimal executor (OperatorExecutor)
                 if len(group) < 2:
                     current_bsym = group[0]
                     self.log(f"--> Single group: {current_bsym.sym.name}")
                     name = current_bsym.sym.name
-                    optimal_ex = get_first_available_executor(current_bsym)
+                    candidate_executors = [ex for ex in self.executors if ex.can_execute(current_bsym) and not isinstance(ex, FusionExecutor)]
                     if name == "return":
-                        dict_time_strat["return"] = optimal_ex
-                        dict_mem_strat["return"] = optimal_ex
+                        dict_time_strat["return"] = Executor(name=self.empty_executor_hashable_placeholder)
+                        dict_mem_strat["return"] = Executor(name=self.empty_executor_hashable_placeholder)
                         # Add the modified return statement at the end of the for loop
                         break
-                    # before was ex???
+
+                    # Helpers
+                    candidate_best_time = self.BenchmarkResult()
+                    candidate_best_mem = self.BenchmarkResult()
+                    # Search for best candidate
+                    for i, candidate in enumerate(candidate_executors):
+                        # Match the current candidate to benchmark partial trace
+                        match_bsym_output(
+                            current_bsym, [dict_time_strat, dict_mem_strat], candidate)
+                        # Retrieve partial trace and benchmark, apply remat if possible
+                        trc, _, _ = get_placed_trace(
+                            dict_time_strat, increasing_symbols)
+                        if self.trace_type == TraceType.BW and self.active_fw_trace is not None:
+                            _, trc = rematerialize_forward_and_backward(
+                                self.active_fw_trace, trc)
+                        t, m, _ = benchmark_trace(trc, self.benchmark_iters)
+                        # Update results
+                        if t < candidate_best_time.tm:
+                            candidate_best_time.tm = t
+                            candidate_best_time.index = i
+
+                        if m < candidate_best_mem.mem:
+                            candidate_best_mem.mem = m
+                            candidate_best_mem.index = i
+
+                    if candidate_best_time.index == -1 or candidate_best_mem.index == -1:
+                        raise AssertionError(f'Failed to get optimal single trace region candidate. Available candidates for {name}:\n{candidate_executors}')
+
+                    self.log(f'Best time OperatorExecutor for single {name}: {candidate_executors[candidate_best_time.index].name}')
+                    self.log(f'Best mem OperatorExecutor for single {name}: {candidate_executors[candidate_best_mem.index].name}')
+
                     match_bsym_output(
-                        current_bsym, dict_time_strat, dict_mem_strat, optimal_ex)
+                        current_bsym, [dict_time_strat], candidate_executors[candidate_best_time.index])
+                    match_bsym_output(
+                        current_bsym, [dict_mem_strat], candidate_executors[candidate_best_mem.index])
                     continue
 
                 # Inside groups we should have alwasy tensors as out
@@ -866,7 +898,7 @@ class BackendOptimizer:
                         # Until last_embedding_idx (included) assigned to current fusion ex
                         for i in range(0, last_embedding_idx + 1, 1):
                             match_bsym_output(
-                                group[i], dict_time_strat, dict_mem_strat, ex)
+                                group[i], [dict_time_strat, dict_mem_strat], ex)
 
                         if last_embedding_idx == len(group) - 1:
                             # Benchmark
@@ -882,10 +914,10 @@ class BackendOptimizer:
 
                     for j in range(start_idx, start_idx + i + 1, increment_factor):
                         match_bsym_output(
-                            group[j], dict_time_strat, dict_mem_strat, ex)
+                            group[j], [dict_time_strat, dict_mem_strat], ex)
                     for k in range(start_idx + i + 1, len(group), increment_factor):
                         match_bsym_output(
-                            group[k], dict_time_strat, dict_mem_strat, get_first_available_executor(
+                            group[k], [dict_time_strat, dict_mem_strat], get_first_available_executor(
                                 group[k])
                         )
                     # Benchmark
