@@ -20,25 +20,27 @@ with torch.device('cuda'):
     a = 4096 * mult
     b = 11008 * mult
     x = torch.randn(2, 2048, a, requires_grad=True)
+
     model = LLaMAMLP(a, b)
-    jmodel_def = thunder.jit(model, executors=['torchcompile', 'nvfuser'])
-    jmodel_auto = thunder.jit(model, autotune_type='runtime')
+
+    jmodel_def = thunder.jit(model)
+    jmodel_auto = thunder.jit(model, autotune_type='memory', executors = ['nvfuser', 'torchcompile', 'sdpa', 'cudnn', 'torch', 'python'])
 
     y = model(x)
     print('deviation auto:', (jmodel_auto(x) - model(x)).abs().max().item())
     print('deviation def:', (jmodel_def(x) - model(x)).abs().max().item())
 
     print('########################################')
-    c, m, o = benchmark_trace(thunder.last_traces(jmodel_def)[-1], iters=2, apply_del_last_used=False, snapshot=True, snapshot_name='LLaMAMLP_def_fw')
+    c, m, o = benchmark_trace(thunder.last_traces(jmodel_def)[-1], apply_del_last_used=False, snapshot=True, snapshot_name='LLaMAMLP_def_fw', iters=10)
     print(f'Executing default fw trace:\n{c} ms, {m / (2**30)} GB')
     del o
-    c, m, o = benchmark_trace(thunder.last_traces(jmodel_auto)[-1], iters=2, apply_del_last_used=False, snapshot=True, snapshot_name='LLaMAMLP_auto_fw')
+    c, m, o = benchmark_trace(thunder.last_traces(jmodel_auto)[-1], apply_del_last_used=False, snapshot=True, snapshot_name='LLaMAMLP_auto_fw', iters=10)
     print(f'Executing auto fw trace:\n{c} ms, {m / (2**30)} GB')
     del o
-    c, m, o = benchmark_trace(thunder.last_backward_traces(jmodel_def)[-1], iters=2, apply_del_last_used=False, snapshot=True, snapshot_name='LLaMAMLP_def_bw')
+    c, m, o = benchmark_trace(thunder.last_backward_traces(jmodel_def)[-1], apply_del_last_used=False, snapshot=True, snapshot_name='LLaMAMLP_def_bw', iters=10)
     print(f'Executing default bw trace:\n{c} ms, {m / (2**30)} GB')
     del o
-    c, m, o = benchmark_trace(thunder.last_backward_traces(jmodel_auto)[-1], iters=2, apply_del_last_used=False, snapshot=True, snapshot_name='LLaMAMLP_auto_bw')
+    c, m, o = benchmark_trace(thunder.last_backward_traces(jmodel_auto)[-1], apply_del_last_used=False, snapshot=True, snapshot_name='LLaMAMLP_auto_bw', iters=10)
     print(f'Executing auto bw trace:\n{c} ms, {m / (2**30)} GB')
     del o
 
