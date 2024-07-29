@@ -172,13 +172,11 @@ def autotune_transform_for_execution(
     # Assign the trace provenance
     match trace_type:
         case TraceType.FW:
-            fw_extrace_time, fw_extrace_mem = optimizer_context.get_optimal_fw_traces_time_and_mem()
-            fw_extrace_time.set_provenance(
-                TraceProvenance(f"Autotuned transform for execution (took {elapsed_time_millis} milliseconds)")
-            )
-            fw_extrace_mem.set_provenance(
-                TraceProvenance(f"Autotuned transform for execution (took {elapsed_time_millis} milliseconds)")
-            )
+            fw_traces = optimizer_context.get_optimal_fw_traces()
+            for trc in fw_traces:
+                trc.set_provenance(
+                    TraceProvenance(f"Autotuned transform for execution (took {elapsed_time_millis} milliseconds)")
+                )
             return None
         case TraceType.BW:
             bw_extrace.set_provenance(
