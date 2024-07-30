@@ -341,8 +341,8 @@ def split_forward_backward(computation_trc: TraceCtx, compile_data, compile_stat
     from thunder.executors.transformer_engineex import transformer_engine_ex
 
     executors_candidates: dict[str, list] = {
-        '0scaled_dot_product_attention': [sdpa_ex.name, cudnn_ex.name],
-        '1linear_layer': [transformer_engine_ex.name]
+        'scaled_dot_product_attention': [sdpa_ex.name, cudnn_ex.name],
+        'linear_layer': [transformer_engine_ex.name]
     }
 
     # TODO (matteochen): use BackendOptimizer tracing
@@ -439,10 +439,9 @@ def split_forward_backward(computation_trc: TraceCtx, compile_data, compile_stat
                         compile_stats.last_traces += best_fw_traces
                         compile_stats.last_backward_traces += best_bw_traces
 
-
                     return best_fw_extrace, best_bw_extrace
+                # If no solution is found at this optmization step, we proceed normally
                 else:
-
                     # Restore before calling split
                     compile_data.executors_list = list(cached_executor_list)
 
