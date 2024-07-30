@@ -1,6 +1,6 @@
 import torch
 import thunder
-from thunder.benchmarks.utils import thunder_fw_bw_benchmark, torch_fw_bw_benchmark, torch_fw_bw_benchmark_naive
+from thunder.benchmarks.utils import thunder_fw_bw_benchmark, torch_fw_bw_benchmark
 
 class LLaMAMLP(torch.nn.Module):
     def __init__(self, n_embd, intermediate_size) -> None:
