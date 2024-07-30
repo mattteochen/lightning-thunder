@@ -1104,7 +1104,7 @@ def return_not_used_vars(trace_in: TraceCtx) -> list[TensorProxy]:
 
 # TODO (matteochen): move into utils module
 def benchmark_trace(
-    trace: TraceCtx, iters: int = 1, show_func=False, apply_del_last_used=True, snapshot=False, snapshot_name=""
+        trace: TraceCtx, iters: int = 1, show_func=False, apply_del_last_used=True, snapshot=False, snapshot_name="", nvsight: bool = False, nvsight_fn_name: str = ""
 ) -> tuple[float, float, Any]:
     from thunder.executors.passes import del_last_used
     import inspect
@@ -1113,6 +1113,28 @@ def benchmark_trace(
 
     if trace.bound_symbols[-1].sym.id != PrimIDs.RETURN:
         raise AssertionError("Missing return statement")
+
+    def compute_time_cost_nvsight(fn: Callable, iters: int, *args) -> tuple[float, float, Any]:
+        try:
+            warm_up_iters = 10
+            torch.cuda.empty_cache()
+            # Warm up cycles
+            for _ in range(warm_up_iters):
+                fn(*args)
+            # Benchmark
+            torch.cuda.cudart().cudaProfilerStart()
+            for i in range(iters):
+                torch.cuda.nvtx.range_push(f'{nvsight_fn_name}-iter{i}')
+                fn(*args)
+                torch.cuda.nvtx.range_pop()
+            torch.cuda.cudart().cudaProfilerStop()
+
+            return float('inf'), float('inf'), None
+        except Exception as e:
+            import inspect
+            trc = inspect.getsource(fn)
+            print(f"#NVSIGHT FN EXECUTION FAILED:\n{trc}")
+            raise e
 
     def compute_time_cost_ms(fn: Callable, iters: int, *args) -> tuple[float, float, Any]:
         try:
@@ -1125,7 +1147,6 @@ def benchmark_trace(
             end_events = [torch.cuda.Event(enable_timing=True)
                           for _ in range(iters)]
 
-            max_allocated_bytes = 0
             # Warm up cycles
             for _ in range(warm_up_iters):
                 fn(*args)
@@ -1138,6 +1159,8 @@ def benchmark_trace(
                 torch.cuda.memory._record_memory_history(enabled=None)
             # Benchmark
             stream = torch.cuda.current_stream()
+            max_allocated_bytes = 0
+            torch.cuda.synchronize()
             for i in range(iters):
                 torch.cuda.reset_peak_memory_stats(torch.cuda.current_device())
                 torch.cuda.empty_cache()
@@ -1311,11 +1334,14 @@ def benchmark_trace(
     m = float("inf")
     answer = None
     try:
-        t, m, answer = compute_time_cost_ms(executable, iters, *input_args)
+        if nvsight:
+            t, m, answer = compute_time_cost_nvsight(executable, iters, *input_args)
+        else:
+            t, m, answer = compute_time_cost_ms(executable, iters, *input_args)
     except Exception as e:
         # https://github.com/Lightning-AI/lightning-thunder/issues/664
         print(f"Exception:\n{e}")
-        if "call_method UserDefinedObjectVariable(set) __contains__ [UserDefinedObjectVariable()] {}" in str(e):
+        if "call_method UserDefinedObjectVariable(set) __contains__ [UserDefinedObjectVariable()] {}" in str(e) and not nvsight:
             print(
                 "Executing with torch compile no full graph (this might still fail), see: https://github.com/Lightning-AI/lightning-thunder/issues/664"
             )
