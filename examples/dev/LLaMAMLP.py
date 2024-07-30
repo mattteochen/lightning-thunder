@@ -24,7 +24,7 @@ with torch.device('cuda'):
     model = LLaMAMLP(a, b)
 
     jmodel_def = thunder.jit(model)
-    jmodel_auto = thunder.jit(model, autotune_type='rntime', executors = ['nvfuser', 'torchcompile', 'sdpa', 'cudnn', 'torch', 'python'])
+    jmodel_auto = thunder.jit(model, autotune_type='runtime', executors = ['nvfuser', 'torchcompile', 'sdpa', 'cudnn', 'torch', 'python'])
 
     print('deviation def:', (jmodel_def(x) - model(x)).abs().max().item())
     print('deviation auto:', (jmodel_auto(x) - model(x)).abs().max().item())
