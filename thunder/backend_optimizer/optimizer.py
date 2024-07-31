@@ -14,7 +14,6 @@ from thunder.visualizer.visualizer_helper import Visualizer
 from typing import Any, Hashable
 import thunder
 import thunder.core.transforms as transforms
-import concurrent.futures
 import torch
 
 # Currently this manages both time and memory

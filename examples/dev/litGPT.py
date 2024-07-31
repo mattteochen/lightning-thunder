@@ -9,7 +9,7 @@ class Test:
         self.layers = layers
         self.autotune_type = autotune_type
 
-layers = [Test(2, 'runtime')]
+layers = [Test(2, 'runtime'), Test(2, 'memory'), Test(4, 'runtime'), Test(4, 'memory')]
 
 model_name = 'Llama-2-7b-hf'
 
