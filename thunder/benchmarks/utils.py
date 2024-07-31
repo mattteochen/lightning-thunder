@@ -35,7 +35,7 @@ def torch_fw_bw_benchmark_nvsight(models: list, torch_module: torch.nn.Module | 
             torch.cuda.nvtx.range_pop()
         torch.cuda.cudart().cudaProfilerStop()
 
-def torch_fw_bw_benchmark(models: list, labels: list, inputs: list, iters: int, int_input_tensor: bool = False) -> None:
+def torch_fw_bw_benchmark(models: list, labels: list, inputs: list, iters: int) -> None:
 
     for m, input, label in zip(models, inputs, labels):
         # Warm up
@@ -45,7 +45,8 @@ def torch_fw_bw_benchmark(models: list, labels: list, inputs: list, iters: int, 
         g0 = torch.ones_like(y)
         for _ in range(warm_up_iters):
             y = m(input)
-            torch.autograd.grad(y, input, grad_outputs=g0)
+            loss = y.sum()
+            loss.backward()
 
         torch.cuda.synchronize()
         start_events = [torch.cuda.Event(enable_timing=True) for _ in range(iters)]
@@ -85,7 +86,12 @@ def torch_fw_bw_benchmark(models: list, labels: list, inputs: list, iters: int, 
 
             y = m(input)
             start_events[i].record(stream)
-            torch.autograd.grad(y, input, grad_outputs=g0)
+            if input.requires_grad:
+                torch.autograd.grad(y, input, grad_outputs=g0)
+            else:
+                # Fake loss
+                loss = y.sum()
+                loss.backward()
             end_events[i].record(stream)
 
             max_allocated_bytes = max(
@@ -99,17 +105,14 @@ def torch_fw_bw_benchmark(models: list, labels: list, inputs: list, iters: int, 
         print(f'{label} tot bw time: {tot_time} ms')
         print(f'{label} max bw allocated memory: {max_allocated_bytes / (2**30)} GB')
 
-def torch_total_benchmark(models: list, torch_module: torch.nn.Module | None, labels: list, inputs: list, iters: int, int_input_tensor: bool = False) -> None:
+def torch_total_benchmark(models: list, labels: list, inputs: list, iters: int) -> None:
 
     for m, input, label in zip(models, inputs, labels):
         # Warm up
         for _ in range(warm_up_iters):
             y = m(input)
-            # Not supported by autograd
-            if int_input_tensor:
-                torch.autograd.grad(y.sum(), torch_module.parameters())
-            else:
-                torch.autograd.grad(y, input, grad_outputs=torch.ones_like(y))
+            loss = y.sum()
+            loss.backward()
 
         g0 = torch.ones_like(y)
 
@@ -125,11 +128,12 @@ def torch_total_benchmark(models: list, torch_module: torch.nn.Module | None, la
 
             start_events[i].record(stream)
             y = m(input)
-            # Not supported by autograd
-            if int_input_tensor:
-                torch.autograd.grad(y.sum(), torch_module.parameters())
-            else:
+            if input.requires_grad:
                 torch.autograd.grad(y, input, grad_outputs=g0)
+            else:
+                # Fake loss
+                loss = y.sum()
+                loss.backward()
             end_events[i].record(stream)
 
             max_allocated_bytes = max(
