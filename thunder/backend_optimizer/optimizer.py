@@ -750,7 +750,8 @@ class BackendOptimizer:
                         start_idx = last_embedding_idx + 1
 
                 n_missing_bsyms = len(group) - start_idx
-                for i in range(0, n_missing_bsyms):
+                for i in range(0, n_missing_bsyms, n_missing_bsyms-1 if self.trace_type == TraceType.BW else 1):
+                # for i in range(0, n_missing_bsyms):
                     # From top to bottom (this will include the whole region)
                     # -> First iteration is the one with fusion region with single element
                     # -> Last iteration gives the complete fusion region
