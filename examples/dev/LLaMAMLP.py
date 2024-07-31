@@ -32,13 +32,13 @@ with torch.device('cuda'):
     print('Results with thunder benchmark:')
     traces = [thunder.last_traces(jmodel_def)[-1], thunder.last_traces(jmodel_auto)[-1], thunder.last_backward_traces(jmodel_def)[-1], thunder.last_backward_traces(jmodel_auto)[-1]]
     labels = ['fw_def', 'fw_auto', 'bw_def', 'bw_auto']
-    thunder_fw_bw_benchmark(traces, labels, 10, nvsight = False)
+    thunder_fw_bw_benchmark(traces, labels, 50, nvsight = False)
 
     callables = [jmodel_def, jmodel_auto]
     labels = ['def', 'auto']
     inputs = [x, x]
     print('Results with torch fw bw benchmark:')
-    torch_fw_bw_benchmark(callables, labels, inputs, 10)
+    torch_fw_bw_benchmark(callables, labels, inputs, 50)
 
-    # for t in traces:
-    #     print(f'{t}\n#####################################')
+    for t in traces:
+        print(f'{t}\n#####################################')
