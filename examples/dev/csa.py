@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 import thunder
-from thunder.backend_optimizer.optimizer import benchmark_trace
+from thunder.benchmarks.utils import thunder_fw_bw_benchmark, torch_fw_bw_benchmark
 
 # import torch._dynamo
 # torch._dynamo.config.suppress_errors = True
@@ -51,96 +51,32 @@ class CausalSelfAttention(nn.Module):
 
 device = torch.device('cuda')
 num_heads = 8
-heads_per_dim = 64 * 4
+heads_per_dim = 64 * 1
 embed_dimension = num_heads * heads_per_dim
-dtype = torch.float32
+dtype = torch.float16
 model = CausalSelfAttention(num_heads=num_heads, embed_dimension=embed_dimension, bias=False, is_causal=True, dropout=0.1).to(device).to(dtype)
 print(model)
-batch_size = 16
+batch_size = 1
 max_sequence_len = 1024
 x = torch.randn(batch_size, max_sequence_len, embed_dimension, dtype=dtype, requires_grad=True, device=device)
 
 jmodel_def = thunder.jit(model)
-jmodel_auto = thunder.jit(model, autotune_type='runtime')
+jmodel_auto = thunder.jit(model, autotune_type='runtime', executors = ['nvfuser', 'torchcompile', 'cudnn', 'torch', 'python'])
 
-warm_up_iters = 2
-iters = 10
-stream = torch.cuda.current_stream()
-
-y = model(x)
-for _ in range(warm_up_iters):
-    yy = jmodel_def(x)
-    yyy = jmodel_auto(x)
-    torch.autograd.grad(yy, x, grad_outputs=torch.ones_like(y))
-    torch.autograd.grad(yyy, x, grad_outputs=torch.ones_like(y))
-
-print('deviation auto:', (jmodel_auto(x) - model(x)).abs().max().item())
 print('deviation def:', (jmodel_def(x) - model(x)).abs().max().item())
+print('deviation auto:', (jmodel_auto(x) - model(x)).abs().max().item())
 
-# print('\n\n')
 
-# start_events = [torch.cuda.Event(enable_timing=True) for _ in range(iters)]
-# middle_events = [torch.cuda.Event(enable_timing=True) for _ in range(iters)]
-# end_events = [torch.cuda.Event(enable_timing=True) for _ in range(iters)]
+print('Results thunder benchmark:')
+traces = [thunder.last_traces(jmodel_def)[-1], thunder.last_traces(jmodel_auto)[-1], thunder.last_backward_traces(jmodel_def)[-1], thunder.last_backward_traces(jmodel_auto)[-1]]
+labels = ['fw_def', 'fw_auto', 'bw_def', 'bw_auto']
+thunder_fw_bw_benchmark(traces, labels, 50)
 
-# for i in range(iters):
-#     torch.cuda.empty_cache()
-#     torch.cuda._sleep(1_000_000)
-#     start_events[i].record(stream)
-#     y = jmodel_auto(x)
-#     middle_events[i].record(stream)
-#     torch.autograd.grad(y, x, grad_outputs=torch.ones_like(y))
-#     end_events[i].record(stream)
-
-# torch.cuda.synchronize()
-# fw = [s.elapsed_time(e) for s, e in zip(start_events, middle_events)]
-# bw = [s.elapsed_time(e) for s, e in zip(middle_events, end_events)]
-# tot = [s.elapsed_time(e) for s, e in zip(start_events, end_events)]
-# fw_time = sum(fw)
-# bw_time = sum(bw)
-# tot_time = sum(tot)
-# print(f'Auto fw: {fw_time / iters}')
-# print(f'Auto bw: {bw_time / iters}')
-# print(f'Auto tot: {tot_time / iters}')
-# print('\n')
-
-# start_events = [torch.cuda.Event(enable_timing=True) for _ in range(iters)]
-# middle_events = [torch.cuda.Event(enable_timing=True) for _ in range(iters)]
-# end_events = [torch.cuda.Event(enable_timing=True) for _ in range(iters)]
-
-# for i in range(iters):
-#     torch.cuda.empty_cache()
-#     torch.cuda._sleep(1_000_000)
-#     start_events[i].record(stream)
-#     y = jmodel_def(x)
-#     middle_events[i].record(stream)
-#     torch.autograd.grad(y, x, grad_outputs=torch.ones_like(y))
-#     end_events[i].record(stream)
-
-# torch.cuda.synchronize()
-# fw = [s.elapsed_time(e) for s, e in zip(start_events, middle_events)]
-# bw = [s.elapsed_time(e) for s, e in zip(middle_events, end_events)]
-# tot = [s.elapsed_time(e) for s, e in zip(start_events, end_events)]
-# fw_time = sum(fw)
-# bw_time = sum(bw)
-# tot_time = sum(tot)
-# print(f'Default fw: {fw_time / iters}')
-# print(f'Default bw: {bw_time / iters}')
-# print(f'Default tot: {tot_time / iters}')
-# print('-------------------------------------------------------')
-
-c, m, o = benchmark_trace(thunder.last_traces(jmodel_def)[-1], iters = 10, apply_del_last_used=False, snapshot=True, snapshot_name='def_fw')
-print(f'Executing default fw trace:\n{c} ms, {m / (2**30)} GB')
-del o
-c, m, o = benchmark_trace(thunder.last_traces(jmodel_auto)[-1], iters=10, apply_del_last_used=False, snapshot=True, snapshot_name='auto_fw')
-print(f'Executing auto fw trace:\n{c} ms, {m / (2**30)} GB')
-del o
-c, m, o = benchmark_trace(thunder.last_backward_traces(jmodel_def)[-1], iters=10, apply_del_last_used=False, snapshot=True, snapshot_name='def_bw')
-print(f'Executing default bw trace:\n{c} ms, {m / (2**30)} GB')
-del o
-c, m, o = benchmark_trace(thunder.last_backward_traces(jmodel_auto)[-1], iters=10, apply_del_last_used=False, snapshot=True, snapshot_name='auto_bw')
-print(f'Executing auto bw trace:\n{c} ms, {m / (2**30)} GB')
-del o
+print('\n\nResults torch fw bw benchmark:')
+callables = [jmodel_def, jmodel_auto]
+labels = ['def', 'auto']
+inputs = [x, x]
+torch_fw_bw_benchmark(callables, labels, inputs, 50)
 
 print('\n\n\n\n\n\n')
 print(f'{thunder.last_traces(jmodel_def)[-1]}')
