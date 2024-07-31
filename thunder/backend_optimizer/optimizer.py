@@ -153,7 +153,7 @@ class BackendOptimizer:
 
         self.apply_bucketing_bw_trace: bool = apply_bucketing_bw_trace
 
-        self.benchmark_iters = 2
+        self.benchmark_iters = 5
 
         log("Executors:", level=LogLevel.INFO)
         for e in self.executors:
@@ -605,8 +605,8 @@ class BackendOptimizer:
                 log(f"Group id: {id}", level=LogLevel.DEBUG)
                 for sub in group:
                     log(f"{sub.sym.name} -> out: {sub.output}", level=LogLevel.DEBUG)
-                if len(group) > 0:
-                    print("\n")
+                # if len(group) > 0:
+                #     print("\n")
 
             dict_time_strat: dict[str, Executor] = {}
             dict_mem_strat: dict[str, Executor] = {}
@@ -1364,3 +1364,4 @@ def benchmark_trace(
         reset_tracectx(trace_tok)
 
     return t, m, answer
+
