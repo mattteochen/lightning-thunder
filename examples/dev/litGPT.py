@@ -29,20 +29,16 @@ for test in layers:
         print('deviation auto:', (jmodel_auto(x) - model(x)).abs().max().item())
 
 
-        callables = [jmodel_def, ]
-        labels = ['def', ]
-        inputs = [torch.randint(1, model.config.vocab_size, (1, 512)), ]
-        torch_fw_bw_benchmark(callables, model, labels, inputs, True)
-
-        print('Results:')
+        print('Results thunder benchmark:')
         traces = [thunder.last_traces(jmodel_def)[-1], thunder.last_traces(jmodel_auto)[-1], thunder.last_backward_traces(jmodel_def)[-1], thunder.last_backward_traces(jmodel_auto)[-1]]
         labels = ['fw_def', 'fw_auto', 'bw_def', 'bw_auto']
-        thunder_fw_bw_benchmark(traces, labels, 10)
+        thunder_fw_bw_benchmark(traces, labels, 50)
 
+        print('\n\nResults torch fw bw benchmark:')
         callables = [jmodel_def, jmodel_auto]
         labels = ['def', 'auto']
         inputs = [x, x]
-        torch_fw_bw_benchmark(callables, labels, inputs, True)
+        torch_fw_bw_benchmark(callables, labels, inputs, 50)
 
         print('\n\n\n\n\n\n')
         print(f'{thunder.last_traces(jmodel_def)[-1]}')

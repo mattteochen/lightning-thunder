@@ -113,7 +113,7 @@ def split_forward_backward(computation_trc: TraceCtx, compile_data, compile_stat
     from thunder.distributed.utils import sort_data_parallel_syncs, sort_waits, sort_communication_ops
     from thunder.executors.passes import del_last_used, transform_for_execution, autotune_transform_for_execution
     from thunder.visualizer.visualizer_helper import Visualizer
-    from thunder.backend_optimizer.optimizer import TraceType, BackendOptimizer, OptimizerType, benchmark_trace
+    from thunder.backend_optimizer.optimizer import log, LogLevel, TraceType, BackendOptimizer, OptimizerType, benchmark_trace
 
     def  split():
         utils.check(compile_data is not None, lambda: "`compile_data` is required")
@@ -247,7 +247,15 @@ def split_forward_backward(computation_trc: TraceCtx, compile_data, compile_stat
         visualizer.set_bw_optimized_trace(bw_extrace)
 
         # TODO Restore request for no rematerialization
+        c, m, _ = benchmark_trace(fw_extrace, iters=50)
+        log(f'before remat fw trace time = {c}, mem = {m}', level=LogLevel.INFO)
+        c, m, _ = benchmark_trace(bw_extrace, iters=50)
+        log(f'before remat bw trace time = {c}, mem = {m}', level=LogLevel.INFO)
         fw_extrace, bw_extrace = rematerialize_forward_and_backward(fw_extrace, bw_extrace)
+        c, m, _ = benchmark_trace(fw_extrace, iters=50)
+        log(f'after remat fw trace time = {c}, mem = {m}', level=LogLevel.INFO)
+        c, m, _ = benchmark_trace(bw_extrace, iters=50)
+        log(f'after remat bw trace time = {c}, mem = {m}', level=LogLevel.INFO)
         fw_traces.append(fw_extrace)
         bw_traces.append(bw_extrace)
 
@@ -365,35 +373,36 @@ def split_forward_backward(computation_trc: TraceCtx, compile_data, compile_stat
         best_executor: OperatorExecutor | None = None
 
         for i, (ex_type, ex_list) in enumerate(executors_candidates.items()):
-            print(
-                    f"================================================================================ Before Autotune Tuning: Optimizing {ex_type}")
+            log(
+                    f"================================================================================ Before Autotune Tuning: Optimizing {ex_type}",
+                    level=LogLevel.DEBUG)
             # Search in the requested executor list if one or more than one options for a know multiple executable region is available
             to_benchmark = [ex for ex in cached_executor_list if ex.name in ex_list]
 
             if not to_benchmark:
-                print(
-                        f"================================================================================ Before Autotune Tuning: Skipping optimization for {ex_type} as not requested.")
+                log(
+                        f"================================================================================ Before Autotune Tuning: Skipping optimization for {ex_type} as not requested.",
+                        level=LogLevel.DEBUG)
 
             for e in to_benchmark:
                 compile_data.executors_list = [ex for ex in cached_executor_list if ex not in to_benchmark]
                 compile_data.executors_list.insert(0, e)
-                print(
-                        f"================================================================================ Before Autotune Tuning: Testing compile data executors: {compile_data.executors_list}")
+                log(
+                        f"================================================================================ Before Autotune Tuning: Testing compile data executors: {compile_data.executors_list}", level=LogLevel.DEBUG)
 
                 primal_trace, fw_extrace, bw_extrace, fw_traces, bw_traces = split()
                 time_fw, mem_fw, _ = benchmark_trace(fw_extrace, iters=10, apply_del_last_used=False)
                 time_bw, mem_bw, _ = benchmark_trace(bw_extrace, iters=10, apply_del_last_used=False)
                 tot_time = time_fw + time_bw
                 tot_mem = mem_fw + mem_bw
-                print(
-                        f"================================================================================ Before Autotune Tuning: Benchmark {ex_type} options: {e.name}. Time fw = {time_fw} ms - Time bw = {time_bw} ms - Mem fw = {mem_fw / (2**30)} GB - Mem bw = {mem_bw / (2**30)} GB")
-                print(
-                        f"================================================================================ Before Autotune Tuning: Benchmark {ex_type} options: {e.name}. Time = {tot_time} ms - Mem = {tot_mem / (2**30)} GB")
-                print(f'Fw trace:\n{fw_extrace}')
-                print(f'Bw trace:\n{bw_extrace}')
+                log(
+                        f"================================================================================ Before Autotune Tuning: Benchmark {ex_type} options: {e.name}. Time fw = {time_fw} ms - Time bw = {time_bw} ms - Mem fw = {mem_fw / (2**30)} GB - Mem bw = {mem_bw / (2**30)} GB", level=LogLevel.DEBUG)
+                log(
+                        f"================================================================================ Before Autotune Tuning: Benchmark {ex_type} options: {e.name}. Time = {tot_time} ms - Mem = {tot_mem / (2**30)} GB", level=LogLevel.DEBUG)
+                log(f'Fw trace:\n{fw_extrace}', level=LogLevel.DEBUG)
+                log(f'Bw trace:\n{bw_extrace}', level=LogLevel.DEBUG)
 
                 benchmark_cost = tot_time if autotune_type == OptimizerType.RUNTIME else tot_mem
-                print('benchmark cost', benchmark_cost)
                 if benchmark_cost < best_cost:
                     is_tuned = True
                     best_cost = benchmark_cost
@@ -410,11 +419,11 @@ def split_forward_backward(computation_trc: TraceCtx, compile_data, compile_stat
                     # print(f'inside update {c}')
 
             c, m , _ = benchmark_trace(best_fw_extrace, iters=10, apply_del_last_used=False)
-            print(
-                    f"================================================================================ Before Autotune Tuning: Benchmark {ex_type} best fw_extrace (time = {c}, mem = {m}):\n{best_fw_extrace}")
+            log(
+                    f"================================================================================ Before Autotune Tuning: Benchmark {ex_type} best fw_extrace (time = {c}, mem = {m}):\n{best_fw_extrace}", level=LogLevel.DEBUG)
             c, m , _ = benchmark_trace(best_bw_extrace, iters=10, apply_del_last_used=False)
-            print(
-                    f"================================================================================ Before Autotune Tuning: Benchmark {ex_type} best bw_extrace (time = {c}, mem = {m}):\n{best_bw_extrace}")
+            log(
+                    f"================================================================================ Before Autotune Tuning: Benchmark {ex_type} best bw_extrace (time = {c}, mem = {m}):\n{best_bw_extrace}", level=LogLevel.DEBUG)
 
             # Update the executor list with the winner executor for the current ex_type
             cached_executor_list = [ex for ex in cached_executor_list if ex not in to_benchmark]
@@ -422,8 +431,8 @@ def split_forward_backward(computation_trc: TraceCtx, compile_data, compile_stat
             if best_executor is not None:
                 cached_executor_list.insert(0, best_executor)
             best_executor = None
-            print(
-                    f"================================================================================ Before Autotune Tuning: Benchmark {ex_type}, new executor list: {cached_executor_list}")
+            log(
+                    f"================================================================================ Before Autotune Tuning: Benchmark {ex_type}, new executor list: {cached_executor_list}", level=LogLevel.DEBUG)
 
             # Update the compile stats on the last iter
             if i == len(executors_candidates)-1:
@@ -432,8 +441,8 @@ def split_forward_backward(computation_trc: TraceCtx, compile_data, compile_stat
                     # Restore
                     compile_data.executors_list = list(cached_executor_list)
 
-                    print(
-                            f"================================================================================ Before Autotune Tuning: autotuned split_forward_backward from {executors_candidates}")
+                    log(
+                            f"================================================================================ Before Autotune Tuning: autotuned split_forward_backward from {executors_candidates}", level=LogLevel.DEBUG)
                     if compile_stats is not None:
                         compile_stats.last_traces.append(best_primal_trace)
                         compile_stats.last_traces += best_fw_traces
@@ -445,8 +454,8 @@ def split_forward_backward(computation_trc: TraceCtx, compile_data, compile_stat
                     # Restore before calling split
                     compile_data.executors_list = list(cached_executor_list)
 
-                    print(
-                            f"================================================================================ Before Autotune Tuning: not autotuned split_forward_backward from {executors_candidates}")
+                    log(
+                            f"================================================================================ Before Autotune Tuning: not autotuned split_forward_backward from {executors_candidates}", level=LogLevel.DEBUG)
                     primal_trace, fw_extrace, bw_extrace, fw_traces, bw_traces = split()
                     if compile_stats is not None:
                         compile_stats.last_traces.append(primal_trace)
