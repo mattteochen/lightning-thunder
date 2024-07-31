@@ -70,7 +70,7 @@ def torch_fw_bw_benchmark(models: list, labels: list, inputs: list, iters: int, 
         torch.cuda.synchronize()
         tot = [s.elapsed_time(e) for s, e in zip(start_events, end_events)]
         tot_time = sum(tot) / iters
-        print(f'{label} tot fw time: {tot_time}')
+        print(f'{label} tot fw time: {tot_time} ms')
         print(f'{label} max fw allocated memory: {max_allocated_bytes / (2**30)} GB')
 
         torch.cuda.synchronize()
@@ -96,7 +96,7 @@ def torch_fw_bw_benchmark(models: list, labels: list, inputs: list, iters: int, 
         torch.cuda.synchronize()
         tot = [s.elapsed_time(e) for s, e in zip(start_events, end_events)]
         tot_time = sum(tot) / iters
-        print(f'{label} tot bw time: {tot_time}')
+        print(f'{label} tot bw time: {tot_time} ms')
         print(f'{label} max bw allocated memory: {max_allocated_bytes / (2**30)} GB')
 
 def torch_total_benchmark(models: list, torch_module: torch.nn.Module | None, labels: list, inputs: list, iters: int, int_input_tensor: bool = False) -> None:
