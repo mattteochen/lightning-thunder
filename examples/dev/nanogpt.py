@@ -135,12 +135,14 @@ def test():
             print('\n\nResults torch benchmark:')
             print(f'{label} tot time: {tot_time} ms')
 
-        measure(jmodel_def, 'def')
         measure(jmodel_auto, 'auto')
+        measure(jmodel_def, 'def')
 
         print('\n\nResults thunder benchmark:')
         traces = [thunder.last_traces(jmodel_def)[-1], thunder.last_traces(jmodel_auto)[-1], thunder.last_backward_traces(jmodel_def)[-1], thunder.last_backward_traces(jmodel_auto)[-1]]
+        traces.reverse()
         labels = ['fw_def', 'fw_auto', 'bw_def', 'bw_auto']
+        labels.reverse()
         thunder_fw_bw_benchmark(traces, labels, 5)
 
     traces = [thunder.last_traces(jmodel_def)[-1], thunder.last_traces(jmodel_auto)[-1], thunder.last_backward_traces(jmodel_def)[-1], thunder.last_backward_traces(jmodel_auto)[-1]]
