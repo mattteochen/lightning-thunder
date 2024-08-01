@@ -1272,12 +1272,12 @@ def benchmark_trace(
         if dtype is not None and is_float_dtype(dtype):
             torch_dtype = thunder_to_torch_float_dtype(dtype, dtype.bytes)
             tensor: torch.Tensor = torch.randn(
-                *shape, dtype=torch_dtype, device=device.device_str(), requires_grad=requires_grad
+                shape, dtype=torch_dtype, device=device.device_str(), requires_grad=requires_grad
             )
         elif dtype is not None and is_signedinteger_dtype(dtype):
             torch_dtype = thunder_to_torch_int_dtype(dtype.bytes)
             tensor: torch.Tensor = torch.randint(
-                0, 10, shape, dtype=torch_dtype, device=device.device_str(), requires_grad=requires_grad
+                0, 8, shape, dtype=torch_dtype, device=device.device_str(), requires_grad=requires_grad
             )
         elif dtype is not None and is_boolean_dtype(dtype):
             # TODO (matteochen): maybe random?
@@ -1288,6 +1288,24 @@ def benchmark_trace(
             raise AssertionError(f"dtype {dtype} not supported yet")
 
         return tensor
+
+    # print(f'BENCHMARKING:\n{trace}')
+    # def p(args):
+    #     for e in args:
+    #         if not isinstance(e, Sequence):
+    #             if isinstance(e, torch.Tensor):
+    #                 print(f'{e.size()}')
+    #             else:
+    #                 try:
+    #                     print(f'{e.name} -> {e}')
+    #                 except:
+    #                     print(f'{e}')
+    #         else:
+    #             print('rec')
+    #             p(e)
+    # p(trace.args)
+    # print('##################')
+    # p(input_args)
 
     # Can we remove this check?
     # TODO (matteochen): use more appropriate mock int and float
@@ -1314,24 +1332,6 @@ def benchmark_trace(
 
     if apply_del_last_used:
         trace = del_last_used(trace)
-
-    # print(f'BENCHMARKING:\n{trace}')
-    # def p(args):
-    #     for e in args:
-    #         if not isinstance(e, Sequence):
-    #             if isinstance(e, torch.Tensor):
-    #                 print(f'{e.size()}')
-    #             else:
-    #                 try:
-    #                     print(f'{e.name} -> {e}')
-    #                 except:
-    #                     print(f'{e}')
-    #         else:
-    #             print('rec')
-    #             p(e)
-    # p(trace.args)
-    # print('##################')
-    # p(input_args)
 
     trace_tok = set_tracectx(trace)
 
