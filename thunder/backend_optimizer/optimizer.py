@@ -3,6 +3,7 @@ from enum import Enum
 from itertools import chain
 from thunder.core.dtypes import dtype, is_boolean_dtype
 from thunder.core.prims import PrimIDs
+from thunder.core.rematerialization import rematerialize_forward_and_backward
 from thunder.core.utils import check, safe_map_flat
 from thunder.core.baseutils import BoundSymbolInterface
 from thunder.core.proxies import CollectionProxy, FloatProxy, IntegerProxy, Proxy, TensorProxy, variableify, Variable
@@ -1012,6 +1013,14 @@ class BackendOptimizer:
             # The current fw trace is set by the caller and we take it as is. All current bw traces optimizations are made with the fw trace set by the caller
             forward_time, forward_memory, _ = benchmark_trace(
                 self.active_fw_trace, self.benchmark_iters)
+
+            test_fw, test_bw = rematerialize_forward_and_backward(self.active_fw_trace, time_result.trace)
+            c, m, _ = benchmark_trace(test_fw, iters=self.benchmark_iters)
+            print(f'Before out candidate fw: {c} ms - {m / (2**30)} GB')
+            c, m, _ = benchmark_trace(test_bw, iters=self.benchmark_iters)
+            print(f'Before out candidate bw: {c} ms - {m / (2**30)} GB')
+
+
             match self.optimizer_type:
                 case OptimizerType.RUNTIME:
                     # Used the computed benchmark from above

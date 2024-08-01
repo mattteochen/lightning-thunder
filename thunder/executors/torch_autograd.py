@@ -360,6 +360,8 @@ def split_forward_backward(computation_trc: TraceCtx, compile_data, compile_stat
     if autotune_type is not None:
         cached_executor_list = list(compile_data.executors_list)
         try:
+            # disable this part for now
+            raise RuntimeError('Disabled')
             is_tuned = False
 
             # We are interested to save the best_*s at the last iteration over the executors_candidates dict as the last
