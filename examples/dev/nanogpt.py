@@ -307,3 +307,4 @@ def bench():
 # print('###############################################################################')
 # print(f'{thunder.last_backward_traces(jmodel_auto)[-1]}')
 
+bench()
