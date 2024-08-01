@@ -1253,6 +1253,8 @@ def benchmark_trace(
                         res.append(0 if e.value is None else e.value)
                 elif isinstance(e, FloatProxy):
                     res.append(0.0 if e.value is None else e.value)
+                elif e is None:
+                    res.append(None)
                 else:
                     raise AssertionError(
                         f"Input arg type not recognized: {type(e)}")
