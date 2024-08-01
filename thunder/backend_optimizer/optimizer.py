@@ -899,6 +899,15 @@ class BackendOptimizer:
                 ans = pair
         if ans is None:
             raise AssertionError('Best pair not found')
+
+        fw = ans.fw
+        c, m, _ = benchmark_trace(fw, iters=self.benchmark_iters)
+        log(f'Final pair fw: {c} ms - {m / (2**30)} GB\n{fw}', level=LogLevel.INFO)
+        bw = ans.bw
+        c, m, _ = benchmark_trace(bw, iters=self.benchmark_iters)
+        log(f'Final pair bw: {c} ms - {m / (2**30)} GB\n{bw}', level=LogLevel.INFO)
+
+
         # To debug this: the traces that we will received in the remat call in <split_forward_backward> should be the same as these and runtime should be in line with the best pair time.
         # The pairs above are traces with no remat call (in order to be called later on) but their tracking time are made with traces gone under the remat call
         return ans.fw, ans.bw
@@ -1187,7 +1196,7 @@ def benchmark_trace(
             torch.cuda.synchronize()
             times = [s.elapsed_time(e)
                      for s, e in zip(start_events, end_events)]
-            # print(f'times: {times}')
+            print(f'times: {times}')
             tot_time = sum(times) / iters
             return tot_time, max_allocated_bytes, out
         except Exception as e:

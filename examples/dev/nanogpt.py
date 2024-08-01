@@ -50,7 +50,7 @@ def test():
     # model init
     gptconf = GPTConfig(
         block_size = block_size, # how far back does the model look? i.e. context size
-        n_layer = 1, n_head = 12, n_embd = 768, # size of the model
+        n_layer = 2, n_head = 12, n_embd = 768, # size of the model
         dropout = 0, # for determinism
         bias = bias,
     )
@@ -59,7 +59,7 @@ def test():
 
     jmodel_def = thunder.jit(model)
     # Currently sdpa does not work?
-    jmodel_auto = thunder.jit(model, autotune_type='runtime', executors = ['torchcompile', 'nvfuser', 'cudnn', 'torch', 'python'])
+    jmodel_auto = thunder.jit(model, autotune_type='memory', executors = ['torchcompile', 'nvfuser', 'cudnn', 'torch', 'python'])
 
     # optimizer = model.configure_optimizers(weight_decay=1e-2, learning_rate=1e-4, betas=(0.9, 0.95), device_type=device_type)
 
