@@ -894,11 +894,13 @@ class BackendOptimizer:
         log(f'Computing the best pair option (tot options = {len(self.out)})', level=LogLevel.INFO)
         for pair in self.out:
             if pair.tot_cost < min_value:
-                log(f"New best pair:\n{pair}", level=LogLevel.INFO)
+                log(f"New best pair:\n{pair}", level=LogLevel.DEBUG)
                 min_value = pair.tot_cost
                 ans = pair
         if ans is None:
             raise AssertionError('Best pair not found')
+        # To debug this: the traces that we will received in the remat call in <split_forward_backward> should be the same as these and runtime should be in line with the best pair time.
+        # The pairs above are traces with no remat call (in order to be called later on) but their tracking time are made with traces gone under the remat call
         return ans.fw, ans.bw
 
     def bsym_assigned(self, bsym: BoundSymbol) -> bool:
@@ -1013,22 +1015,12 @@ class BackendOptimizer:
             forward_time, forward_memory, _ = benchmark_trace(
                 self.active_fw_trace, self.benchmark_iters)
 
-
-            from thunder.core.rematerialization import rematerialize_forward_and_backward
-
-            test_fw, test_bw = rematerialize_forward_and_backward(self.active_fw_trace, time_result.trace)
-            c, m, _ = benchmark_trace(test_fw, iters=self.benchmark_iters)
-            print(f'Before out candidate fw: {c} ms - {m / (2**30)} GB')
-            c, m, _ = benchmark_trace(test_bw, iters=self.benchmark_iters)
-            print(f'Before out candidate bw: {c} ms - {m / (2**30)} GB')
-
-
             match self.optimizer_type:
                 case OptimizerType.RUNTIME:
                     # Used the computed benchmark from above
                     if time_result.tm < memory_result.tm:
                         log(
-                            f"out candidate times: (fw){forward_time} ms, (bw){time_result.tm} ms", level=LogLevel.INFO)
+                            f"out candidate times from time res: (fw){forward_time} ms, (bw){time_result.tm} ms", level=LogLevel.INFO)
                         self.out.append(
                             FinalOutputCandidates(
                                 fw=self.active_fw_trace,
@@ -1038,7 +1030,7 @@ class BackendOptimizer:
                         )
                     else:
                         log(
-                            f"out candidate times: (fw){forward_time} ms, (bw){memory_result.tm} ms", level=LogLevel.INFO)
+                            f"out candidate times from mem res: (fw){forward_time} ms, (bw){memory_result.tm} ms", level=LogLevel.INFO)
                         self.out.append(
                             FinalOutputCandidates(
                                 fw=self.active_fw_trace,
@@ -1195,6 +1187,7 @@ def benchmark_trace(
             torch.cuda.synchronize()
             times = [s.elapsed_time(e)
                      for s, e in zip(start_events, end_events)]
+            # print(f'times: {times}')
             tot_time = sum(times) / iters
             return tot_time, max_allocated_bytes, out
         except Exception as e:

@@ -3,13 +3,10 @@ import thunder
 from thunder.benchmarks.utils import thunder_fw_bw_benchmark
 from thunder.tests.nanogpt_model import GPTConfig, GPT
 from contextlib import nullcontext
-import time
-# import os
 
 warm_up_iters = 50
 
-
-def bench():
+def test():
     # -----------------------------------------------------------------------------
     batch_size = 12
     block_size = 1024
@@ -61,9 +58,9 @@ def bench():
     model.to(device)
 
     jmodel_def = thunder.jit(model)
-    jmodel_auto = thunder.jit(model, autotune_type='runtime', executors = ['nvfuser', 'sdpa', 'cudnn', 'torch', 'python'])
+    jmodel_auto = thunder.jit(model, autotune_type='runtime', executors = ['torchcompile', 'nvfuser', 'cudnn', 'torch', 'python'])
 
-    optimizer = model.configure_optimizers(weight_decay=1e-2, learning_rate=1e-4, betas=(0.9, 0.95), device_type=device_type)
+    # optimizer = model.configure_optimizers(weight_decay=1e-2, learning_rate=1e-4, betas=(0.9, 0.95), device_type=device_type)
 
     if compile:
         print("Compiling model...")
@@ -86,69 +83,67 @@ def bench():
             with_modules=False, # only for torchscript models atm
         ) as prof:
 
-            X, Y = get_batch('train')
-            for k in range(num_steps):
-                with ctx:
-                    logits, loss = model(X, Y)
-                X, Y = get_batch('train')
-                optimizer.zero_grad(set_to_none=True)
-                loss.backward()
-                optimizer.step()
-                lossf = loss.item()
-                print(f"{k}/{num_steps} loss: {lossf:.4f}")
+            models = [jmodel_def, jmodel_auto]
 
-                prof.step() # notify the profiler at end of each step
+            for mod in models:
+                print('Profiling new model')
+                X, Y = get_batch('train')
+                for k in range(num_steps):
+                    with ctx:
+                        logits, loss = model(X, Y)
+                    X, Y = get_batch('train')
+                    # optimizer.zero_grad(set_to_none=True)
+                    loss.backward()
+                    # optimizer.step()
+                    lossf = loss.item()
+                    print(f"{k}/{num_steps} loss: {lossf:.4f}")
+
+                    prof.step() # notify the profiler at end of each step
 
     else:
-
-        # simple benchmarking
-        torch.cuda.synchronize()
-        for stage, num_steps in enumerate([50, 10]): # burnin, then benchmark
-            t0 = time.time()
-            X, Y = get_batch('train')
-            for k in range(num_steps):
-                with ctx:
-                    logits, loss = jmodel_def(X, Y)
-                X, Y = get_batch('train')
-                # optimizer.zero_grad(set_to_none=True)
-                loss.backward()
-                # optimizer.step()
-                lossf = loss.item()
-                print(f"{k}/{num_steps} loss: {lossf:.4f}")
+        def measure(m, label):
+            # simple benchmarking
             torch.cuda.synchronize()
-            t1 = time.time()
-            dt = t1-t0
-            # mfu = model.estimate_mfu(batch_size * 1 * num_steps, dt)
-            if stage == 1:
-                # print(f"time per iteration: {dt/num_steps*1000:.4f}ms, MFU: {mfu*100:.2f}%")
-                print(f"time per iteration default model: {dt/num_steps*1000:.4f}ms")
 
-        # simple benchmarking
-        torch.cuda.synchronize()
-        for stage, num_steps in enumerate([50, 10]): # burnin, then benchmark
-            t0 = time.time()
             X, Y = get_batch('train')
-            for k in range(num_steps):
+            for i in range(warm_up_iters):
                 with ctx:
-                    logits, loss = jmodel_auto(X, Y)
+                    logits, loss = m(X, Y)
                 X, Y = get_batch('train')
-                # optimizer.zero_grad(set_to_none=True)
                 loss.backward()
-                # optimizer.step()
-                lossf = loss.item()
-                print(f"{k}/{num_steps} loss: {lossf:.4f}")
-            torch.cuda.synchronize()
-            t1 = time.time()
-            dt = t1-t0
-            # mfu = model.estimate_mfu(batch_size * 1 * num_steps, dt)
-            if stage == 1:
-                # print(f"time per iteration: {dt/num_steps*1000:.4f}ms, MFU: {mfu*100:.2f}%")
-                print(f"time per iteration auto model: {dt/num_steps*1000:.4f}ms")
 
+            iters = 5
+            start_events = [torch.cuda.Event(enable_timing=True) for _ in range(iters)]
+            end_events = [torch.cuda.Event(enable_timing=True) for _ in range(iters)]
+            stream = torch.cuda.current_stream()
+            torch.cuda.synchronize()
+            X, Y = get_batch('train')
+            for i in range(iters):
+                torch.cuda.empty_cache()
+                torch.cuda._sleep(1_000_000)
+                start_events[i].record(stream)
+                with ctx:
+                    logits, loss = m(X, Y)
+                X, Y = get_batch('train')
+                loss.backward()
+                end_events[i].record(stream)
+
+            torch.cuda.synchronize()
+            tot = [s.elapsed_time(e) for s, e in zip(start_events, end_events)]
+            tot_time = sum(tot) / iters
+            print('\n\nResults torch benchmark:')
+            print(f'{label} tot time: {tot_time} ms')
+
+        measure(jmodel_def, 'def')
+        measure(jmodel_auto, 'auto')
 
         print('\n\nResults thunder benchmark:')
         traces = [thunder.last_traces(jmodel_def)[-1], thunder.last_traces(jmodel_auto)[-1], thunder.last_backward_traces(jmodel_def)[-1], thunder.last_backward_traces(jmodel_auto)[-1]]
         labels = ['fw_def', 'fw_auto', 'bw_def', 'bw_auto']
-        thunder_fw_bw_benchmark(traces, labels, 50)
+        thunder_fw_bw_benchmark(traces, labels, 5)
 
-bench()
+    traces = [thunder.last_traces(jmodel_def)[-1], thunder.last_traces(jmodel_auto)[-1], thunder.last_backward_traces(jmodel_def)[-1], thunder.last_backward_traces(jmodel_auto)[-1]]
+    for t in traces:
+        print(f'{t}\n############################################')
+
+test()
