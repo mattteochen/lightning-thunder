@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 import thunder
-from thunder.backend_optimizer.optimizer import benchmark_trace
+from thunder.benchmarks.utils import thunder_fw_bw_benchmark, torch_fw_bw_benchmark, torch_fw_bw_benchmark_nvsight
 
 class ModelConfig:
     def __init__(self, n_embd=256, n_head=8, dropout=0.1, block_size=64, bias=True):
@@ -36,29 +36,23 @@ with torch.device('cuda'):
 
     jmodel_def = thunder.jit(model)
     # This model fails under some circumstances after passed the placed traced under the rematelizer
-    jmodel_auto = thunder.jit(model, autotune_type='runtime', executors = ['nvfuser', 'torchcompile', 'sdpa', 'cudnn', 'torch', 'python'])
+    jmodel_auto = thunder.jit(model, autotune_type='runtime', executors = ['nvfuser', 'torchcompile', 'sdpa', 'torch', 'python'])
 
-    y = model(x)
-    print('deviation auto:', (jmodel_auto(x) - model(x)).abs().max().item())
     print('deviation def:', (jmodel_def(x) - model(x)).abs().max().item())
+    print('deviation auto:', (jmodel_auto(x) - model(x)).abs().max().item())
 
-    print('########################################')
-    c, m, o = benchmark_trace(thunder.last_traces(jmodel_def)[-1], apply_del_last_used=False, snapshot=True, snapshot_name='MLP_def_fw', iters=10)
-    print(f'Executing default fw trace:\n{c} ms, {m / (2**30)} GB')
-    c, m, o = benchmark_trace(thunder.last_traces(jmodel_auto)[-1], apply_del_last_used=False, snapshot=True, snapshot_name='MLP_auto_fw', iters=10)
-    print(f'Executing auto fw trace:\n{c} ms, {m / (2**30)} GB')
-    c, m, o = benchmark_trace(thunder.last_backward_traces(jmodel_def)[-1], apply_del_last_used=False, snapshot=True, snapshot_name='MLP_def_bw', iters=10)
-    print(f'Executing default bw trace:\n{c} ms, {m / (2**30)} GB')
-    c, m, o = benchmark_trace(thunder.last_backward_traces(jmodel_auto)[-1], apply_del_last_used=False, snapshot=True, snapshot_name='MLP_auto_bw', iters=10)
-    print(f'Executing auto bw trace:\n{c} ms, {m / (2**30)} GB')
+    print('Results with thunder benchmark:')
+    traces = [thunder.last_traces(jmodel_def)[-1], thunder.last_traces(jmodel_auto)[-1], thunder.last_backward_traces(jmodel_def)[-1], thunder.last_backward_traces(jmodel_auto)[-1]]
+    labels = ['fw_def', 'fw_auto', 'bw_def', 'bw_auto']
+    thunder_fw_bw_benchmark(traces, labels, 50, nvsight = False)
 
-    print('\n\n\n\n\n\n')
-    print(f'{thunder.last_traces(jmodel_def)[-1]}')
-    print('###############################################################################')
-    print(f'{thunder.last_traces(jmodel_auto)[-1]}')
+    callables = [jmodel_def, jmodel_auto]
+    labels = ['def', 'auto']
+    inputs = [x, x]
+    print('Results with torch fw bw benchmark:')
+    torch_fw_bw_benchmark(callables, labels, inputs, 50)
 
-    print('\n\n')
-    print(f'{thunder.last_backward_traces(jmodel_def)[-1]}')
-    print('###############################################################################')
-    print(f'{thunder.last_backward_traces(jmodel_auto)[-1]}')
+    # for t in traces:
+    #     print(t)
+    #     print('##########################')
 
