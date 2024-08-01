@@ -58,6 +58,7 @@ def test():
     model.to(device)
 
     jmodel_def = thunder.jit(model)
+    # Currently sdpa does not work?
     jmodel_auto = thunder.jit(model, autotune_type='runtime', executors = ['torchcompile', 'nvfuser', 'cudnn', 'torch', 'python'])
 
     # optimizer = model.configure_optimizers(weight_decay=1e-2, learning_rate=1e-4, betas=(0.9, 0.95), device_type=device_type)
