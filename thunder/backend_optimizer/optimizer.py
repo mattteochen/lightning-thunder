@@ -1051,7 +1051,7 @@ class BackendOptimizer:
                     # Used the computed benchmark from above
                     if time_result.mem < memory_result.mem:
                         log(
-                            f"out candidate mem: (fw){forward_memory / (2**30)} GB, (bw){time_result.mem / (2**30)} GB", level=LogLevel.INFO)
+                            f"out candidate mem from time res: (fw){forward_memory / (2**30)} GB (fw){forward_time} ms, (bw){time_result.mem / (2**30)} GB (bw){time_result.tm} ms", level=LogLevel.INFO)
                         self.out.append(
                             FinalOutputCandidates(
                                 fw=self.active_fw_trace,
@@ -1061,7 +1061,7 @@ class BackendOptimizer:
                         )
                     else:
                         log(
-                            f"out candidate mem: (fw){forward_memory / (2**30)} GB, (bw){memory_result.mem / (2**30)} GB", level=LogLevel.INFO)
+                            f"out candidate mem from time res: (fw){forward_memory / (2**30)} GB (fw){forward_time} ms, (bw){memory_result.mem / (2**30)} GB (bw){memory_result.tm} ms", level=LogLevel.INFO)
                         self.out.append(
                             FinalOutputCandidates(
                                 fw=self.active_fw_trace,
