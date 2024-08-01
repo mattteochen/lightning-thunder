@@ -41,12 +41,7 @@ def torch_fw_bw_benchmark(models: list, labels: list, inputs: list, iters: int) 
         # Warm up
         for _ in range(warm_up_iters):
             y = m(input)
-            # Not supported by autograd
-        g0 = torch.ones_like(y)
-        for _ in range(warm_up_iters):
-            y = m(input)
-            loss = y.sum()
-            loss.backward()
+            y.sum().backward()
 
         torch.cuda.synchronize()
         start_events = [torch.cuda.Event(enable_timing=True) for _ in range(iters)]
@@ -60,7 +55,6 @@ def torch_fw_bw_benchmark(models: list, labels: list, inputs: list, iters: int) 
 
             start_events[i].record(stream)
             y = m(input)
-            # Not supported by autograd
             end_events[i].record(stream)
 
             max_allocated_bytes = max(
@@ -86,12 +80,7 @@ def torch_fw_bw_benchmark(models: list, labels: list, inputs: list, iters: int) 
 
             y = m(input)
             start_events[i].record(stream)
-            if input.requires_grad:
-                torch.autograd.grad(y, input, grad_outputs=g0)
-            else:
-                # Fake loss
-                loss = y.sum()
-                loss.backward()
+            y.sum().backward()
             end_events[i].record(stream)
 
             max_allocated_bytes = max(
@@ -111,10 +100,7 @@ def torch_total_benchmark(models: list, labels: list, inputs: list, iters: int) 
         # Warm up
         for _ in range(warm_up_iters):
             y = m(input)
-            loss = y.sum()
-            loss.backward()
-
-        g0 = torch.ones_like(y)
+            y.sum().backward()
 
         start_events = [torch.cuda.Event(enable_timing=True) for _ in range(iters)]
         end_events = [torch.cuda.Event(enable_timing=True) for _ in range(iters)]
@@ -128,12 +114,7 @@ def torch_total_benchmark(models: list, labels: list, inputs: list, iters: int) 
 
             start_events[i].record(stream)
             y = m(input)
-            if input.requires_grad:
-                torch.autograd.grad(y, input, grad_outputs=g0)
-            else:
-                # Fake loss
-                loss = y.sum()
-                loss.backward()
+            y.sum().backward()
             end_events[i].record(stream)
 
             max_allocated_bytes = max(
