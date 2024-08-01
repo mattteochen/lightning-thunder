@@ -248,12 +248,12 @@ def split_forward_backward(computation_trc: TraceCtx, compile_data, compile_stat
 
         # TODO Restore request for no rematerialization
         c, m, _ = benchmark_trace(fw_extrace, iters=5)
-        log(f'before remat fw trace time = {c}, mem = {m}', level=LogLevel.INFO)
+        log(f'before remat fw trace time = {c}, mem = {m}\n{fw_extrace}', level=LogLevel.INFO)
         c, m, _ = benchmark_trace(bw_extrace, iters=5)
         log(f'before remat bw trace time = {c}, mem = {m}', level=LogLevel.INFO)
         fw_extrace, bw_extrace = rematerialize_forward_and_backward(fw_extrace, bw_extrace)
         c, m, _ = benchmark_trace(fw_extrace, iters=5)
-        log(f'after remat fw trace time = {c}, mem = {m}', level=LogLevel.INFO)
+        log(f'after remat fw trace time = {c}, mem = {m}\n{fw_extrace}', level=LogLevel.INFO)
         c, m, _ = benchmark_trace(bw_extrace, iters=5)
         log(f'after remat bw trace time = {c}, mem = {m}', level=LogLevel.INFO)
         fw_traces.append(fw_extrace)
