@@ -480,5 +480,19 @@ def split_forward_backward(computation_trc: TraceCtx, compile_data, compile_stat
                 compile_stats.last_backward_traces += bw_traces
 
             return fw_extrace, bw_extrace
+        except RuntimeError as e:
+            print(f'Exception occured: {e}')
+            # Restore before calling split
+            compile_data.executors_list = list(cached_executor_list)
+
+            log(
+                    f"================================================================================ Before Autotune Tuning: exception occured, not autotuned split_forward_backward from {executors_candidates}", level=LogLevel.DEBUG)
+            primal_trace, fw_extrace, bw_extrace, fw_traces, bw_traces = split()
+            if compile_stats is not None:
+                compile_stats.last_traces.append(primal_trace)
+                compile_stats.last_traces += fw_traces
+                compile_stats.last_backward_traces += bw_traces
+
+            return fw_extrace, bw_extrace
     else:
         return split()
