@@ -210,6 +210,7 @@ def split_forward_backward(computation_trc: TraceCtx, compile_data, compile_stat
                 produce_log=True,
                 visualizer=visualizer,
                 optimizer_type=autotune_type,
+                compile_data=compile_data
             )
         )
 
