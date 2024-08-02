@@ -6,7 +6,7 @@ from contextlib import nullcontext
 
 warm_up_iters = 50
 
-def test():
+def run():
     # -----------------------------------------------------------------------------
     batch_size = 12
     block_size = 1024
@@ -149,4 +149,4 @@ def test():
     for t in traces:
         print(f'{t}\n############################################')
 
-test()
+run()

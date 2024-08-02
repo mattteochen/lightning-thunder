@@ -36,21 +36,23 @@ with torch.device('cuda'):
 
     jmodel_def = thunder.jit(model)
     # This model fails under some circumstances after passed the placed traced under the rematelizer
-    jmodel_auto = thunder.jit(model, autotune_type='runtime', executors = ['nvfuser', 'torchcompile', 'sdpa', 'torch', 'python'])
+    jmodel_auto = thunder.jit(model, autotune_type='memory', executors = ['nvfuser', 'torchcompile', 'sdpa', 'cudnn', 'torch', 'python'])
 
     print('deviation def:', (jmodel_def(x) - model(x)).abs().max().item())
     print('deviation auto:', (jmodel_auto(x) - model(x)).abs().max().item())
 
-    print('Results with thunder benchmark:')
-    traces = [thunder.last_traces(jmodel_def)[-1], thunder.last_traces(jmodel_auto)[-1], thunder.last_backward_traces(jmodel_def)[-1], thunder.last_backward_traces(jmodel_auto)[-1]]
-    labels = ['fw_def', 'fw_auto', 'bw_def', 'bw_auto']
-    thunder_fw_bw_benchmark(traces, labels, 50, nvsight = False)
-
-    callables = [jmodel_def, jmodel_auto]
-    labels = ['def', 'auto']
+    callables = [jmodel_auto, jmodel_def]
+    labels = ['auto', 'def']
     inputs = [x, x]
     print('Results with torch fw bw benchmark:')
-    torch_fw_bw_benchmark(callables, labels, inputs, 50)
+    torch_fw_bw_benchmark(callables, labels, inputs, 5)
+
+    print('Results with thunder benchmark:')
+    traces = [thunder.last_traces(jmodel_def)[-1], thunder.last_traces(jmodel_auto)[-1], thunder.last_backward_traces(jmodel_def)[-1], thunder.last_backward_traces(jmodel_auto)[-1]]
+    traces.reverse()
+    labels = ['fw_def', 'fw_auto', 'bw_def', 'bw_auto']
+    labels.reverse()
+    thunder_fw_bw_benchmark(traces, labels, 5, nvsight = False)
 
     # for t in traces:
     #     print(t)
