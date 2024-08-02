@@ -1156,7 +1156,7 @@ def benchmark_trace(
             print(f"#NVSIGHT FN EXECUTION FAILED:\n{trc}")
             raise e
 
-    def compute_time_cost_ms(fn: Callable, iters: int, *args) -> tuple[float, float, Any]:
+    def compute_time_cost_ms(fn: Callable, repr: str, iters: int, *args) -> tuple[float, float, Any]:
         try:
             warm_up_iters = 50
             out = None
@@ -1200,10 +1200,7 @@ def benchmark_trace(
             tot_time = sum(times) / iters
             return tot_time, max_allocated_bytes, out
         except Exception as e:
-            import inspect
-
-            trc = inspect.getsource(fn)
-            print(f"#FN EXECUTION FAILED:\n{trc}")
+            print(f"#FN EXECUTION FAILED:\n{repr}")
             raise e
 
     def print_input_args(args, level=0, show_content=False):
@@ -1349,6 +1346,7 @@ def benchmark_trace(
     trace_tok = set_tracectx(trace)
 
     # Obtain the python executable string
+    execuhtable_str = trace.python()
     executable = trace.python_callable()
     if show_func:
         print(inspect.getsource(executable))
@@ -1360,7 +1358,7 @@ def benchmark_trace(
         if nvsight:
             t, m, answer = compute_time_cost_nvsight(executable, iters, *input_args)
         else:
-            t, m, answer = compute_time_cost_ms(executable, iters, *input_args)
+            t, m, answer = compute_time_cost_ms(executable, execuhtable_str, iters, *input_args)
     except Exception as e:
         # https://github.com/Lightning-AI/lightning-thunder/issues/664
         print(f"Exception:\n{e}")
