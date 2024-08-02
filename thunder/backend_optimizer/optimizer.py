@@ -680,11 +680,6 @@ class BackendOptimizer:
                 # Inside groups we should have alwasy tensors as out
                 best_res_time = BenchmarkResult()
                 best_res_mem = BenchmarkResult()
-                worst_res_time = BenchmarkResult()
-                worst_res_mem = BenchmarkResult()
-                # Only for visual
-                worst_res_mem.measure = 0
-                worst_res_time.measure = 0
 
                 # TODO (matteochen): Aggregate them
                 best_placement_time = None
@@ -696,11 +691,9 @@ class BackendOptimizer:
                     nonlocal best_res_time
                     nonlocal best_placement_time
                     nonlocal best_keys_time
-                    nonlocal worst_res_time
                     nonlocal best_res_mem
                     nonlocal best_placement_mem
                     nonlocal best_keys_mem
-                    nonlocal worst_res_mem
                     trc, keys, placements = get_placed_trace(
                         dict_time_strat, increasing_symbols)
                     if self.trace_type == TraceType.BW and self.active_fw_trace is not None:
@@ -716,8 +709,6 @@ class BackendOptimizer:
                         best_res_time.trace = trc
                         best_placement_time = placements
                         best_keys_time = keys
-                    if cost > worst_res_time.tm:
-                        worst_res_time.tm = cost
 
                     if mem < best_res_mem.mem or (mem == best_res_mem.mem and cost < best_res_mem.tm):
                         best_res_mem.tm = cost
@@ -725,8 +716,6 @@ class BackendOptimizer:
                         best_res_mem.trace = trc
                         best_placement_mem = placements
                         best_keys_mem = keys
-                    if mem > worst_res_mem.mem:
-                        worst_res_mem.mem = mem
 
                 start_idx = 0
                 # This is to accomodate the following TODO
@@ -785,11 +774,11 @@ class BackendOptimizer:
                     raise AssertionError("Failed to get best placement")
 
                 log(
-                    f"For group {group_id} best placement with time cost = {best_res_time.tm} ms (worst time = {worst_res_time.tm} ms):\n{best_res_time.trace}",
+                    f"For group {group_id} best placement with time cost = {best_res_time.tm} ms:\n{best_res_time.trace}",
                     level=LogLevel.DEBUG
                 )
                 log(
-                    f"For group {group_id} best placement with mem cost = {best_res_mem.mem / (2**30)} GB (worst mem = {worst_res_mem.mem/(2**30)} GB) is:\n{best_res_mem.trace}",
+                    f"For group {group_id} best placement with mem cost = {best_res_mem.mem / (2**30)} GB:\n{best_res_mem.trace}",
                     level=LogLevel.DEBUG
                 )
 
