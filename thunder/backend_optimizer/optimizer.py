@@ -453,7 +453,7 @@ class BackendOptimizer:
     def can_executor_execute(self, ex: Executor, bsym: BoundSymbol) -> bool:
         try:
             return ex.can_execute(bsym)
-        except:
+        except Exception:
             return False
 
     # For each fusion executor in the input list, find the best trace dispatching for each executor
