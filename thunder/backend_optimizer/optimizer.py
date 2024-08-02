@@ -195,8 +195,6 @@ class BackendOptimizer:
 
         swapmap: dict[Variable, Proxy] = {}
 
-        # During the fusion pass and CSE optimizatons some args in trace regions could be different from the cached args. Restore the correct arguments
-        # https://pytorch-lightning.slack.com/archives/C06QA9M8L3C/p1720732254341999
         def restore_correct_args(trace_in: TraceCtx):
             def args_eq(a, b) -> bool:
                 if len(a) != len(b):
