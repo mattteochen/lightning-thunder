@@ -1323,6 +1323,7 @@ def benchmark_trace(
             t, m, answer = compute_time_cost_ms(executable, execuhtable_str, iters, *input_args)
     except Exception as e:
         # https://github.com/Lightning-AI/lightning-thunder/issues/664
+        # Seems that this patch never work ...
         print(f"Exception:\n{e}")
         if "call_method UserDefinedObjectVariable(set) __contains__ [UserDefinedObjectVariable()] {}" in str(e) and not nvsight:
             print(
