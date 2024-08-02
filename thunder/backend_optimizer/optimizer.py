@@ -83,6 +83,7 @@ class FinalOutputCandidates:
 # Benchmark only traces will contain traces after the rematerialization call with fw and bw calls, reproducing what will be the real traces after the autotune pass
 # Non benchmark traces will contain traces after the placement (default) with no call to remat
 # We have duplciated those in order to maintain thunder compilation flow as the output from the autotuner will be the traces with no pass through rematerialization
+# TODO: torchcompile_cat currently is not supported as the autotuner search space in the FusionExecutor section is limited to 1
 class FusionStratHelper:
     def __init__(self) -> None:
         self.supported_executors: set = set(["nvfuser", "torchcompile"])
