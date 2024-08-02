@@ -346,8 +346,8 @@ class BackendOptimizer:
         return extrace
 
     def optimize(self, strat: OptimizationAlgorithm = OptimizationAlgorithm.BEST_FUSER):
-        from thunder.core.transform_common import replace_redundant_inputs
         from thunder.core.transform_common import dce
+        from thunder.executors.torch_autograd import update_bw_from_forward_optimization
 
         self.optimization_algorithm = strat
 
@@ -410,32 +410,7 @@ class BackendOptimizer:
                         log(f"Cached fw trace:\n{self.active_fw_trace}", level=LogLevel.DEBUG)
                         log(f"Input bw trace:\n{self.trace}", level=LogLevel.DEBUG)
 
-                        # Some of the optimization passes change proxies in the trace and
-                        # any change in the forward trace must be reflected in the backward
-                        # trace.
-                        original_bw_saved_tensors_for_backward = self.trace.args[0][0]
-                        new_fw_saved_tensors_for_backward = trc.output[1][0]
-                        swap_map = {
-                            variableify(x): y
-                            for x, y in zip(original_bw_saved_tensors_for_backward, new_fw_saved_tensors_for_backward)
-                            if variableify(x) != variableify(y)
-                        }
-                        new_bsyms = replace_redundant_inputs(
-                            swap_map, self.trace.bound_symbols)
-                        # replace_redundant_inputs doesn't replace the output of
-                        # UNPACK_SEQUENCE so we do it manually. Here we have certain
-                        # assumptions about the structure of the backward trace.
-                        assert self.trace.bound_symbols[0].sym.id == PrimIDs.UNPACK_TRIVIAL
-                        assert self.trace.bound_symbols[0].kwargs["name"] == "saved_for_backward"
-                        assert self.trace.bound_symbols[4].sym.id == PrimIDs.UNPACK_SEQUENCE
-                        assert self.trace.bound_symbols[4].args[0].name == "C0"
-                        new_bsyms[4] = new_bsyms[4].from_bsym_swap_proxies(
-                            swap_map,
-                            skip_inputs=False,
-                            skip_output=False,
-                            skip_subsymbols=False,
-                        )
-                        self.trace.bound_symbols = new_bsyms
+                        self.trace = update_bw_from_forward_optimization(fw=trc, bw=self.trace)
 
                         if self.apply_bucketing_bw_trace:
                             from thunder.distributed.transforms import FSDPCommBucketing
@@ -603,8 +578,8 @@ class BackendOptimizer:
                 log(f"Group id: {id}", level=LogLevel.DEBUG)
                 for sub in group:
                     log(f"{sub.sym.name} -> out: {sub.output}", level=LogLevel.DEBUG)
-                # if len(group) > 0:
-                #     print("\n")
+                if log_level == LogLevel.DEBUG and len(group) > 0:
+                    print("\n")
 
             dict_time_strat: dict[str, Executor] = {}
             dict_mem_strat: dict[str, Executor] = {}
@@ -723,7 +698,7 @@ class BackendOptimizer:
                     for idx in range(0, len(group)):
                         if group[idx].sym.name == "embedding_backward":
                             last_embedding_idx = idx
-                    log(f"last embedding {last_embedding_idx}", level=LogLevel.DEBUG)
+                    log(f"last embedding idx: {last_embedding_idx}", level=LogLevel.DEBUG)
                     if last_embedding_idx != -1:
                         # Until last_embedding_idx (included) assigned to current fusion ex
                         for i in range(0, last_embedding_idx + 1, 1):
@@ -863,7 +838,7 @@ class BackendOptimizer:
                 self.fusion_strat_helper.optimized_traces_time_benchmark_only.append({
                                                                                      ex.name: trc})
 
-            # Save executors in order to generate real fw and bw trace with correct output
+            # Save executors in order to generate real fw and bw trace with correct output with the placer
             self.executor_placement_options.placement_options_time.append(
                 executors_time)
             self.executor_placement_options.placement_options_mem.append(

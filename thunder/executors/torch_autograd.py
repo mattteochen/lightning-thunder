@@ -106,6 +106,36 @@ class ThunderFunction(torch.autograd.Function):
             del grads
             return (None, None, None, None, None, *([None] * n_grads))
 
+def update_bw_from_forward_optimization(*, fw: TraceCtx, bw:TraceCtx) -> TraceCtx:
+    # Some of the optimization passes change proxies in the trace and
+    # any change in the forward trace must be reflected in the backward
+    # trace.
+    original_bw_saved_tensors_for_backward = bw.args[0][0]
+    new_fw_saved_tensors_for_backward = fw.output[1][0]
+    swap_map = {
+        variableify(x): y
+        for x, y in zip(original_bw_saved_tensors_for_backward, new_fw_saved_tensors_for_backward)
+        if variableify(x) != variableify(y)
+    }
+    new_bsyms = replace_redundant_inputs(
+        swap_map, bw.bound_symbols)
+    # replace_redundant_inputs doesn't replace the output of
+    # UNPACK_SEQUENCE so we do it manually. Here we have certain
+    # assumptions about the structure of the backward trace.
+    assert bw.bound_symbols[0].sym.id == PrimIDs.UNPACK_TRIVIAL
+    assert bw.bound_symbols[0].kwargs["name"] == "saved_for_backward"
+    assert bw.bound_symbols[4].sym.id == PrimIDs.UNPACK_SEQUENCE
+    assert bw.bound_symbols[4].args[0].name == "C0"
+    new_bsyms[4] = new_bsyms[4].from_bsym_swap_proxies(
+        swap_map,
+        skip_inputs=False,
+        skip_output=False,
+        skip_subsymbols=False,
+    )
+    bw.bound_symbols = new_bsyms
+
+    return bw
+
 def split_forward_backward(computation_trc: TraceCtx, compile_data, compile_stats, autotune_type, /, *flat_args):
     from thunder.core.rematerialization import rematerialize_all_gather, rematerialize_forward_and_backward
     from thunder.core.transforms import forward_and_backward_from_trace
@@ -195,42 +225,18 @@ def split_forward_backward(computation_trc: TraceCtx, compile_data, compile_stat
 
         # If in default mode, otherwise the best fw will be returned only at the end
         if autotune_type is None:
+            # Here fw_extrace is not None
+
             fw_traces.append(fw_extrace)
             visualizer.set_fw_optimized_trace(fw_extrace)
 
-            # NOTE: autotuner will take care of this
-            # Some of the optimization passes change proxies in the trace and
-            # any change in the forward trace must be reflected in the backward
-            # trace.
-            original_bw_saved_tensors_for_backward = bw_trace.args[0][0]
-            new_fw_saved_tensors_for_backward = fw_extrace.output[1][0]
-            swap_map = {
-                variableify(x): y
-                for x, y in zip(original_bw_saved_tensors_for_backward, new_fw_saved_tensors_for_backward)
-                if variableify(x) != variableify(y)
-            }
-            new_bsyms = replace_redundant_inputs(swap_map, bw_trace.bound_symbols)
-            # replace_redundant_inputs doesn't replace the output of
-            # UNPACK_SEQUENCE so we do it manually. Here we have certain
-            # assumptions about the structure of the backward trace.
-            assert bw_trace.bound_symbols[0].sym.id == PrimIDs.UNPACK_TRIVIAL
-            assert bw_trace.bound_symbols[0].kwargs["name"] == "saved_for_backward"
-            assert bw_trace.bound_symbols[4].sym.id == PrimIDs.UNPACK_SEQUENCE
-            assert bw_trace.bound_symbols[4].args[0].name == "C0"
-            new_bsyms[4] = new_bsyms[4].from_bsym_swap_proxies(
-                swap_map,
-                skip_inputs=False,
-                skip_output=False,
-                skip_subsymbols=False,
-            )
-            bw_trace.bound_symbols = new_bsyms
-
+            # If autotuning is activated, it will take care of the followinf 2 calls
+            bw_trace = update_bw_from_forward_optimization(fw=fw_extrace, bw=bw_trace)
             if do_apply_bucketing_bw_trace:
                 bw_trace = _fsdp_comm_bucketing.apply_bucketing_to_backward_trace(bw_trace)
 
         # Now we can run the optimization passes on the backward trace
         # TODO Restore request for no rematerialization
-
         visualizer.set_bw_initial_trace(bw_trace)
         if autotune_type is not None:
             fw_extrace, bw_extrace = autotune_transform_for_execution(
@@ -247,6 +253,7 @@ def split_forward_backward(computation_trc: TraceCtx, compile_data, compile_stat
         visualizer.set_bw_optimized_trace(bw_extrace)
 
         # TODO Restore request for no rematerialization
+        # TODO (matteochen): remove these logs
         c, m, _ = benchmark_trace(fw_extrace, iters=5)
         log(f'before remat fw trace time = {c}, mem = {m}\n{fw_extrace}', level=LogLevel.INFO)
         c, m, _ = benchmark_trace(bw_extrace, iters=5)
