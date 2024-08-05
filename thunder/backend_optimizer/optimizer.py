@@ -912,10 +912,10 @@ class BackendOptimizer:
             pair_cost = 0
             remat_fw, remat_bw = rematerialize_forward_and_backward(pair.fw, pair.bw)
             t, m, _ = benchmark_trace(remat_fw, iters=self.benchmark_iters)
-            print(f'Pair fw time: {t}, mem: {m}')
+            log(f'Pair fw time: {t}, mem: {m}', level=LogLevel.DEBUG)
             pair_cost = pair_cost + t if self.optimizer_type  == OptimizerType.RUNTIME else m
             t, m, _ = benchmark_trace(remat_bw, iters=self.benchmark_iters)
-            print(f'Pair bw time: {t}, mem: {m}')
+            log(f'Pair bw time: {t}, mem: {m}', level=LogLevel.DEBUG)
             pair_cost = pair_cost + t if self.optimizer_type  == OptimizerType.RUNTIME else m
             pair.fw = remat_fw
             pair.bw = remat_bw
@@ -930,10 +930,10 @@ class BackendOptimizer:
 
         fw = ans.fw
         c, m, _ = benchmark_trace(fw, iters=self.benchmark_iters)
-        log(f"Final pair fw: {c} ms - {m / (2**30)} GB\n{fw}", level=LogLevel.INFO)
+        log(f"Final candidate pair fw: {c} ms - {m / (2**30)} GB\n{fw}", level=LogLevel.INFO)
         bw = ans.bw
         c, m, _ = benchmark_trace(bw, iters=self.benchmark_iters)
-        log(f"Final pair bw: {c} ms - {m / (2**30)} GB\n{bw}", level=LogLevel.INFO)
+        log(f"Final candidate pair bw: {c} ms - {m / (2**30)} GB\n{bw}", level=LogLevel.INFO)
 
         # To debug this: the traces that we will received in the remat call in <split_forward_backward> should be the same as these and runtime should be in line with the best pair time.
         # The pairs above are traces with no remat call (in order to be called later on) but their tracking time are made with traces gone under the remat call
