@@ -830,6 +830,9 @@ class FusionPlacer:
                 _optimize()
             # We have multiple cached optimized fw traces, find the best backward
             case TraceType.BW:
+                # Clear any previous results
+                self.out_traces_candidates = []
+
                 # Cached the bw trace as we need to modify the input trace during the loop
                 cached_self_trace = from_trace(self.trace)
                 cached_self_trace.bound_symbols = list(self.trace.bound_symbols)
