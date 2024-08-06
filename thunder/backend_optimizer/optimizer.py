@@ -657,7 +657,7 @@ class FusionPlacer:
                     raise AssertionError(f"Type not handled: {type(bsym.output)}")
 
             # For the forward trace we benchmark (memory) the mocked return statement as we don't know which
-            # Tensor will be returned after the rematerialize_forward_and_backward() call in order to do not overestimate the memory consumption
+            # tensor will be returned after the rematerialize_forward_and_backward() call in order to do not underestimate the memory consumption
             trace = self.trace
             if self.trace_type == TraceType.FW:
                 trace = from_trace(self.trace)
@@ -674,13 +674,15 @@ class FusionPlacer:
                     self.fusion_strat_helper.optimized_traces_time_benchmark_only,
                 ],
             ):
-                trc_mem = assign_executors(
+                trc = assign_executors(
                     in_trace=trace,
                     executor_list=executors,
                     always_executors=self.always_executors,
                     empty_str=self.empty_executor_hashable_placeholder,
                 )
-                container.append({ex.name: trc_mem})
+                if self.trace_type == TraceType.BW:
+                    _, trc = rematerialize_forward_and_backward(self.active_fw_trace, trc)
+                container.append({ex.name: trc})
 
             # Save executors in order to generate real fw and bw trace with correct output with the placer
             self.executor_placement_options.placement_options_time.append(executors_time)
