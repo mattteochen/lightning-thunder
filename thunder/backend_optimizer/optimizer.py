@@ -182,11 +182,6 @@ class BackendOptimizer:
                 level=LogLevel.INFO,
             )
 
-    class SearchNode:
-        def __init__(self, symbol: BoundSymbolInterface, idx: int) -> None:
-            self.symbol = symbol
-            self.idx = idx
-
     def attach_cached_fw_traces(self, cached_fw_traces: TraceCandidates, executor_name: str) -> None:
         self.cached_fw_traces[executor_name] = cached_fw_traces
 
