@@ -70,8 +70,8 @@ class TraceCandidates:
         return self.best_time, self.best_mem
 
 
-class FinalOutputCandidates:
-    def __init__(self, *, fw: TraceCtx, bw: TraceCtx, cost: float) -> None:
+class OutputCandidate:
+    def __init__(self, *, fw: TraceCtx, bw: TraceCtx, cost: float = 0.0) -> None:
         self.fw: TraceCtx = fw
         self.bw: TraceCtx = bw
         self.tot_cost: float = cost
@@ -153,9 +153,9 @@ class BackendOptimizer:
         self.active_fw_trace: TraceCtx | None = None
         self.cached_fw_traces: dict[str | Hashable, TraceCandidates] = {}
         self.bw_trace_candidates: TraceCandidates = TraceCandidates()
-        self.out_traces_candidates: list[FinalOutputCandidates] = []
-        self.best_pair_runtime: FinalOutputCandidates
-        self.best_pair_memory: FinalOutputCandidates
+        self.out_traces_candidates: list[OutputCandidate] = []
+        self.best_pair_runtime: OutputCandidate
+        self.best_pair_memory: OutputCandidate
 
         # Strat fusion
         self.fusion_strat_helper: FusionStratHelper = FusionStratHelper()
@@ -450,6 +450,38 @@ class BackendOptimizer:
                         dce(self.trace)
 
                         match_optimizer_algorithm()
+
+                from thunder.core.rematerialization import rematerialize_forward_and_backward
+                min_value_time: float = float("inf")
+                min_value_mem: float = float("inf")
+                best_pair_runtime: OutputCandidate
+                best_pair_memory: OutputCandidate
+                for pair in self.out_traces_candidates:
+                    # Apply remat and select best trace pair
+                    pair_cost_time = 0
+                    pair_cost_mem = 0
+                    remat_fw, remat_bw = rematerialize_forward_and_backward(pair.fw, pair.bw)
+                    t, m, _ = benchmark_trace(remat_fw, iters=self.benchmark_iters)
+                    log(f'Pair fw time: {t}, mem: {m}', level=LogLevel.INFO)
+                    pair_cost_time = pair_cost_time + t
+                    pair_cost_mem = pair_cost_mem + m
+                    t, m, _ = benchmark_trace(remat_bw, iters=self.benchmark_iters)
+                    log(f'Pair bw time: {t}, mem: {m}', level=LogLevel.INFO)
+                    pair_cost_time = pair_cost_time + t
+                    pair_cost_mem = pair_cost_mem + m
+
+                    if pair_cost_time < min_value_time:
+                        best_pair_runtime = OutputCandidate(fw=remat_fw, bw=remat_bw, cost=pair_cost_time)
+                        log(f"New best runtime pair:\n{best_pair_runtime}", level=LogLevel.INFO)
+                        min_value_time = pair_cost_time
+
+                    if pair_cost_mem < min_value_mem:
+                        best_pair_memory = OutputCandidate(fw=remat_fw, bw=remat_bw, cost=pair_cost_mem)
+                        log(f"New best memory pair:\n{best_pair_memory}", level=LogLevel.INFO)
+                        min_value_mem = pair_cost_mem
+
+                self.best_pair_runtime = best_pair_runtime
+                self.best_pair_memory = best_pair_memory
 
     def can_executor_execute(self, ex: Executor, bsym: BoundSymbol) -> bool:
         try:
@@ -907,7 +939,7 @@ class BackendOptimizer:
 
         # # This is agnostic from the optimization strat as results are both floats
         # min_value: float = float("inf")
-        # ans: FinalOutputCandidates | None = None
+        # ans: OutputCandidate | None = None
         # log(f"Computing the best pair option (tot options = {len(self.out_traces_candidates)})", level=LogLevel.INFO)
         # for pair in self.out_traces_candidates:
 
@@ -1047,45 +1079,48 @@ class BackendOptimizer:
 
             # forward_time, forward_memory, _ = benchmark_trace(self.active_fw_trace, self.benchmark_iters)
 
-            from thunder.core.rematerialization import rematerialize_forward_and_backward
+            # from thunder.core.rematerialization import rematerialize_forward_and_backward
 
-            min_value_time: float = float("inf")
-            min_value_mem: float = float("inf")
-            best_pair_runtime: FinalOutputCandidates
-            best_pair_memory: FinalOutputCandidates
+            # min_value_time: float = float("inf")
+            # min_value_mem: float = float("inf")
+            # best_pair_runtime: OutputCandidate
+            # best_pair_memory: OutputCandidate
             for bw in self.bw_trace_candidates.iterable():
+
+                self.out_traces_candidates.append(OutputCandidate(fw=self.active_fw_trace, bw=bw))
+
                 # Apply remat and select best trace pair
-                pair_cost_time = 0
-                pair_cost_mem = 0
-                remat_fw, remat_bw = rematerialize_forward_and_backward(self.active_fw_trace, bw)
-                t, m, _ = benchmark_trace(remat_fw, iters=self.benchmark_iters)
-                log(f'Pair fw time: {t}, mem: {m}', level=LogLevel.INFO)
-                pair_cost_time = pair_cost_time + t
-                pair_cost_mem = pair_cost_mem + m
-                t, m, _ = benchmark_trace(remat_bw, iters=self.benchmark_iters)
-                log(f'Pair bw time: {t}, mem: {m}', level=LogLevel.INFO)
-                pair_cost_time = pair_cost_time + t
-                pair_cost_mem = pair_cost_mem + m
+            #     pair_cost_time = 0
+            #     pair_cost_mem = 0
+            #     remat_fw, remat_bw = rematerialize_forward_and_backward(self.active_fw_trace, bw)
+            #     t, m, _ = benchmark_trace(remat_fw, iters=self.benchmark_iters)
+            #     log(f'Pair fw time: {t}, mem: {m}', level=LogLevel.INFO)
+            #     pair_cost_time = pair_cost_time + t
+            #     pair_cost_mem = pair_cost_mem + m
+            #     t, m, _ = benchmark_trace(remat_bw, iters=self.benchmark_iters)
+            #     log(f'Pair bw time: {t}, mem: {m}', level=LogLevel.INFO)
+            #     pair_cost_time = pair_cost_time + t
+            #     pair_cost_mem = pair_cost_mem + m
 
-                if pair_cost_time < min_value_time:
-                    best_pair_runtime = FinalOutputCandidates(fw=remat_fw, bw=remat_bw, cost=pair_cost_time)
-                    log(f"New best runtime pair:\n{best_pair_runtime}", level=LogLevel.INFO)
-                    min_value_time = pair_cost_time
+            #     if pair_cost_time < min_value_time:
+            #         best_pair_runtime = OutputCandidate(fw=remat_fw, bw=remat_bw, cost=pair_cost_time)
+            #         log(f"New best runtime pair:\n{best_pair_runtime}", level=LogLevel.INFO)
+            #         min_value_time = pair_cost_time
 
-                if pair_cost_mem < min_value_mem:
-                    best_pair_memory = FinalOutputCandidates(fw=remat_fw, bw=remat_bw, cost=pair_cost_mem)
-                    log(f"New best memory pair:\n{best_pair_memory}", level=LogLevel.INFO)
-                    min_value_mem = pair_cost_mem
+            #     if pair_cost_mem < min_value_mem:
+            #         best_pair_memory = OutputCandidate(fw=remat_fw, bw=remat_bw, cost=pair_cost_mem)
+            #         log(f"New best memory pair:\n{best_pair_memory}", level=LogLevel.INFO)
+            #         min_value_mem = pair_cost_mem
 
-            self.best_pair_runtime = best_pair_runtime
-            self.best_pair_memory = best_pair_memory
+            # self.best_pair_runtime = best_pair_runtime
+            # self.best_pair_memory = best_pair_memory
 
             # log(
             #     f"Output pair candidate for TIME strat from best_time res: (fw){forward_time} ms, (bw){time_result.tm} ms",
             #     level=LogLevel.INFO,
             # )
             # self.out_traces_candidates.append(
-            #     FinalOutputCandidates(
+            #     OutputCandidate(
             #         fw=self.active_fw_trace,
             #         bw=self.bw_trace_candidates.best_time,
             #         cost=forward_time + time_result.tm,
@@ -1096,7 +1131,7 @@ class BackendOptimizer:
             #     level=LogLevel.INFO,
             # )
             # self.out_traces_candidates.append(
-            #     FinalOutputCandidates(
+            #     OutputCandidate(
             #         fw=self.active_fw_trace,
             #         bw=self.bw_trace_candidates.best_mem,
             #         cost=forward_time + memory_result.tm,
@@ -1107,7 +1142,7 @@ class BackendOptimizer:
             #     level=LogLevel.INFO,
             # )
             # self.out_traces_candidates.append(
-            #     FinalOutputCandidates(
+            #     OutputCandidate(
             #         fw=self.active_fw_trace,
             #         bw=self.bw_trace_candidates.best_time,
             #         cost=forward_memory + time_result.mem,
@@ -1118,7 +1153,7 @@ class BackendOptimizer:
             #     level=LogLevel.INFO,
             # )
             # self.out_traces_candidates.append(
-            #     FinalOutputCandidates(
+            #     OutputCandidate(
             #         fw=self.active_fw_trace,
             #         bw=self.bw_trace_candidates.best_mem,
             #         cost=forward_memory + memory_result.mem,
