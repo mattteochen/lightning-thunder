@@ -845,7 +845,7 @@ class FusionPlacer:
                         # Set the current active cached forward trace
                         self.active_fw_trace = trc
 
-                        log(f"Cached fw trace:\n{self.active_fw_trace}", level=LogLevel.DEBUG)
+                        log(f"Cached fw trace:\n{self.active_fw_trace}", level=LogLevel.INFO)
                         log(f"Input bw trace:\n{self.trace}", level=LogLevel.DEBUG)
 
                         self.trace = update_bw_from_forward_optimization(fw=trc, bw=self.trace)
