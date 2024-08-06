@@ -169,11 +169,11 @@ class FusionPlacer:
         self.compile_data = compile_data
 
         self.known_fusion_ex_compile_options: dict[str | Hashable, list[FusionCompileOptionsHelper]] = {
-            "nvfuser": [
-                FusionCompileOptionsHelper("nv_enable_linear", "linear"),
-                FusionCompileOptionsHelper("nv_enable_matmul", "matmul"),
-                FusionCompileOptionsHelper("nv_enable_bookend", "bookend"),
-            ]
+            # "nvfuser": [
+            #     FusionCompileOptionsHelper("nv_enable_linear", "linear"),
+            #     FusionCompileOptionsHelper("nv_enable_matmul", "matmul"),
+            #     FusionCompileOptionsHelper("nv_enable_bookend", "bookend"),
+            # ]
         }
 
     """
@@ -252,8 +252,6 @@ class FusionPlacer:
             time_result = BenchmarkResult()
             memory_result = BenchmarkResult()
 
-            print("LEN", len(self.fusion_strat_helper.optimized_traces_time_benchmark_only), len(self.fusion_strat_helper.optimized_traces_mem_benchmark_only))
-
             # Find best trace for runtime
             for i, pair in enumerate(self.fusion_strat_helper.optimized_traces_time_benchmark_only):
                 # Unpack the dict
@@ -298,7 +296,6 @@ class FusionPlacer:
             # Here we have to recover the traces without the pass through remat in order to be compliant
             # with thunder flow as we might have request for no remat
             # Unpack dict
-            print(time_result.index, memory_result.index)
             trc = list(self.fusion_strat_helper.optimized_traces_time[time_result.index].values())[0]
             self.bw_trace_candidates.attach_best_time_candidate(trc)
             trc = list(self.fusion_strat_helper.optimized_traces_mem[memory_result.index].values())[0]
@@ -772,7 +769,7 @@ class FusionPlacer:
                     level=LogLevel.INFO,
                 )
 
-    def optmize(self):
+    def optimize(self):
         from thunder.core.transform_common import dce
         from thunder.executors.torch_autograd import update_bw_from_forward_optimization
         from thunder.backend_optimizer.utils import assign_executors
@@ -903,7 +900,7 @@ class BackendOptimizer:
             )
 
     def optimize(self):
-        self.optimizer.optmize()
+        self.optimizer.optimize()
 
     def attach_trace(self, *, trace: TraceCtx, trace_type: TraceType):
         self.optimizer.attach_trace(trace=trace, trace_type=trace_type)
