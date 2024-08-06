@@ -133,8 +133,18 @@ def run(target: str = 'runtime'):
         labels.reverse()
         thunder_fw_bw_benchmark(traces, labels, 5)
 
-    traces = [thunder.last_traces(jmodel_def)[-1], thunder.last_traces(jmodel_auto)[-1], thunder.last_backward_traces(jmodel_def)[-1], thunder.last_backward_traces(jmodel_auto)[-1]]
-    for t in traces:
-        print(f'{t}\n############################################')
+        # X, Y = get_batch('train')
+        # out_eager = model(X, Y)
+        # out_def = jmodel_def(X, Y)
+        # out_auto = jmodel_auto(X, Y)
+        # for a, b in zip(out_eager, out_def):
+        #     print('deviation def:', (a - b).abs().max().item())
+        # for a, b in zip(out_eager, out_auto):
+        #     print('deviation auto:', (a - b).abs().max().item())
 
-run()
+    # traces = [thunder.last_traces(jmodel_def)[-1], thunder.last_traces(jmodel_auto)[-1], thunder.last_backward_traces(jmodel_def)[-1], thunder.last_backward_traces(jmodel_auto)[-1]]
+    # for t in traces:
+    #     print(f'{t}\n############################################')
+
+run_memory()
+run_time()
