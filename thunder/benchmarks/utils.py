@@ -1,5 +1,5 @@
 import torch
-from thunder.backend_optimizer.optimizer import benchmark_trace
+from thunder.backend_optimizer.utils import benchmark_trace
 
 warm_up_iters = 50
 
