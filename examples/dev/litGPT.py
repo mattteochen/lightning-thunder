@@ -5,26 +5,26 @@ import thunder
 import torch
 
 class Test:
-    def __init__(self, layers: int, autotune_type: str) -> None:
+    def __init__(self, layers: int, autotune_type: str, batch_size: int) -> None:
         self.layers = layers
         self.autotune_type = autotune_type
+        self.batch_size = batch_size
 
-layers = [Test(8, 'runtime')]
+layers = [Test(8, 'runtime', 1), Test(8, 'runtime', 4)]
 
 model_name = 'Llama-3-8B'
 
 for test in layers:
     try:
-        print('Layers:', test.layers)
+        print('\n\nLayers:', test.layers)
         cfg = Config.from_name(model_name)
         cfg.n_layer = test.layers
         torch.set_default_dtype(torch.bfloat16)
         with torch.device('cuda'):
             model = GPT(cfg)
-            x = torch.randint(1, model.config.vocab_size, (1, 512))
+            x = torch.randint(1, model.config.vocab_size, (test.batch_size, 512))
 
             jmodel_def = thunder.jit(model)
-            # Torchcompile gives some troubles for now
             jmodel_auto = thunder.jit(model, autotune_type=test.autotune_type, executors = ['nvfuser', 'torchcompile', 'cudnn', 'torch', 'python'])
 
             print('deviation def:', (jmodel_def(x) - model(x)).abs().max().item())
