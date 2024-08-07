@@ -30,17 +30,17 @@ for test in layers:
             print('deviation def:', (jmodel_def(x) - model(x)).abs().max().item())
             print('deviation auto:', (jmodel_auto(x) - model(x)).abs().max().item())
 
-
-            print('Results thunder benchmark:')
+            iters = 100
+            print(f'Results thunder benchmark ({iters} iters):')
             traces = [thunder.last_traces(jmodel_def)[-1], thunder.last_traces(jmodel_auto)[-1], thunder.last_backward_traces(jmodel_def)[-1], thunder.last_backward_traces(jmodel_auto)[-1]]
             labels = ['fw_def', 'fw_auto', 'bw_def', 'bw_auto']
-            thunder_fw_bw_benchmark(traces, labels, 50)
+            thunder_fw_bw_benchmark(traces, labels, iters)
 
-            print('\n\nResults torch fw bw benchmark:')
+            print(f'\n\nResults torch fw bw benchmark ({iters} iters):')
             callables = [jmodel_def, jmodel_auto]
             labels = ['def', 'auto']
             inputs = [x, x]
-            torch_fw_bw_benchmark(callables, labels, inputs, 50)
+            torch_fw_bw_benchmark(callables, labels, inputs, iters)
 
             print('\n\n\n\n\n\n')
             print(f'{thunder.last_traces(jmodel_def)[-1]}')
