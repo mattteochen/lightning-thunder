@@ -1,11 +1,10 @@
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from enum import Enum
-from thunder.backend_optimizer.utils import operation_in_trace
+from thunder.backend_optimizer.utils import operation_in_trace, wrap_fn_with_exeuctor_compile_option
 from thunder.core.prims import PrimIDs
 from thunder.core.proxies import CollectionProxy, FloatProxy, IntegerProxy, TensorProxy
 from thunder.core.symbol import BoundSymbol
 from thunder.core.trace import from_trace, TraceCtx
-from thunder.executors.data_dependent_partition import Node
 from thunder.extend import Executor, FusionExecutor, OperatorExecutor, get_always_executors
 from thunder.visualizer.visualizer_helper import Visualizer
 from typing import Hashable
@@ -44,19 +43,34 @@ class OptimizationAlgorithm(Enum):
     BEST_FUSER = 0
 
 
-class OptimizerNode:
-    def __init__(self, node: Node):
-        self.node: Node = node
-        self.candidate_executors: dict[Hashable, float] = {}
+class FusionCompileOptionsHelper:
+    def __init__(self, fusion_tag: str, symbol_tag: str, id: PrimIDs, impl: Callable, checker: Callable) -> None:
+        self.fusion_tag = fusion_tag
+        self.symbol_tag = symbol_tag
+        self.id: PrimIDs = id
+        self.impl: Callable = impl
+        self.checker: Callable = checker
 
-    def add_candidate(self, ex: Executor, benchmark: float):
-        self.candidate_executors[ex] = benchmark
+
+class TraceCandidate:
+    def __init__(self, *, trace: TraceCtx, compile_opt: FusionCompileOptionsHelper | None = None, label: str) -> None:
+        self.trace: TraceCtx = trace
+        self.compile_opt: FusionCompileOptionsHelper | None = compile_opt
+        self.label: str = label
 
 
 class TraceCandidates:
-    def __init__(self, best_time: TraceCtx | None = None, best_mem: TraceCtx | None = None) -> None:
+    def __init__(
+        self,
+        best_time: TraceCtx | None = None,
+        best_mem: TraceCtx | None = None,
+        compile_opt_time: FusionCompileOptionsHelper | None = None,
+        compile_opt_mem: FusionCompileOptionsHelper | None = None,
+    ) -> None:
         self.best_time: TraceCtx | None = best_time
         self.best_mem: TraceCtx | None = best_mem
+        self.compile_opt_time: FusionCompileOptionsHelper | None = compile_opt_time
+        self.compile_opt_mem: FusionCompileOptionsHelper | None = compile_opt_mem
 
     def __repr__(self) -> str:
         return f"\nBest runtime candidate:\n{self.best_time}\nBest memory candidate:\n{self.best_mem}"
@@ -73,11 +87,17 @@ class TraceCandidates:
     def iterable(self) -> tuple[TraceCtx | None, TraceCtx | None]:
         return self.best_time, self.best_mem
 
+    def compile_opt_iterables(self) -> tuple[FusionCompileOptionsHelper | None, FusionCompileOptionsHelper | None]:
+        return self.compile_opt_time, self.compile_opt_mem
+
 
 class OutputCandidate:
-    def __init__(self, *, fw: TraceCtx, bw: TraceCtx, cost: float = 0.0) -> None:
+    def __init__(
+        self, *, fw: TraceCtx, bw: TraceCtx, compile_opt: FusionCompileOptionsHelper | None = None, cost: float = 0.0
+    ) -> None:
         self.fw: TraceCtx = fw
         self.bw: TraceCtx = bw
+        self.compile_opt: FusionCompileOptionsHelper | None = compile_opt
         self.tot_cost: float = cost
 
     def __repr__(self) -> str:
@@ -91,16 +111,22 @@ class OutputCandidate:
 class FusionStratHelper:
     def __init__(self) -> None:
         self.supported_executors: set = set(["nvfuser", "torchcompile"])
-        self.optimized_traces_mem: list[dict[str | Hashable, TraceCtx]] = []
+        self.optimized_traces_mem: list[dict[str | Hashable, tuple[TraceCtx, FusionCompileOptionsHelper | None]]] = []
         self.optimized_traces_mem_benchmark_only: list[dict[str | Hashable, TraceCtx]] = []
-        self.optimized_traces_time: list[dict[str | Hashable, TraceCtx]] = []
+        self.optimized_traces_time: list[dict[str | Hashable, tuple[TraceCtx, FusionCompileOptionsHelper | None]]] = []
         self.optimized_traces_time_benchmark_only: list[dict[str | Hashable, TraceCtx]] = []
+
+
+class FusionExecutorsPlacementCtx:
+    def __init__(self, *, placement: list, compile_options: FusionCompileOptionsHelper | None = None) -> None:
+        self.placement: list = placement
+        self.compile_options: FusionCompileOptionsHelper | None = compile_options
 
 
 class ExecutorPlacementOptions:
     def __init__(self) -> None:
-        self.placement_options_mem: list[list[Executor]] = []
-        self.placement_options_time: list[list[Executor]] = []
+        self.placement_options_mem: list[FusionExecutorsPlacementCtx] = []
+        self.placement_options_time: list[FusionExecutorsPlacementCtx] = []
 
 
 class LogLevel(Enum):
@@ -114,12 +140,6 @@ log_level: LogLevel = LogLevel.INFO
 def log(what: str, level: LogLevel):
     if log_level == LogLevel.DEBUG or log_level == level:
         print(f"================================================================================ Autotune: {what}")
-
-
-class FusionCompileOptionsHelper:
-    def __init__(self, fusion_tag: str, symbol_tag: str) -> None:
-        self.fusion_tag = fusion_tag
-        self.symbol_tag = symbol_tag
 
 
 class FusionPlacer:
@@ -151,8 +171,8 @@ class FusionPlacer:
 
         self.optimizer_type: OptimizerType = optimizer_type
 
-        self.active_fw_trace: TraceCtx | None = None
-        self.cached_fw_traces: dict[str | Hashable, TraceCandidates] = {}
+        self.active_fw_trace_ctx: tuple[TraceCtx | None, FusionCompileOptionsHelper | None] = None, None
+        self.cached_fw_traces: list[TraceCandidate] = []
         self.bw_trace_candidates: TraceCandidates = TraceCandidates()
         self.out_traces_candidates: list[OutputCandidate] = []
         self.best_pair_runtime: OutputCandidate
@@ -168,12 +188,15 @@ class FusionPlacer:
 
         self.compile_data = compile_data
 
+        from thunder.executors.nvfuserex_impl import linear, _linear_check
+        from thunder.executors.nvfuserex_impl import matmul, _matmul_check
+
         self.known_fusion_ex_compile_options: dict[str | Hashable, list[FusionCompileOptionsHelper]] = {
-            # "nvfuser": [
-            #     FusionCompileOptionsHelper("nv_enable_linear", "linear"),
-            #     FusionCompileOptionsHelper("nv_enable_matmul", "matmul"),
-            #     FusionCompileOptionsHelper("nv_enable_bookend", "bookend"),
-            # ]
+            "nvfuser": [
+                FusionCompileOptionsHelper("nv_enable_linear", "linear", PrimIDs.LINEAR, linear, _linear_check),
+                FusionCompileOptionsHelper("nv_enable_matmul", "matmul", PrimIDs.MATMUL, matmul, _matmul_check),
+                # FusionCompileOptionsHelper("nv_enable_bookend", "bookend"),
+            ]
         }
 
     """
@@ -188,11 +211,20 @@ class FusionPlacer:
         min_value_mem: float = float("inf")
         best_pair_runtime: OutputCandidate
         best_pair_memory: OutputCandidate
+        pair: OutputCandidate
         for pair in candidates:
             # Apply remat and select best trace pair
+
             pair_cost_time = 0
             pair_cost_mem = 0
-            remat_fw, remat_bw = rematerialize_forward_and_backward(pair.fw, pair.bw)
+            # In order to call rematerialize_forward_and_backward we need to set the cached compile options
+            # derived from the forward trace generation
+            if pair.compile_opt:
+                remat_fw, remat_bw = wrap_fn_with_exeuctor_compile_option(
+                    pair.compile_opt, rematerialize_forward_and_backward, pair.fw, pair.bw
+                )
+            else:
+                remat_fw, remat_bw = rematerialize_forward_and_backward(pair.fw, pair.bw)
             t, m, _ = benchmark_trace(remat_fw, iters=self.benchmark_iters)
             log(f"Pair fw time: {t}, mem: {m}", level=LogLevel.INFO)
             pair_cost_time = pair_cost_time + t
@@ -221,12 +253,13 @@ class FusionPlacer:
         # Number of fw traces to cached are: #fusion_executors * 2
         def fw_benchmark():
             # The optimizator builds the results in order following the self.fusion_executors list order
+            pair_time: dict
+            pair_mem: dict
             for pair_time, pair_mem in zip(
                 self.fusion_strat_helper.optimized_traces_time, self.fusion_strat_helper.optimized_traces_mem
             ):
-                # pair is a dict
-                trc_time = list(pair_time.values())[0]
-                trc_mem = list(pair_mem.values())[0]
+                trc_time, compile_opt_time = list(pair_time.values())[0]
+                trc_mem, compile_opt_mem = list(pair_mem.values())[0]
                 label = list(pair_time.keys())[0]
                 # TODO (matteochen): remove the benchmark here as will done later on the bw pass
                 c, m, _ = benchmark_trace(trc_time, self.benchmark_iters)
@@ -245,8 +278,19 @@ class FusionPlacer:
                 self.debug_msg += (
                     f"Trace name = [{label}] - Target: MEM - Mem = {m / (2**30)} GB - Time = {c} ms\n{trc_mem}\n\n"
                 )
+                # For forward trace we cache the best placement for both runtime and memory for the current Fusion executor (represented by label)
+                if compile_opt_time is not None:
+                    print(f"Caching fw with compile options time: {compile_opt_time.fusion_tag}")
+                if compile_opt_mem is not None:
+                    print(f"Caching fw with compile options mem: {compile_opt_mem.fusion_tag}")
 
-                self.cached_fw_traces[label] = TraceCandidates(best_time=trc_time, best_mem=trc_mem)
+                for t, o in zip([trc_time, trc_mem], [compile_opt_time, compile_opt_mem]):
+                    print(f'Caching fw candidate\n{t}\nwith option {o.fusion_tag if o else "None"}')
+                    self.cached_fw_traces.append(
+                        TraceCandidate(trace=t, compile_opt=o, label=label + o.fusion_tag if o is not None else label)
+                    )
+
+                log("End fw time mem pair", level=LogLevel.INFO)
 
         def bw_benchmark():
             time_result = BenchmarkResult()
@@ -296,15 +340,17 @@ class FusionPlacer:
             # Here we have to recover the traces without the pass through remat in order to be compliant
             # with thunder flow as we might have request for no remat
             # Unpack dict
-            trc = list(self.fusion_strat_helper.optimized_traces_time[time_result.index].values())[0]
+            trc = list(self.fusion_strat_helper.optimized_traces_time[time_result.index].values())[0][0]
             self.bw_trace_candidates.attach_best_time_candidate(trc)
-            trc = list(self.fusion_strat_helper.optimized_traces_mem[memory_result.index].values())[0]
+            trc = list(self.fusion_strat_helper.optimized_traces_mem[memory_result.index].values())[0][0]
             self.bw_trace_candidates.attach_best_mem_candidate(trc)
 
             # Now, finally build the pair fw and bw traces
             # The current fw trace is set by the caller and we take it as is. All current bw traces optimizations are made with the fw trace set by the caller
             for bw in self.bw_trace_candidates.iterable():
-                self.out_traces_candidates.append(OutputCandidate(fw=self.active_fw_trace, bw=bw))
+                self.out_traces_candidates.append(
+                    OutputCandidate(fw=self.active_fw_trace_ctx[0], bw=bw, compile_opt=self.active_fw_trace_ctx[1])
+                )
 
         match self.trace_type:
             case TraceType.FW:
@@ -314,6 +360,7 @@ class FusionPlacer:
 
         if self.produce_log:
             import time
+
             timestamp: str = str(time.time())
             with open(f"{timestamp}-{self.log_file_name}", "w") as file:
                 file.write(self.debug_msg)
@@ -384,7 +431,7 @@ class FusionPlacer:
             )
             return placed_trace, keys, executor_configuration
 
-        def search(ex: FusionExecutor):
+        def _search(ex: FusionExecutor, executor_compile_option: FusionCompileOptionsHelper | None = None):
             """
             Fusable fn definition for nvFuser
             """
@@ -484,14 +531,17 @@ class FusionPlacer:
                     # Helpers
                     candidate_best_time = BenchmarkResult()
                     candidate_best_mem = BenchmarkResult()
-                    # Search for best candidate
+                    # Search for best candidate, by default remat will be called to find the optimal choice
+                    # TODO: enable requests for no remat becnhmarks
                     for i, candidate in enumerate(candidate_executors):
                         # Match the current candidate to benchmark partial trace
                         match_bsym_output(current_bsym, [dict_time_strat, dict_mem_strat], candidate)
                         # Retrieve partial trace and benchmark, apply remat if possible
                         trc, _, _ = get_placed_trace(dict_time_strat, increasing_symbols)
-                        if self.trace_type == TraceType.BW and self.active_fw_trace is not None:
-                            _, trc = rematerialize_forward_and_backward(self.active_fw_trace, trc)
+                        # Apply fw bw remat
+                        if self.trace_type == TraceType.BW and self.active_fw_trace_ctx[0] is not None:
+                            _, trc = rematerialize_forward_and_backward(self.active_fw_trace_ctx[0], trc)
+                        # Now, benchmark
                         t, m, _ = benchmark_trace(trc, self.benchmark_iters)
                         # Update results
                         if t < candidate_best_time.runtime:
@@ -536,8 +586,8 @@ class FusionPlacer:
                     nonlocal best_placement_mem
                     nonlocal best_keys_mem
                     trc, keys, placements = get_placed_trace(dict_time_strat, increasing_symbols)
-                    if self.trace_type == TraceType.BW and self.active_fw_trace is not None:
-                        _, trc = rematerialize_forward_and_backward(self.active_fw_trace, trc)
+                    if self.trace_type == TraceType.BW and self.active_fw_trace_ctx[0] is not None:
+                        _, trc = rematerialize_forward_and_backward(self.active_fw_trace_ctx[0], trc)
                     cost, mem, _ = benchmark_trace(trc, self.benchmark_iters)
                     log(f"Placed trace (cost = {cost} ms, mem = {mem/(2**30)} GB)\n{trc}", level=LogLevel.DEBUG)
                     if cost < best_res_time.runtime or (cost == best_res_time.runtime and mem < best_res_time.memory):
@@ -666,7 +716,7 @@ class FusionPlacer:
                 trace.bound_symbols.append(
                     self.trace.bound_symbols[-1].from_bsym(args=get_not_used_intermediate_outsputs(trace))
                 )
-            # Save the optimal traces that we have found
+            # Save the optimal traces (both for runtime and memory consumption) that we have found
             for executors, container in zip(
                 [executors_mem, executors_time],
                 [
@@ -680,13 +730,28 @@ class FusionPlacer:
                     always_executors=self.always_executors,
                     empty_str=self.empty_executor_hashable_placeholder,
                 )
+                # print(f"Assigned trace:\n{trc}")
                 if self.trace_type == TraceType.BW:
-                    _, trc = rematerialize_forward_and_backward(self.active_fw_trace, trc)
+                    # pass
+                    _, trc = rematerialize_forward_and_backward(self.active_fw_trace_ctx[0], trc)
                 container.append({ex.name: trc})
 
+            # if executor_compile_option:
+            #     print('WHat pushing?')
+            #     for b, e in zip(self.trace.bound_symbols, executors_time):
+            #         print(f'{b.sym.name} -> {e.name}')
+            #     print('WHat pushing?')
+            #     for b, e in zip(self.trace.bound_symbols, executors_mem):
+            #         print(f'{b.sym.name} -> {e.name}')
+
             # Save executors in order to generate real fw and bw trace with correct output with the placer
-            self.executor_placement_options.placement_options_time.append(executors_time)
-            self.executor_placement_options.placement_options_mem.append(executors_mem)
+            # We add any provided compile option reference
+            self.executor_placement_options.placement_options_time.append(
+                FusionExecutorsPlacementCtx(placement=executors_time, compile_options=executor_compile_option)
+            )
+            self.executor_placement_options.placement_options_mem.append(
+                FusionExecutorsPlacementCtx(placement=executors_mem, compile_options=executor_compile_option)
+            )
 
         # If executor specific compile option is activated we need to know where a specific
         # trace does come from and the zip logic afterward can not be employed with self.fusion_executors list
@@ -698,37 +763,41 @@ class FusionPlacer:
 
             log(f"Searching best placement for fusion executor = {ex.name}", level=LogLevel.INFO)
 
-            # We try to enable fusion specific compile options
-            ex_compile_opts = self.known_fusion_ex_compile_options.get(ex.name, [])
+            # We try to enable fusion specific compile options only for fw traces
+            # Backward traces will follow fw traces options
+            ex_compile_opts = (
+                self.known_fusion_ex_compile_options.get(ex.name, []) if self.trace_type == TraceType.FW else []
+            )
             self.fusion_executors_saved_for_later.append(ex)
 
             # Always search with option disabled -> standard flow
-            search(ex)
+            _search(ex)
 
             # Currently we are enabling one compile option at the time as testing all the permutations might need too much time.
-            # Consider implementing patters based on the executor under investingation
+            # TODO: Consider implementing patters based on the executor under investingation
             if ex_compile_opts:
                 for opt in ex_compile_opts:
+                    # Search only if we have an instruction related to the compile option
                     op_in_trace: bool = operation_in_trace(trace=self.trace, op=opt.symbol_tag)
                     if op_in_trace:
-                        # Search with option enabled
-                        old_opt: bool | None = self.compile_data.compile_options.get(opt.fusion_tag, None)
-                        # We test the inverse of the default one
-                        new_opt = True if old_opt is None or old_opt is False else False
-
-                        # For nv_enable_bookend, by default is it defaulted to True, hence we try the False path
-                        # https://github.com/Lightning-AI/lightning-thunder/blob/73b31f35ff95b08ceee7d5d5344127d619fd37fe/thunder/executors/nvfuserex_impl.py#L784
-                        if opt.fusion_tag == "nv_enable_bookend":
-                            new_opt = False
-
-                        log(
-                            f"Executor {ex.name} enabling compile option: {opt.fusion_tag} with value {new_opt}",
-                            level=LogLevel.INFO,
-                        )
-                        self.compile_data.compile_options[opt.fusion_tag] = new_opt
                         self.fusion_executors_saved_for_later.append(ex)
-                        search(ex)
-                        self.compile_data.compile_options[opt.fusion_tag] = old_opt
+                        wrap_fn_with_exeuctor_compile_option(opt, _search, ex, opt)
+
+                        # # Search with option enabled
+                        # old_opt: bool | None = self.compile_data.compile_options.get(opt.fusion_tag, None)
+                        # # We test the inverse of the default one
+                        # new_opt = True if old_opt is None or old_opt is False else False
+
+                        # log(
+                        #     f"Executor {ex.name} enabling compile option: {opt.fusion_tag} with value {new_opt}",
+                        #     level=LogLevel.INFO,
+                        # )
+                        # # Set flag
+                        # self.compile_data.compile_options[opt.fusion_tag] = new_opt
+                        # self.fusion_executors_saved_for_later.append(ex)
+                        # search(ex, opt)
+                        # # Unset flag
+                        # self.compile_data.compile_options[opt.fusion_tag] = old_opt
 
     """
     ################################################## Public methods ##################################################
@@ -737,11 +806,7 @@ class FusionPlacer:
     def get_optimal_fw_traces(self) -> Sequence[TraceCtx]:
         if not self.cached_fw_traces:
             raise AssertionError("Failed to obtain optimal fw traces")
-        return [
-            getattr(candidate, field)
-            for candidate in self.cached_fw_traces.values()
-            for field in ["best_time", "best_mem"]
-        ]
+        return [candidate.trace for candidate in self.cached_fw_traces]
 
     def get_optimal_fw_bw_traces(self) -> tuple[TraceCtx, TraceCtx]:
         return (
@@ -788,44 +853,48 @@ class FusionPlacer:
                 self.fusion_executors_saved_for_later
             ):
                 raise AssertionError(
-                    f"Unexpected time placement options size: {len(self.executor_placement_options.placement_options_time)}. Expected: {len(self.fusion_executors)}"
+                    f"Unexpected time placement options size: {len(self.executor_placement_options.placement_options_time)}. Expected: {len(self.fusion_executors_saved_for_later)}"
                 )
             if len(self.executor_placement_options.placement_options_mem) != len(self.fusion_executors_saved_for_later):
                 raise AssertionError(
-                    f"Unexpected mem placement options size: {len(self.executor_placement_options.placement_options_mem)}. Expected: {len(self.fusion_executors)}"
+                    f"Unexpected mem placement options size: {len(self.executor_placement_options.placement_options_mem)}. Expected: {len(self.fusion_executors_saved_for_later)}"
                 )
-
-            for placement, ex in zip(
+            for placement_ctx, ex in zip(
                 self.executor_placement_options.placement_options_time, self.fusion_executors_saved_for_later
             ):
-                self.fusion_strat_helper.optimized_traces_time.append(
-                    {
-                        ex.name: assign_executors(
-                            in_trace=self.trace,
-                            executor_list=placement,
-                            always_executors=self.always_executors,
-                            empty_str=self.empty_executor_hashable_placeholder,
-                        )
-                    }
+                trc = assign_executors(
+                    in_trace=self.trace,
+                    executor_list=placement_ctx.placement,
+                    always_executors=self.always_executors,
+                    empty_str=self.empty_executor_hashable_placeholder,
+                    compile_data=self.compile_data,
+                    fusion_executor_compile_options_to_activate=placement_ctx.compile_options,
                 )
-            for placement, ex in zip(
+                self.fusion_strat_helper.optimized_traces_time.append(
+                    {ex.name: tuple([trc, placement_ctx.compile_options])}
+                )
+            for placement_ctx, ex in zip(
                 self.executor_placement_options.placement_options_mem, self.fusion_executors_saved_for_later
             ):
-                self.fusion_strat_helper.optimized_traces_mem.append(
-                    {
-                        ex.name: assign_executors(
-                            in_trace=self.trace,
-                            executor_list=placement,
-                            always_executors=self.always_executors,
-                            empty_str=self.empty_executor_hashable_placeholder,
-                        )
-                    }
+                trc = assign_executors(
+                    in_trace=self.trace,
+                    executor_list=placement_ctx.placement,
+                    always_executors=self.always_executors,
+                    empty_str=self.empty_executor_hashable_placeholder,
+                    compile_data=self.compile_data,
+                    fusion_executor_compile_options_to_activate=placement_ctx.compile_options,
                 )
+                self.fusion_strat_helper.optimized_traces_mem.append(
+                    {ex.name: tuple([trc, placement_ctx.compile_options])}
+                )
+
             # Filter out the optimal candidates for the current serach iteration
             self._filter_candidates()
 
         match self.trace_type:
             case TraceType.FW:
+                # Clear any previous results
+                self.cached_fw_traces = []
                 _optimize()
             # We have multiple cached optimized fw traces, find the best backward
             case TraceType.BW:
@@ -835,31 +904,35 @@ class FusionPlacer:
                 # Cached the bw trace as we need to modify the input trace during the loop
                 cached_self_trace = from_trace(self.trace)
                 cached_self_trace.bound_symbols = list(self.trace.bound_symbols)
-                for label, candidate in self.cached_fw_traces.items():
-                    log(f"Backward optimization with fw from {label}", level=LogLevel.INFO)
-                    fw_traces = candidate.iterable()
-                    for trc in fw_traces:
-                        # TODO (matteochen): unify below with the original block
 
-                        # Restore the original bw trace
-                        self.trace = from_trace(cached_self_trace)
-                        self.trace.bound_symbols = list(cached_self_trace.bound_symbols)
-                        # Set the current active cached forward trace
-                        self.active_fw_trace = trc
+                # Now we can generate backward solutions from the cached fw traces
+                for fw_trace_candidate in self.cached_fw_traces:
+                    log(f"Backward optimization with fw from {fw_trace_candidate.label}", level=LogLevel.INFO)
+                    # Restore the original bw trace
+                    self.trace = from_trace(cached_self_trace)
+                    self.trace.bound_symbols = list(cached_self_trace.bound_symbols)
+                    # Set the current active cached forward trace context
+                    print(
+                        f'Current fw cached ctx:\n{fw_trace_candidate.trace}\nOptions: {fw_trace_candidate.compile_opt.fusion_tag if fw_trace_candidate.compile_opt is not None else "None"}'
+                    )
+                    self.active_fw_trace_ctx = fw_trace_candidate.trace, fw_trace_candidate.compile_opt
 
-                        log(f"Cached fw trace:\n{self.active_fw_trace}", level=LogLevel.INFO)
-                        log(f"Input bw trace:\n{self.trace}", level=LogLevel.DEBUG)
+                    log(f"Input bw trace:\n{self.trace}", level=LogLevel.DEBUG)
 
-                        self.trace = update_bw_from_forward_optimization(fw=trc, bw=self.trace)
+                    self.trace = update_bw_from_forward_optimization(fw=fw_trace_candidate.trace, bw=self.trace)
 
-                        if self.apply_bucketing_bw_trace:
-                            from thunder.distributed.transforms import FSDPCommBucketing
+                    if self.apply_bucketing_bw_trace:
+                        from thunder.distributed.transforms import FSDPCommBucketing
 
-                            self.trace = FSDPCommBucketing.apply_bucketing_to_backward_trace(self.trace)
+                        self.trace = FSDPCommBucketing.apply_bucketing_to_backward_trace(self.trace)
 
-                        # Not called in the constructor for bw traces
-                        dce(self.trace)
+                    # Not called in the constructor for bw traces
+                    self.trace = dce(self.trace)
 
+                    # Enable any forward active compilation flag
+                    if fw_trace_candidate.compile_opt:
+                        wrap_fn_with_exeuctor_compile_option(fw_trace_candidate.compile_opt, _optimize)
+                    else:
                         _optimize()
 
                 self.best_pair_runtime, self.best_pair_memory = self._best_runtime_and_memory_candidates(

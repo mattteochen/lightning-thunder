@@ -12,6 +12,7 @@ from itertools import chain
 import torch
 import thunder
 
+
 def sequence_hash(s: Sequence) -> str:
     name = ""
     for e in s:
@@ -31,13 +32,17 @@ def sequence_hash(s: Sequence) -> str:
             raise AssertionError(f"What? Maybe nested Sequence. type = {type(e)}")
     return name
 
+
 def can_executor_execute(ex: Executor, bsym: BoundSymbol) -> bool:
     try:
         return ex.can_execute(bsym)
     except Exception:
         return False
 
-def get_first_available_operator_executor(*, bsym: BoundSymbol, executors: Sequence[Executor], empty_hash: str = 'empty'):
+
+def get_first_available_operator_executor(
+    *, bsym: BoundSymbol, executors: Sequence[Executor], empty_hash: str = "empty"
+):
     for ex in executors:
         if isinstance(ex, FusionExecutor):
             continue
@@ -80,157 +85,167 @@ def get_not_used_intermediate_outsputs(trace_in: TraceCtx) -> list[TensorProxy]:
             ans.append(b.output)
     return ans
 
+
 def assign_executors(
     *,
     in_trace: TraceCtx,
-    executor_list: list[Executor] | tuple[Executor, ...],
+    executor_list: list[Executor | FusionExecutor | OperatorExecutor]
+    | tuple[Executor | FusionExecutor | OperatorExecutor, ...],
     always_executors: list[Executor] | tuple[Executor, ...],
     empty_str: str | Hashable,
+    compile_data=None,
+    fusion_executor_compile_options_to_activate: Any | None = None,
 ) -> TraceCtx:
     from thunder.executors.passes import _transform_for_operator_executor_execution
 
-    swapmap: dict[Variable, Proxy] = {}
+    def _assign_executors():
+        swapmap: dict[Variable, Proxy] = {}
 
-    def restore_correct_args(trace_in: TraceCtx):
-        def args_eq(a, b) -> bool:
-            if len(a) != len(b):
-                return False
-            for obj_a, obj_b in zip(a, b):
-                if type(obj_a) == type(obj_b) and isinstance(obj_a, TensorProxy):
-                    if obj_a.name != obj_b.name:
-                        return False
-                elif type(obj_a) == type(obj_b) and not isinstance(obj_a, TensorProxy):
-                    if obj_a != obj_b:
-                        raise AssertionError(f"What do you want to do here:\nobj_a:\n{obj_a}\nobj_b:{obj_b}")
+        def restore_correct_args(trace_in: TraceCtx):
+            def args_eq(a, b) -> bool:
+                if len(a) != len(b):
+                    return False
+                for obj_a, obj_b in zip(a, b):
+                    if type(obj_a) == type(obj_b) and isinstance(obj_a, TensorProxy):
+                        if obj_a.name != obj_b.name:
+                            return False
+                    elif type(obj_a) == type(obj_b) and not isinstance(obj_a, TensorProxy):
+                        if obj_a != obj_b:
+                            raise AssertionError(f"What do you want to do here:\nobj_a:\n{obj_a}\nobj_b:{obj_b}")
+                return True
+
+            def clear(bsym: BoundSymbol, input):
+                size = len(bsym.subsymbols)
+                if size > 0:
+                    for subsym in bsym.subsymbols:
+                        if not args_eq(subsym.args, input):
+                            subsym.args = tuple(list(input))
+                            clear(subsym, input)
+
+            for bsym in trace_in.bound_symbols:
+                if isinstance(bsym.sym.executor, OperatorExecutor):
+                    clear(bsym, bsym.args)
+
+        def update_swapmap(o: Any, no: Any) -> None:
+            if isinstance(o, Proxy):
+                check(
+                    isinstance(no, Proxy),
+                    lambda: f"Expected an execution transform to produce outputs with the same type, but found {type(o)} and {type(no)}",
+                )
+
+                vo = variableify(o)
+                vno = variableify(no)
+                if vo == vno:
+                    return
+                swapmap[vno] = o
+
+        def preserve_bsym(bsym: BoundSymbol) -> Any:
+            trace: TraceCtx | None = get_tracectx()
+            if trace is None:
+                raise AssertionError("None trace context")
+            trace.scopes[-1].append(bsym)
+            for p in chain(bsym.flat_proxy_outs, bsym.flat_proxy_args):
+                trace.names.add(p.name)
+            return bsym.output
+
+        def visit_helper(bsym: BoundSymbol, ex: Executor) -> None | bool:
+            if bsym.sym.python_impl is not None:
+                return None
+
+            # We have mapped this at previous stages
+            if ex.name == empty_str:
+                return None
+
+            execution_transform: None | Callable = ex.get_execution_transform(bsym.sym)
+            out: Any
+            if execution_transform is not None:
+                out = execution_transform(*bsym.args, **bsym.kwargs)
+            elif isinstance(ex, OperatorExecutor):
+                # Calls the operator executor's operation
+                op: Symbol | None = ex.implmap[bsym.sym.id].symbol
+                if op is None:
+                    raise AssertionError("op is None")
+                out = op(*bsym.args, **bsym.kwargs)
+            elif isinstance(ex, FusionExecutor):
+                # Preserves the symbol as is (it will be handled in the fusion pass)
+                out = preserve_bsym(bsym)
+            else:
+                raise AssertionError("Unknown executor")
+
+            safe_map_flat(update_swapmap, bsym.output, out)
+
             return True
 
-        def clear(bsym: BoundSymbol, input):
-            size = len(bsym.subsymbols)
-            if size > 0:
-                for subsym in bsym.subsymbols:
-                    if not args_eq(subsym.args, input):
-                        subsym.args = tuple(list(input))
-                        clear(subsym, input)
+        def visit(bsym: BoundSymbol, ex: Executor) -> transforms.VISIT_TYPE:
+            return transforms.VISIT_TYPE.NO_OP if visit_helper(bsym, ex) is None else transforms.VISIT_TYPE.REPLACE
 
-        for bsym in trace_in.bound_symbols:
-            if isinstance(bsym.sym.executor, OperatorExecutor):
-                clear(bsym, bsym.args)
+        if len(executor_list) != len(in_trace.bound_symbols):
+            raise AssertionError("len(executor_list) != len(in_trace.bound_symbols)")
 
-    def update_swapmap(o: Any, no: Any) -> None:
-        if isinstance(o, Proxy):
-            check(
-                isinstance(no, Proxy),
-                lambda: f"Expected an execution transform to produce outputs with the same type, but found {type(o)} and {type(no)}",
-            )
+        cached_subsymbols: dict[str, Sequence[BoundSymbol]] = {}
+        executor_mapping: dict[str, Executor] = {}
+        unique_fusion_executors = set()
 
-            vo = variableify(o)
-            vno = variableify(no)
-            if vo == vno:
-                return
-            swapmap[vno] = o
+        # Input should have equal length
+        if len(executor_list) != len(in_trace.bound_symbols):
+            raise AssertionError("len(executor_list) != len(extrace.bound_symbols)")
 
-    def preserve_bsym(bsym: BoundSymbol) -> Any:
-        trace: TraceCtx | None = get_tracectx()
-        if trace is None:
-            raise AssertionError("None trace context")
-        trace.scopes[-1].append(bsym)
-        for p in chain(bsym.flat_proxy_outs, bsym.flat_proxy_args):
-            trace.names.add(p.name)
-        return bsym.output
+        for b, e in zip(in_trace.bound_symbols, executor_list):
+            if isinstance(e, FusionExecutor):
+                unique_fusion_executors.add(e)
+            if isinstance(b.output, TensorProxy):
+                executor_mapping[b.output.name] = e
 
-    def visit_helper(bsym: BoundSymbol, ex: Executor) -> None | bool:
-        if bsym.sym.python_impl is not None:
-            return None
+        extrace = transforms.visitor_transform_paired(in_trace, visit, zip(in_trace.bound_symbols, executor_list))
 
-        # We have mapped this at previous stages
-        if ex.name == empty_str:
-            return None
-
-        execution_transform: None | Callable = ex.get_execution_transform(bsym.sym)
-        out: Any
-        if execution_transform is not None:
-            out = execution_transform(*bsym.args, **bsym.kwargs)
-        elif isinstance(ex, OperatorExecutor):
-            # Calls the operator executor's operation
-            op: Symbol | None = ex.implmap[bsym.sym.id].symbol
-            if op is None:
-                raise AssertionError("op is None")
-            out = op(*bsym.args, **bsym.kwargs)
-        elif isinstance(ex, FusionExecutor):
-            # Preserves the symbol as is (it will be handled in the fusion pass)
-            out = preserve_bsym(bsym)
-        else:
-            raise AssertionError("Unknown executor")
-
-        safe_map_flat(update_swapmap, bsym.output, out)
-
-        return True
-
-    def visit(bsym: BoundSymbol, ex: Executor) -> transforms.VISIT_TYPE:
-        return transforms.VISIT_TYPE.NO_OP if visit_helper(bsym, ex) is None else transforms.VISIT_TYPE.REPLACE
-
-    if len(executor_list) != len(in_trace.bound_symbols):
-        raise AssertionError("len(executor_list) != len(in_trace.bound_symbols)")
-
-    cached_subsymbols: dict[str, Sequence[BoundSymbol]] = {}
-    executor_mapping: dict[str, Executor] = {}
-    unique_fusion_executors = set()
-
-    # Input should have equal length
-    if len(executor_list) != len(in_trace.bound_symbols):
-        raise AssertionError("len(executor_list) != len(extrace.bound_symbols)")
-
-    for b, e in zip(in_trace.bound_symbols, executor_list):
-        if isinstance(e, FusionExecutor):
-            unique_fusion_executors.add(e)
-        if isinstance(b.output, TensorProxy):
-            executor_mapping[b.output.name] = e
-
-    extrace = transforms.visitor_transform_paired(in_trace, visit, zip(in_trace.bound_symbols, executor_list))
-
-    # Restores original variables
-    bound_symbols: list[BoundSymbol] = []
-    for bsym in extrace.bound_symbols:
-        nbsym: BoundSymbol = bsym.from_bsym_swap_proxies(swapmap)
-        bound_symbols.append(nbsym)
-    extrace.bound_symbols = bound_symbols
-
-    for bsym in extrace.bound_symbols:
-        if isinstance(bsym.output, TensorProxy):
-            t_name = bsym.output.name
-            if t_name not in executor_mapping:
-                # Symbol added by the visitor
-                continue
-                # raise AssertionError('Failed to retrive key in mapping')
-            saved_ex = executor_mapping[t_name]
-            if isinstance(saved_ex, OperatorExecutor):
-                cached_subsymbols[t_name] = list(bsym.subsymbols)
-                # This will leave out these symbols from the fusion pass
-                bsym.subsymbols = []
-
-    # Perform fusion pass
-    for ex in unique_fusion_executors:
-        extrace = ex.fusion_pass(extrace)
-
-    # Restore subsymbols
-    # TODO (matteochen): Improve this search
-    for k, v in cached_subsymbols.items():
-        # Note some symbols may be cut out by the fusion pass -> CSE
-        # For example:
-        # a = 1 + 1
-        # b = 1 + 1
-        # c = a + b
-        # being replaced by c = a + a
+        # Restores original variables
+        bound_symbols: list[BoundSymbol] = []
         for bsym in extrace.bound_symbols:
-            if isinstance(bsym.output, TensorProxy) and bsym.output.name == k:
-                bsym.subsymbols = v
+            nbsym: BoundSymbol = bsym.from_bsym_swap_proxies(swapmap)
+            bound_symbols.append(nbsym)
+        extrace.bound_symbols = bound_symbols
 
-    restore_correct_args(extrace)
+        for bsym in extrace.bound_symbols:
+            if isinstance(bsym.output, TensorProxy):
+                t_name = bsym.output.name
+                if t_name not in executor_mapping:
+                    # Symbol added by the visitor
+                    continue
+                    # raise AssertionError('Failed to retrive key in mapping')
+                saved_ex = executor_mapping[t_name]
+                if isinstance(saved_ex, OperatorExecutor):
+                    cached_subsymbols[t_name] = list(bsym.subsymbols)
+                    # This will leave out these symbols from the fusion pass
+                    bsym.subsymbols = []
 
-    # Apply always executors
-    extrace = _transform_for_operator_executor_execution(extrace, always_executors)
+        # Perform fusion pass
+        for ex in unique_fusion_executors:
+            extrace = ex.fusion_pass(extrace)
 
-    return extrace
+        # Restore subsymbols
+        # TODO (matteochen): Improve this search
+        for k, v in cached_subsymbols.items():
+            # Note some symbols may be cut out by the fusion pass -> CSE
+            # For example:
+            # a = 1 + 1
+            # b = 1 + 1
+            # c = a + b
+            # being replaced by c = a + a
+            for bsym in extrace.bound_symbols:
+                if isinstance(bsym.output, TensorProxy) and bsym.output.name == k:
+                    bsym.subsymbols = v
+
+        restore_correct_args(extrace)
+
+        # Apply always executors
+        extrace = _transform_for_operator_executor_execution(extrace, always_executors)
+
+        return extrace
+
+    if fusion_executor_compile_options_to_activate:
+        return wrap_fn_with_exeuctor_compile_option(fusion_executor_compile_options_to_activate, _assign_executors)
+    return _assign_executors()
+
 
 def operation_in_trace(*, trace: TraceCtx, op: str) -> bool:
     # Some optimizations are not available as symbols
@@ -242,6 +257,7 @@ def operation_in_trace(*, trace: TraceCtx, op: str) -> bool:
         if b.sym.name == op:
             return True
     return False
+
 
 def benchmark_trace(
     trace: TraceCtx,
@@ -501,3 +517,50 @@ def benchmark_trace(
         reset_tracectx(trace_tok)
 
     return t, m, answer
+
+
+def register_impl_executor(ex: Executor, id: PrimIDs, fn: Callable, checker: Callable) -> None:
+    if ex.name == "nvfuser":
+        from thunder.executors.nvfuserex_impl import register_supported
+
+        register_supported(id, fn, checker)
+
+
+def recover_ex_from_compile_option(option: str) -> Executor:
+    if option.startswith("nv"):
+        from thunder.executors.nvfuserex_impl import ex
+
+        return ex
+    else:
+        raise AssertionError(f"Compile option not recognized: {option}")
+
+
+def wrap_fn_with_exeuctor_compile_option(option, fn: Callable | None = None, *args):
+    from thunder.core import compile_data
+
+    cd = compile_data.get_compile_data()
+    if option is not None:
+        # Update compile option context
+        if cd is None:
+            raise AssertionError("compile_data is None")
+        # TODO: use getattr
+        old_opt: bool | None = cd.compile_options.get(option.fusion_tag, None)
+        new_opt = True if old_opt is None or old_opt is False else False
+        cd.compile_options[option.fusion_tag] = new_opt
+        # Register the impl for the executor in order to be able to execute the id
+        register_impl_executor(
+            recover_ex_from_compile_option(option.fusion_tag),
+            option.id,
+            option.impl,
+            option.checker,
+        )
+    # Call fn and return output
+    if fn:
+        out = fn(*args)
+    else:
+        out = None
+    # Restore compile option
+    if option is not None:
+        cd.compile_options[option.fusion_tag] = old_opt
+
+    return out
