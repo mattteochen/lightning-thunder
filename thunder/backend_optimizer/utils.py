@@ -333,6 +333,8 @@ def benchmark_trace(
                     max_allocated_bytes = max(
                         max_allocated_bytes, torch.cuda.max_memory_allocated(torch.cuda.current_device())
                     )
+                else:
+                    fn(*args)
 
             torch.cuda.synchronize()
             times = [s.elapsed_time(e) for s, e in zip(start_events, end_events)]
