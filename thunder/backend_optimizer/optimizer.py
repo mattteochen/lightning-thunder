@@ -287,7 +287,7 @@ class FusionPlacer:
                 for t, o in zip([trc_time, trc_mem], [compile_opt_time, compile_opt_mem]):
                     print(f'Caching fw candidate\n{t}\nwith option {o.fusion_tag if o else "None"}')
                     self.cached_fw_traces.append(
-                        TraceCandidate(trace=t, compile_opt=o, label=label + o.fusion_tag if o is not None else label)
+                        TraceCandidate(trace=t, compile_opt=o, label=label + '_enabled_' + o.fusion_tag if o is not None else label)
                     )
 
                 log("End fw time mem pair", level=LogLevel.INFO)
