@@ -25,7 +25,7 @@ for test in layers:
 
             jmodel_def = thunder.jit(model)
             # Torchcompile gives some troubles for now
-            jmodel_auto = thunder.jit(model, autotune_type=test.autotune_type, executors = ['nvfuser', 'torchcompile' 'cudnn', 'torch', 'python'])
+            jmodel_auto = thunder.jit(model, autotune_type=test.autotune_type, executors = ['nvfuser', 'torchcompile', 'cudnn', 'torch', 'python'])
 
             print('deviation def:', (jmodel_def(x) - model(x)).abs().max().item())
             print('deviation auto:', (jmodel_auto(x) - model(x)).abs().max().item())
