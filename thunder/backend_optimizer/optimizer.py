@@ -164,7 +164,7 @@ class FusionPlacer:
 
         self.apply_bucketing_bw_trace: bool = apply_bucketing_bw_trace
 
-        self.benchmark_iters: int = 5
+        self.benchmark_iters: int = 20
 
         self.compile_data = compile_data
 
