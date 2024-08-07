@@ -239,7 +239,7 @@ class FusionPlacer:
             pair_cost_time = 0
             pair_cost_mem = 0
             # In order to call rematerialize_forward_and_backward we need to set the cached compile options
-            # derived from the forward trace generation
+            # derived from the forward trace generation. At this stage all the infos are contained inside the pair object.
             if pair.compile_opt:
                 remat_fw, remat_bw = wrap_fn_with_exeuctor_compile_option(
                     pair.compile_opt, rematerialize_forward_and_backward, pair.fw, pair.bw
