@@ -236,7 +236,6 @@ class FusionPlacer:
                 min_value_mem = pair_cost_mem
 
             # Apply remat and select best trace pair
-
             pair_cost_time = 0
             pair_cost_mem = 0
             # In order to call rematerialize_forward_and_backward we need to set the cached compile options
@@ -758,14 +757,6 @@ class FusionPlacer:
                     _, trc = rematerialize_forward_and_backward(self.active_fw_trace_ctx[0], trc)
                 container.append({ex.name: trc})
 
-            # if executor_compile_option:
-            #     print('WHat pushing?')
-            #     for b, e in zip(self.trace.bound_symbols, executors_time):
-            #         print(f'{b.sym.name} -> {e.name}')
-            #     print('WHat pushing?')
-            #     for b, e in zip(self.trace.bound_symbols, executors_mem):
-            #         print(f'{b.sym.name} -> {e.name}')
-
             # Save executors in order to generate real fw and bw trace with correct output with the placer
             # We add any provided compile option reference
             self.executor_placement_options.placement_options_time.append(
@@ -804,22 +795,6 @@ class FusionPlacer:
                     if op_in_trace:
                         self.fusion_executors_saved_for_later.append(ex)
                         wrap_fn_with_exeuctor_compile_option(opt, _search, ex, opt)
-
-                        # # Search with option enabled
-                        # old_opt: bool | None = self.compile_data.compile_options.get(opt.fusion_tag, None)
-                        # # We test the inverse of the default one
-                        # new_opt = True if old_opt is None or old_opt is False else False
-
-                        # log(
-                        #     f"Executor {ex.name} enabling compile option: {opt.fusion_tag} with value {new_opt}",
-                        #     level=LogLevel.INFO,
-                        # )
-                        # # Set flag
-                        # self.compile_data.compile_options[opt.fusion_tag] = new_opt
-                        # self.fusion_executors_saved_for_later.append(ex)
-                        # search(ex, opt)
-                        # # Unset flag
-                        # self.compile_data.compile_options[opt.fusion_tag] = old_opt
 
     """
     ################################################## Public methods ##################################################
