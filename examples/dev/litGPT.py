@@ -11,7 +11,7 @@ class Test:
 
 layers = [Test(8, 'runtime')]
 
-model_name = 'Llama-3-8'
+model_name = 'Llama-3-8B'
 
 for test in layers:
     try:
