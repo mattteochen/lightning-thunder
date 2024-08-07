@@ -290,9 +290,6 @@ def benchmark_trace(
             out = None
             torch.cuda.empty_cache()
 
-            start_events = [torch.cuda.Event(enable_timing=True) for _ in range(iters)]
-            end_events = [torch.cuda.Event(enable_timing=True) for _ in range(iters)]
-
             # Warm up cycles
             for _ in range(warm_up_iters):
                 fn(*args)
@@ -306,16 +303,20 @@ def benchmark_trace(
             stream = torch.cuda.current_stream()
             max_allocated_bytes = 0
             torch.cuda.synchronize()
-            for i in range(iters):
-                torch.cuda.reset_peak_memory_stats(torch.cuda.current_device())
-                torch.cuda.empty_cache()
-                torch.cuda._sleep(1_000_000)
-                start_events[i].record(stream)
-                fn(*args)
-                end_events[i].record(stream)
-                max_allocated_bytes = max(
-                    max_allocated_bytes, torch.cuda.max_memory_allocated(torch.cuda.current_device())
-                )
+            warm_up_iters = 10
+            start_events = [torch.cuda.Event(enable_timing=True) for _ in range(iters)]
+            end_events = [torch.cuda.Event(enable_timing=True) for _ in range(iters)]
+            for i in range(iters + warm_up_iters):
+                if i >= warm_up_iters:
+                    torch.cuda.reset_peak_memory_stats(torch.cuda.current_device())
+                    torch.cuda.empty_cache()
+                    torch.cuda._sleep(1_000_000)
+                    start_events[i-warm_up_iters].record(stream)
+                    fn(*args)
+                    end_events[i-warm_up_iters].record(stream)
+                    max_allocated_bytes = max(
+                        max_allocated_bytes, torch.cuda.max_memory_allocated(torch.cuda.current_device())
+                    )
 
             torch.cuda.synchronize()
             times = [s.elapsed_time(e) for s, e in zip(start_events, end_events)]

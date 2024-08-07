@@ -164,7 +164,7 @@ class FusionPlacer:
 
         self.apply_bucketing_bw_trace: bool = apply_bucketing_bw_trace
 
-        self.benchmark_iters: int = 5
+        self.benchmark_iters: int = 20
 
         self.compile_data = compile_data
 
@@ -189,6 +189,28 @@ class FusionPlacer:
         best_pair_runtime: OutputCandidate
         best_pair_memory: OutputCandidate
         for pair in candidates:
+            # No remat
+            pair_cost_time = 0
+            pair_cost_mem = 0
+            t, m, _ = benchmark_trace(pair.fw, iters=self.benchmark_iters)
+            log(f"Pair fw time: {t}, mem: {m}", level=LogLevel.INFO)
+            pair_cost_time = pair_cost_time + t
+            pair_cost_mem = pair_cost_mem + m
+            t, m, _ = benchmark_trace(pair.bw, iters=self.benchmark_iters)
+            log(f"Pair bw time: {t}, mem: {m}", level=LogLevel.INFO)
+            pair_cost_time = pair_cost_time + t
+            pair_cost_mem = pair_cost_mem + m
+
+            if pair_cost_time < min_value_time:
+                best_pair_runtime = OutputCandidate(fw=pair.fw, bw=pair.bw, cost=pair_cost_time)
+                log(f"New best runtime pair (no remat):\n{best_pair_runtime}", level=LogLevel.INFO)
+                min_value_time = pair_cost_time
+
+            if pair_cost_mem < min_value_mem:
+                best_pair_memory = OutputCandidate(fw=pair.fw, bw=pair.bw, cost=pair_cost_mem)
+                log(f"New best memory pair (no remat):\n{best_pair_memory}", level=LogLevel.INFO)
+                min_value_mem = pair_cost_mem
+
             # Apply remat and select best trace pair
             pair_cost_time = 0
             pair_cost_mem = 0
