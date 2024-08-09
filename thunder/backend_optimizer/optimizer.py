@@ -217,11 +217,11 @@ class FusionPlacer:
             pair_cost_time = 0
             pair_cost_mem = 0
             t, m, _ = benchmark_trace(pair.fw, iters=self.benchmark_iters)
-            log(f"Pair fw time: {t}, mem: {m}", level=LogLevel.INFO)
+            log(f"Pair fw time no remat: {t}, mem: {m}", level=LogLevel.INFO)
             pair_cost_time = pair_cost_time + t
             pair_cost_mem = pair_cost_mem + m
             t, m, _ = benchmark_trace(pair.bw, iters=self.benchmark_iters)
-            log(f"Pair bw time: {t}, mem: {m}", level=LogLevel.INFO)
+            log(f"Pair bw time no remat: {t}, mem: {m}", level=LogLevel.INFO)
             pair_cost_time = pair_cost_time + t
             pair_cost_mem = pair_cost_mem + m
 
