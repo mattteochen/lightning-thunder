@@ -330,6 +330,11 @@ def jit(
         else:
             raise AssertionError(f'Not supported optimization: {autotune_type}')
 
+        # Default the executors list to all_executors if no options are given
+        # Otherwise the user restricted choice will be used
+        if not executors:
+            executors = get_all_executors()
+
     # Resolve names of executors
     executors = resolve_executors(executors)
 
