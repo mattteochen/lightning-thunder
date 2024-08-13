@@ -146,7 +146,7 @@ def split_forward_backward(computation_trc: TraceCtx, compile_data, compile_stat
     from thunder.visualizer.visualizer_helper import Visualizer
     from thunder.backend_optimizer.optimizer import log, LogLevel, TraceType, BackendOptimizer, OptimizerType, benchmark_trace
 
-    def  split():
+    def split():
         utils.check(compile_data is not None, lambda: "`compile_data` is required")
         # NOTE: This function is rather slow, so it's intended to be used
         # behind a cache.
