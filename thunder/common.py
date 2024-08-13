@@ -195,7 +195,7 @@ class CompileData:
         using_jit: bool = False,
         only_execute_prims: bool = False,
         disable_preprocessing: bool = False,
-        use_cudagraphs: bool = False,
+        use_cudagraphs: bool | None = None,
         disable_torch_autograd_support: bool = False,
         use_rematerialization: bool = False,
         debug_log: None | StringIO = None,

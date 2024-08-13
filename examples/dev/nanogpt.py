@@ -11,7 +11,7 @@ def run(target: str = 'runtime'):
         raise AssertionError(f'Target {target} not supported. Only runtime and memory available')
     # -----------------------------------------------------------------------------
     batch_size = 12
-    block_size = 1024
+    block_size = 512
     bias = False
     real_data = False
     seed = 1337
@@ -42,16 +42,16 @@ def run(target: str = 'runtime'):
     # model init
     gptconf = GPTConfig(
         block_size = block_size, # how far back does the model look? i.e. context size
-        n_layer = 4, n_head = 12, n_embd = 768, # size of the model
+        n_layer = 1, n_head = 6, n_embd = 768, # size of the model
         dropout = 0, # for determinism
         bias = bias,
     )
     model = GPT(gptconf)
     model.to(device)
 
-    jmodel_def = thunder.jit(model)
+    jmodel_def = thunder.jit(model, use_cudagraphs=True)
     # Currently sdpa does not work?
-    jmodel_auto = thunder.jit(model, autotune_type={target}, executors = ['torchcompile', 'nvfuser', 'cudnn', 'torch', 'python'])
+    jmodel_auto = thunder.jit(model, autotune_type=target, executors = ['torchcompile', 'nvfuser', 'cudnn', 'torch', 'python'], use_cudagraphs=True)
 
     if compile:
         print("Compiling model...")
@@ -81,7 +81,7 @@ def run(target: str = 'runtime'):
                 X, Y = get_batch('train')
                 for k in range(num_steps):
                     with ctx:
-                        _, loss = model(X, Y)
+                        _, loss = mod(X, Y)
                     X, Y = get_batch('train')
                     loss.backward()
                     lossf = loss.item()
@@ -101,7 +101,7 @@ def run(target: str = 'runtime'):
                 X, Y = get_batch('train')
                 loss.backward()
 
-            iters = 5
+            iters = 100
             start_events = [torch.cuda.Event(enable_timing=True) for _ in range(iters)]
             end_events = [torch.cuda.Event(enable_timing=True) for _ in range(iters)]
             stream = torch.cuda.current_stream()
@@ -127,11 +127,16 @@ def run(target: str = 'runtime'):
         measure(jmodel_def, 'def')
 
         print('\n\nResults thunder benchmark:')
-        traces = [thunder.last_traces(jmodel_def)[-1], thunder.last_traces(jmodel_auto)[-1], thunder.last_backward_traces(jmodel_def)[-1], thunder.last_backward_traces(jmodel_auto)[-1]]
+        traces = [
+            thunder.last_traces(jmodel_def)[-1],
+            thunder.last_traces(jmodel_auto)[-1],
+            thunder.last_backward_traces(jmodel_def)[-1],
+            thunder.last_backward_traces(jmodel_auto)[-1],
+        ]
         traces.reverse()
         labels = ['fw_def', 'fw_auto', 'bw_def', 'bw_auto']
         labels.reverse()
-        thunder_fw_bw_benchmark(traces, labels, 5)
+        thunder_fw_bw_benchmark(traces, labels, 100)
 
         # X, Y = get_batch('train')
         # out_eager = model(X, Y)
@@ -142,9 +147,8 @@ def run(target: str = 'runtime'):
         # for a, b in zip(out_eager, out_auto):
         #     print('deviation auto:', (a - b).abs().max().item())
 
-    # traces = [thunder.last_traces(jmodel_def)[-1], thunder.last_traces(jmodel_auto)[-1], thunder.last_backward_traces(jmodel_def)[-1], thunder.last_backward_traces(jmodel_auto)[-1]]
-    # for t in traces:
-    #     print(f'{t}\n############################################')
+    traces = [thunder.last_traces(jmodel_def)[-1], thunder.last_traces(jmodel_auto)[-1], thunder.last_backward_traces(jmodel_def)[-1], thunder.last_backward_traces(jmodel_auto)[-1]]
+    for t in traces:
+        print(f'{t}\n############################################')
 
-run_memory()
-run_time()
+run()

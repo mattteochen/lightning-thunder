@@ -94,7 +94,14 @@ class CUDAGraphCallable:
 
         for static_input, arg in utils.safe_zip(static_inputs, args):
             if id(static_input) != id(arg) and isinstance(static_input, torch.Tensor) and isinstance(arg, torch.Tensor):
-                static_input.copy_(arg)
+                try:
+                    static_input.copy_(arg)
+                except RuntimeError as e:
+                    if (
+                        "unsupported operation: more than one element of the written-to tensor refers to a single memory location. Please clone() the tensor before performing the operation."
+                        in str(e)
+                    ):
+                        static_input.clone().copy_(arg)
 
         graph.replay()
 

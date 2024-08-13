@@ -3,35 +3,22 @@ from thunder.backend_optimizer.utils import benchmark_trace
 
 warm_up_iters = 50
 
-def torch_fw_bw_benchmark_nvsight(models: list, torch_module: torch.nn.Module | None, labels: list, inputs: list, iters: int, int_input_tensor: bool = False) -> None:
+def torch_fw_bw_benchmark_nvsight(models: list, labels: list, inputs: list, iters: int) -> None:
 
     for m, input, label in zip(models, inputs, labels):
         # Warm up
-        for _ in range(10):
+        for _ in range(warm_up_iters):
             y = m(input)
-            # Not supported by autograd
-            if int_input_tensor:
-                torch.autograd.grad(y.sum(), torch_module.parameters())
-            else:
-                torch.autograd.grad(y, input, grad_outputs=torch.ones_like(y))
+            y.sum().backward()
 
+        torch.cuda.empty_cache()
+        torch.cuda.synchronize()
         torch.cuda.cudart().cudaProfilerStart()
-        for i in range(iters):
+        for _ in range(iters):
             torch.cuda.empty_cache()
-            torch.cuda.nvtx.range_push(f'iteration_nvsight-{label}')
-            torch.cuda.nvtx.range_push("fw_nvsight")
+            torch.cuda.nvtx.range_push(f"{label}: fw-bw")
             y = m(input)
-            torch.cuda.nvtx.range_pop()
-            # Not supported by autograd
-            if int_input_tensor:
-                torch.cuda.nvtx.range_push("bw_nvsight")
-                torch.autograd.grad(y.sum(), torch_module.parameters())
-                torch.cuda.nvtx.range_pop()
-            else:
-                torch.cuda.nvtx.range_push("bw_nvsight")
-                torch.autograd.grad(y, input, grad_outputs=torch.ones_like(y))
-                torch.cuda.nvtx.range_pop()
-
+            y.sum().backward()
             torch.cuda.nvtx.range_pop()
         torch.cuda.cudart().cudaProfilerStop()
 

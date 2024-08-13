@@ -137,12 +137,11 @@ class LogLevel(Enum):
 log_level: LogLevel = LogLevel.INFO
 
 
-def log(what: str, level: LogLevel):
+def log(what: str, level: LogLevel = LogLevel.INFO):
     if log_level == LogLevel.DEBUG or log_level == level:
         print(f"================================================================================ Autotune: {what}")
 
-
-class FusionPlacer:
+class PlacerBase:
     def __init__(
         self,
         *,
@@ -153,7 +152,7 @@ class FusionPlacer:
         visualizer: Visualizer | None = None,
         optimizer_type: OptimizerType = OptimizerType.RUNTIME,
         compile_data,
-    ) -> None:
+        ) -> None:
         self.always_executors: tuple[Executor, ...] = get_always_executors()
         self.empty_executor_hashable_placeholder: str = "empty"
         self.executors: Sequence[Executor] = priority_executors
@@ -178,19 +177,52 @@ class FusionPlacer:
         self.best_pair_runtime: OutputCandidate
         self.best_pair_memory: OutputCandidate
 
-        # Strat fusion
-        self.fusion_strat_helper: FusionStratHelper = FusionStratHelper()
-        self.executor_placement_options: ExecutorPlacementOptions = ExecutorPlacementOptions()
-
         self.apply_bucketing_bw_trace: bool = apply_bucketing_bw_trace
 
         self.benchmark_iters: int = 20
 
         self.compile_data = compile_data
 
+    def optimize(self):
+        pass
+
+    def attach_trace(self, *, trace: TraceCtx, trace_type: TraceType):
+        pass
+
+    def get_optimal_fw_traces(self) -> Sequence[TraceCtx]:
+        return []
+
+    def get_optimal_fw_bw_traces(self) -> tuple[TraceCtx, TraceCtx]:
+        return (TraceCtx(), TraceCtx())
+
+class FusionPlacer_BeamSearch(PlacerBase):
+    def __init__(
+        self,
+        *,
+        priority_executors: Sequence[Executor],
+        produce_log: bool = True,
+        apply_bucketing_bw_trace: bool,
+        log_file_name: str,
+        visualizer: Visualizer | None = None,
+        optimizer_type: OptimizerType = OptimizerType.RUNTIME,
+        compile_data,
+    ) -> None:
+        super().__init__(
+            priority_executors=priority_executors,
+            produce_log=produce_log,
+            apply_bucketing_bw_trace=apply_bucketing_bw_trace,
+            log_file_name=log_file_name,
+            visualizer=visualizer,
+            optimizer_type=optimizer_type,
+            compile_data=compile_data
+        )
+
+        # Strat fusion
+        self.fusion_strat_helper: FusionStratHelper = FusionStratHelper()
+        self.executor_placement_options: ExecutorPlacementOptions = ExecutorPlacementOptions()
+
         from thunder.executors.nvfuserex_impl import linear, _linear_check
         from thunder.executors.nvfuserex_impl import matmul, _matmul_check
-
         self.known_fusion_ex_compile_options: dict[str | Hashable, list[FusionCompileOptionsHelper]] = {
             "nvfuser": [
                 FusionCompileOptionsHelper("nv_enable_linear", "linear", PrimIDs.LINEAR, linear, _linear_check),
@@ -206,6 +238,7 @@ class FusionPlacer:
     def _best_runtime_and_memory_candidates(self, candidates):
         from thunder.core.rematerialization import rematerialize_forward_and_backward
         from thunder.backend_optimizer.utils import benchmark_trace
+        from thunder.executors.cudagraphex import cudagraphex
 
         min_value_time: float = float("inf")
         min_value_mem: float = float("inf")
@@ -213,57 +246,44 @@ class FusionPlacer:
         best_pair_memory: OutputCandidate
         pair: OutputCandidate
         for pair in candidates:
-            # No remat
-            pair_cost_time = 0
-            pair_cost_mem = 0
-            t, m, _ = benchmark_trace(pair.fw, iters=self.benchmark_iters)
-            log(f"Pair fw time no remat: {t}, mem: {m}", level=LogLevel.INFO)
-            pair_cost_time = pair_cost_time + t
-            pair_cost_mem = pair_cost_mem + m
-            t, m, _ = benchmark_trace(pair.bw, iters=self.benchmark_iters)
-            log(f"Pair bw time no remat: {t}, mem: {m}", level=LogLevel.INFO)
-            pair_cost_time = pair_cost_time + t
-            pair_cost_mem = pair_cost_mem + m
-
-            if pair_cost_time < min_value_time:
-                best_pair_runtime = OutputCandidate(fw=pair.fw, bw=pair.bw, cost=pair_cost_time)
-                log(f"New best runtime pair (no remat):\n{best_pair_runtime}", level=LogLevel.INFO)
-                min_value_time = pair_cost_time
-
-            if pair_cost_mem < min_value_mem:
-                best_pair_memory = OutputCandidate(fw=pair.fw, bw=pair.bw, cost=pair_cost_mem)
-                log(f"New best memory pair (no remat):\n{best_pair_memory}", level=LogLevel.INFO)
-                min_value_mem = pair_cost_mem
-
-            # Apply remat and select best trace pair
-            pair_cost_time = 0
-            pair_cost_mem = 0
-            # In order to call rematerialize_forward_and_backward we need to set the cached compile options
-            # derived from the forward trace generation. At this stage all the infos are contained inside the pair object.
             if pair.compile_opt:
                 remat_fw, remat_bw = wrap_fn_with_exeuctor_compile_option(
                     pair.compile_opt, rematerialize_forward_and_backward, pair.fw, pair.bw
                 )
             else:
                 remat_fw, remat_bw = rematerialize_forward_and_backward(pair.fw, pair.bw)
-            t, m, _ = benchmark_trace(remat_fw, iters=self.benchmark_iters)
-            log(f"Pair fw time: {t}, mem: {m}", level=LogLevel.INFO)
-            pair_cost_time = pair_cost_time + t
-            pair_cost_mem = pair_cost_mem + m
-            t, m, _ = benchmark_trace(remat_bw, iters=self.benchmark_iters)
-            log(f"Pair bw time: {t}, mem: {m}", level=LogLevel.INFO)
-            pair_cost_time = pair_cost_time + t
-            pair_cost_mem = pair_cost_mem + m
+            # Create pair final options by applying final optimizations: cudagraphs and rematerialization
+            pair_options: list[tuple[TraceCtx, TraceCtx]] = [
+                (pair.fw, pair.bw),
+                (cudagraphex.fusion_pass(pair.fw), cudagraphex.fusion_pass(pair.bw)),
+                (remat_fw, remat_bw),
+                (cudagraphex.fusion_pass(remat_fw), cudagraphex.fusion_pass(remat_bw)),
+            ]
+            # Select the best options
+            for pair_option in pair_options:
+                fw = pair_option[0]
+                bw = pair_option[1]
 
-            if pair_cost_time < min_value_time:
-                best_pair_runtime = OutputCandidate(fw=remat_fw, bw=remat_bw, cost=pair_cost_time)
-                log(f"New best runtime pair:\n{best_pair_runtime}", level=LogLevel.INFO)
-                min_value_time = pair_cost_time
+                pair_cost_time = 0
+                pair_cost_mem = 0
+                t, m, _ = benchmark_trace(fw, iters=self.benchmark_iters)
+                log(f"Pair fw time: {t}, mem: {m}", level=LogLevel.INFO)
+                pair_cost_time = pair_cost_time + t
+                pair_cost_mem = pair_cost_mem + m
+                t, m, _ = benchmark_trace(bw, iters=self.benchmark_iters)
+                log(f"Pair bw time: {t}, mem: {m}", level=LogLevel.INFO)
+                pair_cost_time = pair_cost_time + t
+                pair_cost_mem = pair_cost_mem + m
 
-            if pair_cost_mem < min_value_mem:
-                best_pair_memory = OutputCandidate(fw=remat_fw, bw=remat_bw, cost=pair_cost_mem)
-                log(f"New best memory pair:\n{best_pair_memory}", level=LogLevel.INFO)
-                min_value_mem = pair_cost_mem
+                if pair_cost_time < min_value_time:
+                    best_pair_runtime = OutputCandidate(fw=fw, bw=bw, cost=pair_cost_time)
+                    log(f"New best runtime pair (no remat):\n{best_pair_runtime}", level=LogLevel.INFO)
+                    min_value_time = pair_cost_time
+
+                if pair_cost_mem < min_value_mem:
+                    best_pair_memory = OutputCandidate(fw=fw, bw=bw, cost=pair_cost_mem)
+                    log(f"New best memory pair (no remat):\n{best_pair_memory}", level=LogLevel.INFO)
+                    min_value_mem = pair_cost_mem
 
         return best_pair_runtime, best_pair_memory
 
@@ -300,10 +320,10 @@ class FusionPlacer:
                     f"Trace name = [{label}] - Target: MEM - Mem = {m / (2**30)} GB - Time = {c} ms\n{trc_mem}\n\n"
                 )
                 # For forward trace we cache the best placement for both runtime and memory for the current Fusion executor (represented by label)
-                if compile_opt_time is not None:
-                    print(f"Caching fw with compile options time: {compile_opt_time.fusion_tag}")
-                if compile_opt_mem is not None:
-                    print(f"Caching fw with compile options mem: {compile_opt_mem.fusion_tag}")
+                # if compile_opt_time is not None:
+                #     print(f"Caching fw with compile options time: {compile_opt_time.fusion_tag}")
+                # if compile_opt_mem is not None:
+                #     print(f"Caching fw with compile options mem: {compile_opt_mem.fusion_tag}")
 
                 for t, o in zip([trc_time, trc_mem], [compile_opt_time, compile_opt_mem]):
                     print(f'Caching fw candidate\n{t}\nwith option {o.fusion_tag if o else "None"}')
@@ -456,7 +476,6 @@ class FusionPlacer:
             """
             Fusable fn definition for nvFuser
             """
-
             # Each executor has a custom should fuse function, but the current impl need to access local executor object
             def _should_fuse_nvfuser(a: Node, b: Node):
                 def _can_fuse_node(n: Node):
@@ -473,7 +492,6 @@ class FusionPlacer:
             """
             Fusable fn definition for torch.compile
             """
-
             def _should_fuse_torchcompile(a: Node, b: Node):
                 def _can_fuse_node(n: Node):
                     if len(n.group_bsyms) > 1:
@@ -498,8 +516,14 @@ class FusionPlacer:
                 else:
                     raise AssertionError(f"Type not handled: {type(bsym_in.output)}")
 
+            merge_fn: Callable
+            match ex.name:
+                case 'nvfuser':
+                    merge_fn = _should_fuse_nvfuser
+                case 'torchcompile':
+                    merge_fn = _should_fuse_torchcompile
             bound_symbol_groups = fuse_bound_symbols(
-                self.trace, _should_fuse_nvfuser if ex.name == "nvfuser" else _should_fuse_torchcompile
+                self.trace, merge_fn
             )
             log(f"Num of groups = {len(bound_symbol_groups)}", level=LogLevel.DEBUG)
 
@@ -554,6 +578,7 @@ class FusionPlacer:
                     candidate_best_mem = BenchmarkResult()
                     # Search for best candidate, by default remat will be called to find the optimal choice
                     # TODO: enable requests for no remat becnhmarks
+                    # TODO: we should consider also FusionExecutor that can execute this single bsym in this beam search
                     for i, candidate in enumerate(candidate_executors):
                         # Match the current candidate to benchmark partial trace
                         match_bsym_output(current_bsym, [dict_time_strat, dict_mem_strat], candidate)
@@ -642,7 +667,7 @@ class FusionPlacer:
 
                 n_missing_bsyms = len(group) - start_idx
                 # TODO (matteochen): consider to add the iteration with no fusion regions
-                for i in range(0, n_missing_bsyms, n_missing_bsyms - 1 if self.trace_type == TraceType.BW else 1):
+                for i in range(0, n_missing_bsyms, 1 if self.trace_type == TraceType.BW else 1):
                     # for i in range(0, n_missing_bsyms):
                     # From top to bottom (this will include the whole region)
                     # -> First iteration is the one with fusion region with single element
@@ -666,13 +691,21 @@ class FusionPlacer:
                     # From bottom to up (this will exclude the full region as being handled in the for cycle above)
                     # -> First iteration is the one with len(fusion_region) - 1
                     # -> Last iteration gives no fusion regions
-                    # for j in range(0, i+1, increment_factor):
-                    #     dict_time_strat[group[j].output.name] = get_default_executor(group[j])
-                    # for k in range(i+1, len(group), increment_factor):
-                    #     dict_time_strat[group[k].output.name] = ex
+                    for j in range(start_idx, start_idx + i + 1, increment_factor):
+                        match_bsym_output(
+                            group[j],
+                            [dict_time_strat, dict_mem_strat],
+                            get_first_available_operator_executor(
+                                bsym=group[j],
+                                executors=self.executors,
+                                empty_hash=self.empty_executor_hashable_placeholder,
+                            ),
+                        )
+                    for k in range(start_idx + i + 1, len(group), increment_factor):
+                        match_bsym_output(group[k], [dict_time_strat, dict_mem_strat], ex)
 
                     # Benchmark this placement
-                    # measure_and_update_result()
+                    measure_and_update_result()
 
                 if best_placement_time is None or best_keys_time is None:
                     raise AssertionError("Failed to get best time placement")
@@ -772,7 +805,8 @@ class FusionPlacer:
         ex: FusionExecutor
         for ex in self.fusion_executors:
             if ex.name not in self.fusion_strat_helper.supported_executors:
-                raise AssertionError(f"Fusion operator not supported: {ex.name}")
+                # log(f"Fusion operator not supported: {ex.name}. Skipping it.")
+                continue
 
             log(f"Searching best placement for fusion executor = {ex.name}", level=LogLevel.INFO)
 
@@ -787,7 +821,7 @@ class FusionPlacer:
             _search(ex)
 
             # Currently we are enabling one compile option at the time as testing all the permutations might need too much time.
-            # TODO: Consider implementing patters based on the executor under investingation
+            # TODO: Consider implementing patterns based on the executor under investingation
             if ex_compile_opts:
                 for opt in ex_compile_opts:
                     # Search only if we have an instruction related to the compile option
@@ -824,7 +858,7 @@ class FusionPlacer:
                 log(
                     f"New forward trace to optimize (strat = {self.optimizer_type}):\n{self.trace}", level=LogLevel.INFO
                 )
-            # TODO (matteochen): support bw trace optimization even though with no fw traces cached
+            # TODO (matteochen): support bw trace optimization even though with no fw traces cached (computational trace?)
             case TraceType.BW:
                 if not self.cached_fw_traces:
                     raise AssertionError("Can not optimize backward traces before forward traces")
@@ -894,6 +928,7 @@ class FusionPlacer:
                 self.cached_fw_traces = []
                 _optimize()
             # We have multiple cached optimized fw traces, find the best backward
+            # TODO: make this prettier with a machine state for example
             case TraceType.BW:
                 # Clear any previous results
                 self.out_traces_candidates = []
@@ -950,8 +985,10 @@ class BackendOptimizer:
         optimizer_algorithm: OptimizationAlgorithm = OptimizationAlgorithm.BEST_FUSER,
         compile_data,
     ) -> None:
-        self.optimizer = (
-            FusionPlacer(
+        if optimizer_algorithm != OptimizationAlgorithm.BEST_FUSER:
+            raise AssertionError(f'Optimization {optimizer_algorithm} not implemented')
+        self.optimizer: PlacerBase = (
+            FusionPlacer_BeamSearch(
                 priority_executors=priority_executors,
                 produce_log=produce_log,
                 apply_bucketing_bw_trace=apply_bucketing_bw_trace,
@@ -960,8 +997,6 @@ class BackendOptimizer:
                 optimizer_type=optimizer_type,
                 compile_data=compile_data,
             )
-            if optimizer_algorithm == OptimizationAlgorithm.BEST_FUSER
-            else None
         )
 
         log("Executors:", level=LogLevel.INFO)

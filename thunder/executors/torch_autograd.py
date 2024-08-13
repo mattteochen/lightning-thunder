@@ -111,8 +111,8 @@ def update_bw_from_forward_optimization(*, fw: TraceCtx, bw:TraceCtx) -> TraceCt
     # Some of the optimization passes change proxies in the trace and
     # any change in the forward trace must be reflected in the backward
     # trace.
-    original_bw_saved_tensors_for_backward = bw_trace.args[0][0]
-    new_fw_saved_tensors_for_backward = get_saved_for_backward_tensors(fw_extrace)
+    original_bw_saved_tensors_for_backward = bw.args[0][0]
+    new_fw_saved_tensors_for_backward = get_saved_for_backward_tensors(fw)
     swap_map = {
         variableify(x): y
         for x, y in zip(original_bw_saved_tensors_for_backward, new_fw_saved_tensors_for_backward)
@@ -352,6 +352,7 @@ def split_forward_backward(computation_trc: TraceCtx, compile_data, compile_stat
         visualizer.set_fw_final_trace(fw_extrace)
         visualizer.set_bw_final_trace(bw_extrace)
 
+        # TODO: implement new visualizer
         # visualizer.produce()
 
         if autotune_type is None:
@@ -484,27 +485,17 @@ def split_forward_backward(computation_trc: TraceCtx, compile_data, compile_stat
                             compile_stats.last_backward_traces += bw_traces
 
                         return fw_extrace, bw_extrace
-        except AssertionError as e:
-            print(f'Exception occured: {e}')
+        except Exception as e:
+            import traceback
+            print(f'Exception occured:\n{e}\nTraceback:')
+            traceback.print_exc()
             # Restore before calling split
             compile_data.executors_list = list(cached_executor_list)
 
             log(
-                    f"================================================================================ Before Autotune Tuning: exception occured, not autotuned split_forward_backward from {executors_candidates}", level=LogLevel.INFO)
-            primal_trace, fw_extrace, bw_extrace, fw_traces, bw_traces = split()
-            if compile_stats is not None:
-                compile_stats.last_traces.append(primal_trace)
-                compile_stats.last_traces += fw_traces
-                compile_stats.last_backward_traces += bw_traces
-
-            return fw_extrace, bw_extrace
-        except RuntimeError as e:
-            print(f'Exception occured: {e}')
-            # Restore before calling split
-            compile_data.executors_list = list(cached_executor_list)
-
-            log(
-                    f"================================================================================ Before Autotune Tuning: exception occured, not autotuned split_forward_backward from {executors_candidates}", level=LogLevel.INFO)
+                f"================================================================================ Before Autotune Tuning: exception occured, executors:\n{executors_candidates} will not be autotuned",
+                level=LogLevel.INFO,
+            )
             primal_trace, fw_extrace, bw_extrace, fw_traces, bw_traces = split()
             if compile_stats is not None:
                 compile_stats.last_traces.append(primal_trace)

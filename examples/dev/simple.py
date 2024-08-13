@@ -15,14 +15,13 @@ class Module(torch.nn.Module):
         return self.silu(c)
 
 with torch.device('cuda'):
-    multiplier = 100
-    in_features = 20 * multiplier
-    out_features = 30 * multiplier
+    in_features = 4096
+    out_features = 11008
     model = Module(in_features, out_features)
     x = torch.randn(128, in_features, requires_grad=True)
 
-    jmodel_def = thunder.jit(model)
-    jmodel_auto = thunder.jit(model, autotune_type='runtime', executors=['nvfuser', 'torchcompile', 'cudnn', 'sdpa', 'torch', 'python'])
+    jmodel_def = thunder.jit(model, )
+    jmodel_auto = thunder.jit(model, autotune_type='runtime', executors=['nvfuser', 'torchcompile', 'cudnn', 'torch', 'python'], )
 
     y = jmodel_def(x)
     y = jmodel_auto(x)
@@ -37,3 +36,6 @@ with torch.device('cuda'):
     inputs = [x, x]
     print('Results torch benchmark:')
     torch_fw_bw_benchmark(callables, labels, inputs, 50)
+
+    for t in traces:
+        print(f'{t}\n###################')

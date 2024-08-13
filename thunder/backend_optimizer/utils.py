@@ -1,6 +1,6 @@
 from collections.abc import Callable, Hashable, Sequence
 from typing import Any
-from thunder.core.dtypes import dtype
+from thunder.core.dtypes import dtype, to_torch_dtype
 from thunder.core.prims import PrimIDs
 from thunder.core.proxies import CollectionProxy, FloatProxy, IntegerProxy, Proxy, TensorProxy, Variable, variableify
 from thunder.core.symbol import BoundSymbol, Symbol
@@ -281,10 +281,13 @@ def benchmark_trace(
         try:
             warm_up_iters = 50
             torch.cuda.empty_cache()
+            torch.cuda.synchronize()
             # Warm up cycles
             for _ in range(warm_up_iters):
                 fn(*args)
             # Benchmark
+            torch.cuda.empty_cache()
+            torch.cuda.synchronize()
             torch.cuda.cudart().cudaProfilerStart()
             for i in range(iters):
                 torch.cuda.nvtx.range_push(f"{nvsight_fn_name}-iter{i}")
@@ -304,13 +307,14 @@ def benchmark_trace(
         try:
             warm_up_iters = 50
             out = None
-            torch.cuda.empty_cache()
 
             # Warm up cycles
             for _ in range(warm_up_iters):
                 fn(*args)
             # Snapshot request
             if snapshot:
+                torch.cuda.empty_cache()
+                torch.cuda.synchronize()
                 torch.cuda.memory._record_memory_history()
                 fn(*args)
                 torch.cuda.memory._dump_snapshot(snapshot_name + "_benchmark.pickle")
@@ -318,27 +322,23 @@ def benchmark_trace(
             # Benchmark
             stream = torch.cuda.current_stream()
             max_allocated_bytes = 0
-            torch.cuda.synchronize()
-            warm_up_iters = 10
             start_events = [torch.cuda.Event(enable_timing=True) for _ in range(iters)]
             end_events = [torch.cuda.Event(enable_timing=True) for _ in range(iters)]
-            for i in range(iters + warm_up_iters):
-                if i >= warm_up_iters:
-                    torch.cuda.reset_peak_memory_stats(torch.cuda.current_device())
-                    torch.cuda.empty_cache()
-                    torch.cuda._sleep(1_000_000)
-                    start_events[i-warm_up_iters].record(stream)
-                    fn(*args)
-                    end_events[i-warm_up_iters].record(stream)
-                    max_allocated_bytes = max(
-                        max_allocated_bytes, torch.cuda.max_memory_allocated(torch.cuda.current_device())
-                    )
-                else:
-                    fn(*args)
+            torch.cuda.synchronize()
+            for i in range(iters):
+                torch.cuda.reset_peak_memory_stats(torch.cuda.current_device())
+                torch.cuda.empty_cache()
+                torch.cuda._sleep(1_000_000)
+                start_events[i].record(stream)
+                fn(*args)
+                end_events[i].record(stream)
+                max_allocated_bytes = max(
+                    max_allocated_bytes, torch.cuda.max_memory_allocated(torch.cuda.current_device())
+                )
 
             torch.cuda.synchronize()
             times = [s.elapsed_time(e) for s, e in zip(start_events, end_events)]
-            print(f"times: {times}")
+            # print(f"times: {times}")
             tot_time = sum(times) / iters
             return tot_time, max_allocated_bytes, out
         except Exception as e:
@@ -420,17 +420,19 @@ def benchmark_trace(
         shape = arg.shape
         device = arg.device
         requires_grad = arg.requires_grad
-        if dtype is not None and is_float_dtype(dtype):
-            torch_dtype = thunder_to_torch_float_dtype(dtype, dtype.bytes)
+
+        torch_dtype = to_torch_dtype(dtype)
+        if torch_dtype is None:
+            raise AssertionError(f'Unrecognized thunder dtype: {dtype}')
+        if is_float_dtype(dtype):
             tensor: torch.Tensor = torch.randn(
                 shape, dtype=torch_dtype, device=device.device_str(), requires_grad=requires_grad
             )
-        elif dtype is not None and is_signedinteger_dtype(dtype):
-            torch_dtype = thunder_to_torch_int_dtype(dtype.bytes)
+        elif is_signedinteger_dtype(dtype):
             tensor: torch.Tensor = torch.randint(
                 0, 8, shape, dtype=torch_dtype, device=device.device_str(), requires_grad=requires_grad
             )
-        elif dtype is not None and is_boolean_dtype(dtype):
+        elif is_boolean_dtype(dtype):
             # TODO (matteochen): maybe random?
             tensor: torch.Tensor = torch.zeros(
                 *shape, dtype=torch.bool, device=device.device_str(), requires_grad=requires_grad
