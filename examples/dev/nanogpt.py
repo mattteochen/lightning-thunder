@@ -11,7 +11,7 @@ def run(target: str = 'runtime'):
         raise AssertionError(f'Target {target} not supported. Only runtime and memory available')
     # -----------------------------------------------------------------------------
     batch_size = 12
-    block_size = 512
+    block_size = 1024
     bias = False
     real_data = False
     seed = 1337
@@ -42,7 +42,7 @@ def run(target: str = 'runtime'):
     # model init
     gptconf = GPTConfig(
         block_size = block_size, # how far back does the model look? i.e. context size
-        n_layer = 1, n_head = 6, n_embd = 768, # size of the model
+        n_layer = 4, n_head = 12, n_embd = 768, # size of the model
         dropout = 0, # for determinism
         bias = bias,
     )
