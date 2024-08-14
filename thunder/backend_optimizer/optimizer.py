@@ -332,7 +332,7 @@ class FusionPlacer_BeamSearch(PlacerBase):
                 #     print(f"Caching fw with compile options mem: {compile_opt_mem.fusion_tag}")
 
                 for t, o in zip([trc_time, trc_mem], [compile_opt_time, compile_opt_mem]):
-                    print(f'Caching fw candidate\n{t}\nwith option {o.fusion_tag if o else "None"}')
+                    log(f'Caching fw candidate [compile option: {o.fusion_tag if o else "None"}]\n{t}')
                     self.cached_fw_traces.append(
                         TraceCandidate(trace=t, compile_opt=o, label=label + '_enabled_' + o.fusion_tag if o is not None else label)
                     )
