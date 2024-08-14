@@ -518,7 +518,7 @@ def benchmark_trace(
             except Exception as e:
                 print(f"Compiled trace execution still failed:\n{e}")
         else:
-            print(f"Unknown exception occured:\n{e}")
+            print(f"Unhandled exception occured:\n{e}")
     finally:
         reset_tracectx(trace_tok)
 
