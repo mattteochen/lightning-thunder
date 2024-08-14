@@ -139,7 +139,7 @@ def run(target: str = 'runtime'):
                 torch.cuda.nvtx.range_push(f"{label}: fw-bw")
                 with ctx:
                     _, loss = m(X, Y)
-                loss.sum().backward()
+                loss.backward()
                 torch.cuda.nvtx.range_pop()
             torch.cuda.cudart().cudaProfilerStop()
 
