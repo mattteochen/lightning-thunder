@@ -51,7 +51,7 @@ def run(target: str = 'runtime'):
 
     jmodel_def = thunder.jit(model)
     # Currently sdpa does not work?
-    jmodel_auto = thunder.jit(model, autotune_type=target, executors = ['torchcompile', 'nvfuser', 'cudnn', 'torch', 'python'])
+    jmodel_auto = thunder.jit(model, autotune_type=target, executors = ['torchcompile', 'nvfuser', 'cudnn', 'sdpa', 'torch', 'python'], use_cudagraphs=False)
 
     if compile:
         print("Compiling model...")

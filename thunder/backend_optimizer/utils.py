@@ -14,24 +14,21 @@ import thunder
 
 
 def sequence_hash(s: Sequence) -> str:
-    name = ""
-    for e in s:
-        if (
-            isinstance(e, CollectionProxy)
-            or isinstance(e, TensorProxy)
-            or isinstance(e, IntegerProxy)
-            or isinstance(e, FloatProxy)
-        ):
-            name += e.name
-        # TODO (matteochen): investigate if this is suitable
-        elif isinstance(e, int):
-            name += f"int{e}"
-        elif e is None:
-            name += "None"
-        else:
-            raise AssertionError(f"What? Maybe nested Sequence. type = {type(e)}")
-    return name
+    def rec(s) -> str:
+        name = "["
+        for e in s:
+            if e is None:
+                name += "None"
+            elif hasattr(e, "name"):
+                 name += e.name
+            elif isinstance(e, Sequence):
+                name += rec(e)
+            else:
+                raise AssertionError(f"Unsupported type = {type(e)}")
+        name += ']'
+        return name
 
+    return rec(s)
 
 def can_executor_execute(ex: Executor, bsym: BoundSymbol) -> bool:
     try:
@@ -502,9 +499,10 @@ def benchmark_trace(
         else:
             t, m, answer = compute_time_cost_ms(executable, executable_str, iters, *input_args)
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         # https://github.com/Lightning-AI/lightning-thunder/issues/664
         # Seems that this patch never work ...
-        print(f"Exception:\n{e}")
         if (
             "call_method UserDefinedObjectVariable(set) __contains__ [UserDefinedObjectVariable()] {}" in str(e)
             and not nvsight
@@ -517,8 +515,6 @@ def benchmark_trace(
                 t, m, answer = compute_time_cost_ms(torch_compiled, executable_str, iters, *input_args)
             except Exception as e:
                 print(f"Compiled trace execution still failed:\n{e}")
-        else:
-            print(f"Unhandled exception occured:\n{e}")
     finally:
         reset_tracectx(trace_tok)
 

@@ -368,8 +368,8 @@ def split_forward_backward(computation_trc: TraceCtx, compile_data, compile_stat
     from thunder.executors.transformer_engineex import transformer_engine_ex
 
     executors_candidates: dict[str, list] = {
+        # 'linear_layer': [transformer_engine_ex.name],
         'scaled_dot_product_attention': [sdpa_ex.name, cudnn_ex.name, fa3_ex.name],
-        'linear_layer': [transformer_engine_ex.name]
     }
 
     # TODO (matteochen): use BackendOptimizer tracing
@@ -488,15 +488,16 @@ def split_forward_backward(computation_trc: TraceCtx, compile_data, compile_stat
                             compile_stats.last_backward_traces += bw_traces
 
                         return fw_extrace, bw_extrace
+        # TODO: catch individual failures
         except Exception as e:
             import traceback
-            print(f'Exception occured:\n{e}\nTraceback:')
+            log(f'Exception occured when tuning {executors_candidates}:\n{e}\nTraceback:')
             traceback.print_exc()
             # Restore before calling split
             compile_data.executors_list = list(cached_executor_list)
 
             log(
-                f"================================================================================ Before Autotune Tuning: exception occured, executors:\n{executors_candidates} will not be autotuned",
+                f"================================================================================ Before Autotune Tuning: exception occured, executors:\n{executors_candidates} will not be autotuned (priority list policy will be used)",
                 level=LogLevel.INFO,
             )
             primal_trace, fw_extrace, bw_extrace, fw_traces, bw_traces = split()
