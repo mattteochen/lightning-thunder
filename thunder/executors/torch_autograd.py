@@ -364,10 +364,11 @@ def split_forward_backward(computation_trc: TraceCtx, compile_data, compile_stat
     # TODO (matteochen): integrate Transofrmer Engine
     from thunder.executors.sdpaex import sdpa_ex
     from thunder.executors.cudnnex import cudnn_ex
+    from thunder.executors.fa3ex import fa3_ex
     from thunder.executors.transformer_engineex import transformer_engine_ex
 
     executors_candidates: dict[str, list] = {
-        'scaled_dot_product_attention': [sdpa_ex.name, cudnn_ex.name],
+        'scaled_dot_product_attention': [sdpa_ex.name, cudnn_ex.name, fa3_ex.name],
         'linear_layer': [transformer_engine_ex.name]
     }
 
@@ -405,6 +406,8 @@ def split_forward_backward(computation_trc: TraceCtx, compile_data, compile_stat
                             f"================================================================================ Before Autotune Tuning: Skipping optimization for {ex_type} as not requested.",
                             level=LogLevel.INFO)
 
+                # TODO: do we want to give a chance to the configuration with no executor?
+                # e.g. assigning scaled_dot_product_attention to torch and not to sdpa / cudnn
                 for e in to_benchmark:
                     compile_data.executors_list = [ex for ex in cached_executor_list if ex not in to_benchmark]
                     # Make it with most priority
