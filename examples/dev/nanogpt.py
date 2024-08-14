@@ -42,16 +42,16 @@ def run(target: str = 'runtime'):
     # model init
     gptconf = GPTConfig(
         block_size = block_size, # how far back does the model look? i.e. context size
-        n_layer = 4, n_head = 12, n_embd = 768, # size of the model
+        n_layer = 12, n_head = 12, n_embd = 768, # size of the model
         dropout = 0, # for determinism
         bias = bias,
     )
     model = GPT(gptconf)
     model.to(device)
 
-    jmodel_def = thunder.jit(model, use_cudagraphs=True)
+    jmodel_def = thunder.jit(model)
     # Currently sdpa does not work?
-    jmodel_auto = thunder.jit(model, autotune_type=target, executors = ['torchcompile', 'nvfuser', 'cudnn', 'torch', 'python'], use_cudagraphs=True)
+    jmodel_auto = thunder.jit(model, autotune_type=target, executors = ['torchcompile', 'nvfuser', 'cudnn', 'torch', 'python'])
 
     if compile:
         print("Compiling model...")
@@ -90,30 +90,28 @@ def run(target: str = 'runtime'):
                     prof.step() # notify the profiler at end of each step
 
     else:
+        # simple benchmarking
         def measure(m, label):
-            # simple benchmarking
+            iters = 100
             torch.cuda.synchronize()
 
-            X, Y = get_batch('train')
             for i in range(warm_up_iters):
+                X, Y = get_batch('train')
                 with ctx:
                     _, loss = m(X, Y)
-                X, Y = get_batch('train')
                 loss.backward()
 
-            iters = 100
             start_events = [torch.cuda.Event(enable_timing=True) for _ in range(iters)]
             end_events = [torch.cuda.Event(enable_timing=True) for _ in range(iters)]
             stream = torch.cuda.current_stream()
             torch.cuda.synchronize()
-            X, Y = get_batch('train')
             for i in range(iters):
                 torch.cuda.empty_cache()
                 torch.cuda._sleep(1_000_000)
+                X, Y = get_batch('train')
                 start_events[i].record(stream)
                 with ctx:
                     _, loss = m(X, Y)
-                X, Y = get_batch('train')
                 loss.backward()
                 end_events[i].record(stream)
 
@@ -122,6 +120,28 @@ def run(target: str = 'runtime'):
             tot_time = sum(tot) / iters
             print('\n\nResults torch benchmark:')
             print(f'{label} tot time: {tot_time} ms')
+
+        def measure_nvsight(m, label):
+            # Warm up
+            for _ in range(warm_up_iters):
+                X, Y = get_batch('train')
+                with ctx:
+                    _, loss = m(X, Y)
+                loss.backward()
+
+            torch.cuda.empty_cache()
+            torch.cuda.synchronize()
+            torch.cuda.cudart().cudaProfilerStart()
+            # Perform less iterations
+            for _ in range(20):
+                torch.cuda.empty_cache()
+                X, Y = get_batch('train')
+                torch.cuda.nvtx.range_push(f"{label}: fw-bw")
+                with ctx:
+                    _, loss = m(X, Y)
+                loss.sum().backward()
+                torch.cuda.nvtx.range_pop()
+            torch.cuda.cudart().cudaProfilerStop()
 
         measure(jmodel_auto, 'auto')
         measure(jmodel_def, 'def')
@@ -138,14 +158,8 @@ def run(target: str = 'runtime'):
         labels.reverse()
         thunder_fw_bw_benchmark(traces, labels, 100)
 
-        # X, Y = get_batch('train')
-        # out_eager = model(X, Y)
-        # out_def = jmodel_def(X, Y)
-        # out_auto = jmodel_auto(X, Y)
-        # for a, b in zip(out_eager, out_def):
-        #     print('deviation def:', (a - b).abs().max().item())
-        # for a, b in zip(out_eager, out_auto):
-        #     print('deviation auto:', (a - b).abs().max().item())
+        measure_nvsight(jmodel_def, 'def')
+        measure_nvsight(jmodel_auto, 'auto')
 
     traces = [thunder.last_traces(jmodel_def)[-1], thunder.last_traces(jmodel_auto)[-1], thunder.last_backward_traces(jmodel_def)[-1], thunder.last_backward_traces(jmodel_auto)[-1]]
     for t in traces:

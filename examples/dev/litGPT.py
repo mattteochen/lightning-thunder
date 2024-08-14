@@ -1,5 +1,5 @@
 from litgpt import GPT
-from thunder.benchmarks.utils import thunder_fw_bw_benchmark, torch_fw_bw_benchmark, torch_total_benchmark
+from thunder.benchmarks.utils import thunder_fw_bw_benchmark, torch_fw_bw_benchmark, torch_fw_bw_benchmark_nvsight, torch_total_benchmark
 from thunder.tests.litgpt_model import Config
 import thunder
 import torch
@@ -43,6 +43,8 @@ for test in layers:
             torch_fw_bw_benchmark(callables, labels, inputs, iters)
             print(f'\n\nResults torch total benchmark ({iters} iters):')
             torch_total_benchmark(callables, labels, inputs, iters)
+
+            torch_fw_bw_benchmark_nvsight(callables, labels, inputs, iters)
 
             print('\n\n\n\n\n\n')
             print(f'{thunder.last_traces(jmodel_def)[-1]}')
