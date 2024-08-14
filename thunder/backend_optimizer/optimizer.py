@@ -667,7 +667,7 @@ class FusionPlacer_BeamSearch(PlacerBase):
 
                 n_missing_bsyms = len(group) - start_idx
                 # TODO (matteochen): consider to add the iteration with no fusion regions
-                for i in range(0, n_missing_bsyms, 1 if self.trace_type == TraceType.BW else 1):
+                for i in range(0, n_missing_bsyms, n_missing_bsyms-1 if self.trace_type == TraceType.BW else 1):
                     # for i in range(0, n_missing_bsyms):
                     # From top to bottom (this will include the whole region)
                     # -> First iteration is the one with fusion region with single element
