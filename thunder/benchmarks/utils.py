@@ -14,9 +14,9 @@ def torch_fw_bw_benchmark_nvsight(models: list, labels: list, inputs: list, iter
         torch.cuda.empty_cache()
         torch.cuda.synchronize()
         torch.cuda.cudart().cudaProfilerStart()
-        for _ in range(iters):
+        for i in range(iters):
             torch.cuda.empty_cache()
-            torch.cuda.nvtx.range_push(f"{label}: fw-bw")
+            torch.cuda.nvtx.range_push(f"{label}: fw-bw iter {i}")
             y = m(input)
             y.sum().backward()
             torch.cuda.nvtx.range_pop()

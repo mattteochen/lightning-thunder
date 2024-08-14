@@ -290,6 +290,7 @@ def benchmark_trace(
             torch.cuda.synchronize()
             torch.cuda.cudart().cudaProfilerStart()
             for i in range(iters):
+                torch.cuda.empty_cache()
                 torch.cuda.nvtx.range_push(f"{nvsight_fn_name}-iter{i}")
                 fn(*args)
                 torch.cuda.nvtx.range_pop()

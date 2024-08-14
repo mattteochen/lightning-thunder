@@ -1,6 +1,6 @@
 import torch
 import thunder
-from thunder.benchmarks.utils import thunder_fw_bw_benchmark, torch_fw_bw_benchmark, torch_fw_bw_benchmark_nvsight
+from thunder.benchmarks.utils import thunder_fw_bw_benchmark, torch_fw_bw_benchmark, torch_fw_bw_benchmark_nvsight, torch_total_benchmark
 
 class Module(torch.nn.Module):
     def __init__(self, in_features, out_features) -> None:
@@ -32,6 +32,7 @@ with torch.device('cuda'):
     y = jmodel_def(x)
     y = jmodel_auto(x)
 
+    iters = 100
     print('Results thunder benchmark:')
     traces = [
         thunder.last_traces(jmodel_def)[-1],
@@ -40,13 +41,16 @@ with torch.device('cuda'):
         thunder.last_backward_traces(jmodel_auto)[-1],
     ]
     labels = ['fw_def', 'fw_auto', 'bw_def', 'bw_auto']
-    thunder_fw_bw_benchmark(traces, labels, 50)
+    thunder_fw_bw_benchmark(traces, labels, iters)
+    thunder_fw_bw_benchmark(traces, labels, iters, nvsight=True)
 
     callables = [jmodel_def, jmodel_auto]
     labels = ['def', 'auto']
     inputs = [x, x]
     print('Results torch benchmark:')
-    torch_fw_bw_benchmark(callables, labels, inputs, 50)
+    torch_fw_bw_benchmark(callables, labels, inputs, iters)
+    torch_total_benchmark(callables, labels, inputs, iters)
+    torch_fw_bw_benchmark_nvsight(callables, labels, inputs, iters)
 
     for t in traces:
         print(f'{t}\n#########################################')
