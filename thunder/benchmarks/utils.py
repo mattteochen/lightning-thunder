@@ -16,9 +16,14 @@ def torch_fw_bw_benchmark_nvsight(models: list, labels: list, inputs: list, iter
         torch.cuda.cudart().cudaProfilerStart()
         for i in range(iters):
             torch.cuda.empty_cache()
-            torch.cuda.nvtx.range_push(f"{label}: fw-bw iter {i}")
+            torch.cuda.nvtx.range_push(f"torch training {label}, iter {i}")
+            torch.cuda.nvtx.range_push('forward')
             y = m(input)
-            y.sum().backward()
+            torch.cuda.nvtx.range_pop()
+            loss = y.sum()
+            torch.cuda.nvtx.range_push('backward')
+            loss.backward()
+            torch.cuda.nvtx.range_pop()
             torch.cuda.nvtx.range_pop()
         torch.cuda.cudart().cudaProfilerStop()
 
@@ -30,15 +35,15 @@ def torch_fw_bw_benchmark(models: list, labels: list, inputs: list, iters: int) 
             y = m(input)
             y.sum().backward()
 
-        torch.cuda.synchronize()
         start_events = [torch.cuda.Event(enable_timing=True) for _ in range(iters)]
         end_events = [torch.cuda.Event(enable_timing=True) for _ in range(iters)]
         stream = torch.cuda.current_stream()
         max_allocated_bytes = 0
+        torch.cuda.synchronize()
         for i in range(iters):
-            torch.cuda.reset_peak_memory_stats(torch.cuda.current_device())
             torch.cuda.empty_cache()
             torch.cuda._sleep(1_000_000)
+            torch.cuda.reset_peak_memory_stats(torch.cuda.current_device())
 
             start_events[i].record(stream)
             y = m(input)
@@ -55,19 +60,20 @@ def torch_fw_bw_benchmark(models: list, labels: list, inputs: list, iters: int) 
         print(f'{label} tot fw time: {tot_time} ms')
         print(f'{label} max fw allocated memory: {max_allocated_bytes / (2**30)} GB')
 
-        torch.cuda.synchronize()
         start_events = [torch.cuda.Event(enable_timing=True) for _ in range(iters)]
         end_events = [torch.cuda.Event(enable_timing=True) for _ in range(iters)]
         stream = torch.cuda.current_stream()
         max_allocated_bytes = 0
+        torch.cuda.synchronize()
         for i in range(iters):
-            torch.cuda.reset_peak_memory_stats(torch.cuda.current_device())
             torch.cuda.empty_cache()
             torch.cuda._sleep(1_000_000)
 
             y = m(input)
+            loss = y.sum()
+            torch.cuda.reset_peak_memory_stats(torch.cuda.current_device())
             start_events[i].record(stream)
-            y.sum().backward()
+            loss.backward()
             end_events[i].record(stream)
 
             max_allocated_bytes = max(
@@ -91,17 +97,18 @@ def torch_total_benchmark(models: list, labels: list, inputs: list, iters: int) 
 
         start_events = [torch.cuda.Event(enable_timing=True) for _ in range(iters)]
         end_events = [torch.cuda.Event(enable_timing=True) for _ in range(iters)]
-        torch.cuda.synchronize()
         stream = torch.cuda.current_stream()
         max_allocated_bytes = 0
+        torch.cuda.synchronize()
         for i in range(iters):
-            torch.cuda.reset_peak_memory_stats(torch.cuda.current_device())
             torch.cuda.empty_cache()
             torch.cuda._sleep(1_000_000)
+            torch.cuda.reset_peak_memory_stats(torch.cuda.current_device())
 
             start_events[i].record(stream)
             y = m(input)
-            y.sum().backward()
+            loss = y.sum()
+            loss.backward()
             end_events[i].record(stream)
 
             max_allocated_bytes = max(
