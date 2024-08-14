@@ -238,7 +238,6 @@ class FusionPlacer_BeamSearch(PlacerBase):
     def _best_runtime_and_memory_candidates(self, candidates):
         from thunder.core.rematerialization import rematerialize_forward_and_backward
         from thunder.backend_optimizer.utils import benchmark_trace
-        from thunder.executors.cudagraphex import cudagraphex
 
         min_value_time: float = float("inf")
         min_value_mem: float = float("inf")
@@ -255,10 +254,17 @@ class FusionPlacer_BeamSearch(PlacerBase):
             # Create pair final options by applying final optimizations: cudagraphs and rematerialization
             pair_options: list[tuple[TraceCtx, TraceCtx]] = [
                 (pair.fw, pair.bw),
-                (cudagraphex.fusion_pass(pair.fw), cudagraphex.fusion_pass(pair.bw)),
                 (remat_fw, remat_bw),
-                (cudagraphex.fusion_pass(remat_fw), cudagraphex.fusion_pass(remat_bw)),
             ]
+            # We want to verify that it is not set to false
+            if self.compile_data.use_cudagraphs is None or self.compile_data.use_cudagraphs == True:
+                from thunder.executors.cudagraphex import cudagraphex
+                pair_options.extend(
+                    [
+                        (cudagraphex.fusion_pass(pair.fw), cudagraphex.fusion_pass(pair.bw)),
+                        (cudagraphex.fusion_pass(remat_fw), cudagraphex.fusion_pass(remat_bw)),
+                    ]
+                )
             # Select the best options
             for pair_option in pair_options:
                 fw = pair_option[0]
