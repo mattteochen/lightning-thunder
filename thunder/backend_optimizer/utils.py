@@ -502,7 +502,8 @@ def benchmark_trace(
             t, m, answer = compute_time_cost_ms(executable, executable_str, iters, *input_args)
     except Exception as e:
         import traceback
-        traceback.print_exc()
+        ex_str = traceback.format_exc()
+        print(ex_str)
         # https://github.com/Lightning-AI/lightning-thunder/issues/664
         # Seems that this patch never work ...
         if (
