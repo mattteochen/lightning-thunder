@@ -23,6 +23,8 @@ def sequence_hash(s: Sequence) -> str:
                  name += e.name
             elif isinstance(e, Sequence):
                 name += rec(e)
+            elif isinstance(e, int):
+                 name += 'int' + str(e)
             else:
                 raise AssertionError(f"Unsupported type = {type(e)}")
         name += ']'
