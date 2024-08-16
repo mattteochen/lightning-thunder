@@ -334,6 +334,8 @@ def jit(
         # Otherwise the user restricted choice will be used
         if not executors:
             executors = get_all_executors()
+            # Remove python and cudagraph
+            executors = [ex for ex in executors if ex.name != 'python' and ex.name != 'cudagraphex']
 
     # Resolve names of executors
     executors = resolve_executors(executors)

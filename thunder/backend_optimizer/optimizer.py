@@ -1023,3 +1023,4 @@ class BackendOptimizer:
 
     def get_optimal_fw_bw_traces(self) -> tuple[TraceCtx, TraceCtx]:
         return self.optimizer.get_optimal_fw_bw_traces()
+
