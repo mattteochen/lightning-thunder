@@ -414,7 +414,7 @@ def split_forward_backward(computation_trc: TraceCtx, compile_data, compile_stat
                 # Verify that op is present in the trace
                 op_in_trace: bool = operation_in_trace(trace=computation_trc, op=ex_type)
 
-                if not to_benchmark or not op_in_trace:
+                if (not to_benchmark and op_in_trace) or not op_in_trace:
                     log(
                         f"================================================================================ Before Autotune Tuning: Skipping optimization for {ex_type} as not requested or not present in computation_trc.",
                         level=LogLevel.INFO,
