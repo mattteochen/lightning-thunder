@@ -697,21 +697,21 @@ class FusionPlacer_BeamSearch(PlacerBase):
                     # From bottom to up (this will exclude the full region as being handled in the for cycle above)
                     # -> First iteration is the one with len(fusion_region) - 1
                     # -> Last iteration gives no fusion regions
-                    for j in range(start_idx, start_idx + i + 1, increment_factor):
-                        match_bsym_output(
-                            group[j],
-                            [dict_time_strat, dict_mem_strat],
-                            get_first_available_operator_executor(
-                                bsym=group[j],
-                                executors=self.executors,
-                                empty_hash=self.empty_executor_hashable_placeholder,
-                            ),
-                        )
-                    for k in range(start_idx + i + 1, len(group), increment_factor):
-                        match_bsym_output(group[k], [dict_time_strat, dict_mem_strat], ex)
+                    # for j in range(start_idx, start_idx + i + 1, increment_factor):
+                    #     match_bsym_output(
+                    #         group[j],
+                    #         [dict_time_strat, dict_mem_strat],
+                    #         get_first_available_operator_executor(
+                    #             bsym=group[j],
+                    #             executors=self.executors,
+                    #             empty_hash=self.empty_executor_hashable_placeholder,
+                    #         ),
+                    #     )
+                    # for k in range(start_idx + i + 1, len(group), increment_factor):
+                    #     match_bsym_output(group[k], [dict_time_strat, dict_mem_strat], ex)
 
-                    # Benchmark this placement
-                    measure_and_update_result()
+                    # # Benchmark this placement
+                    # measure_and_update_result()
 
                 if best_placement_time is None or best_keys_time is None:
                     raise AssertionError("Failed to get best time placement")
