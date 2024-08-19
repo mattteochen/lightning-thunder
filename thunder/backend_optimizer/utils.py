@@ -23,6 +23,8 @@ def sequence_hash(s: Sequence) -> str:
                  name += e.name
             elif isinstance(e, Sequence):
                 name += rec(e)
+            elif isinstance(e, int):
+                 name += 'int' + str(e)
             else:
                 raise AssertionError(f"Unsupported type = {type(e)}")
         name += ']'
@@ -500,7 +502,8 @@ def benchmark_trace(
             t, m, answer = compute_time_cost_ms(executable, executable_str, iters, *input_args)
     except Exception as e:
         import traceback
-        traceback.print_exc()
+        ex_str = traceback.format_exc()
+        print(ex_str)
         # https://github.com/Lightning-AI/lightning-thunder/issues/664
         # Seems that this patch never work ...
         if (

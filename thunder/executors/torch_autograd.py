@@ -3,6 +3,7 @@ from typing import TYPE_CHECKING
 
 import torch
 
+from thunder.backend_optimizer.utils import operation_in_trace
 import thunder.core.utils as utils
 from thunder.core.prims import PrimIDs
 from thunder.core.proxies import TensorProxy, variableify
@@ -10,7 +11,7 @@ from thunder.core.pytree import tree_flatten
 from thunder.core.symbol import BoundSymbol
 from thunder.core.trace import TraceCtx, from_trace, set_tracectx, reset_tracectx
 from thunder.core.transform_common import replace_redundant_inputs
-from thunder.extend import OperatorExecutor
+from thunder.extend import OperatorExecutor, Executor
 from thunder.core.vjp_utils import get_saved_for_backward_tensors
 
 if TYPE_CHECKING:
@@ -366,9 +367,10 @@ def split_forward_backward(computation_trc: TraceCtx, compile_data, compile_stat
     from thunder.executors.cudnnex import cudnn_ex
     from thunder.executors.fa3ex import fa3_ex
     from thunder.executors.transformer_engineex import transformer_engine_ex
+    from thunder.executors.torchex import ex as torchex
 
     executors_candidates: dict[str, list] = {
-        # 'linear_layer': [transformer_engine_ex.name],
+        'linear': [transformer_engine_ex.name],
         'scaled_dot_product_attention': [sdpa_ex.name, cudnn_ex.name, fa3_ex.name],
     }
 
@@ -378,46 +380,77 @@ def split_forward_backward(computation_trc: TraceCtx, compile_data, compile_stat
     # as the autotuner will receive already split fw and bw traces
     if autotune_type is not None:
         cached_executor_list = list(compile_data.executors_list)
+        cached_executor_list_copy = list(compile_data.executors_list)
+        placed = set()
+
+        def find_torchex_index():
+            index = 0
+            for i, e in enumerate(cached_executor_list):
+                if e in placed:
+                    index = i+1
+            return min(len(cached_executor_list), index)
+
         try:
-            # disable this part for now
-            # raise RuntimeError('Disabled')
             is_tuned = False
-
-            # We are interested to save the best_*s at the last iteration over the executors_candidates dict as the last
-            # out *_extrace from calling split will contain all the best executors computed incrementally
-            # i.e: best_* will track the best placemet for iteration (executors_candidates iteration) i plus every iteration from [0, i-1]
-            best_cost: float = float('inf')
-            best_fw_extrace: TraceCtx | None = None
-            best_bw_extrace: TraceCtx | None = None
-            best_fw_traces: list[TraceCtx] = []
-            best_bw_traces: list[TraceCtx] = []
-            best_primal_trace: TraceCtx | None = None
-            best_executor: OperatorExecutor | None = None
-
+            benchmark_iters: int = 20
             for i, (ex_type, ex_list) in enumerate(executors_candidates.items()):
+                # We need to reference some additional tructtures other than the best fw and bw traces as we have to update compile data only after we got the optimal choice
+                best_cost: float = float('inf')
+                best_fw_extrace: TraceCtx | None = None
+                best_bw_extrace: TraceCtx | None = None
+                best_fw_traces: list[TraceCtx] = []
+                best_bw_traces: list[TraceCtx] = []
+                best_primal_trace: TraceCtx | None = None
+                best_executor: Executor | None = None
                 log(
                         f"================================================================================ Before Autotune Tuning: Optimizing {ex_type}",
                         level=LogLevel.INFO)
-                # Search in the requested executor list if one or more than one options for a know multiple executable region is available
-                to_benchmark = [ex for ex in cached_executor_list if ex.name in ex_list]
+                # Filter out the executors based on the executors list, maybe not all the options have to be used
+                # Torch executor (default kernel) will be given a chance always
+                to_benchmark: list[Executor] = [ex for ex in cached_executor_list if ex.name in ex_list]
+                # Add torchexecutor if not present
+                if torchex not in to_benchmark:
+                    to_benchmark.append(torchex)
+                # Verify that op is present in the trace
+                op_in_trace: bool = operation_in_trace(trace=computation_trc, op=ex_type)
 
-                if not to_benchmark:
+                if (not to_benchmark and op_in_trace) or not op_in_trace:
                     log(
-                            f"================================================================================ Before Autotune Tuning: Skipping optimization for {ex_type} as not requested.",
-                            level=LogLevel.INFO)
+                        f"================================================================================ Before Autotune Tuning: Skipping optimization for {ex_type} as not requested or not present in computation_trc.",
+                        level=LogLevel.INFO,
+                    )
+                    continue
 
-                # TODO: do we want to give a chance to the configuration with no executor?
-                # e.g. assigning scaled_dot_product_attention to torch and not to sdpa / cudnn
+                log(
+                        f"================================================================================ Before Autotune Tuning: Executors to bench for {ex_type}: {to_benchmark}",
+                    level=LogLevel.INFO,
+                )
                 for e in to_benchmark:
+                    # Create the executor list putting the executor under analysis at the head of queue
+                    # 1. Add all executors except the ones under benchmark
                     compile_data.executors_list = [ex for ex in cached_executor_list if ex not in to_benchmark]
-                    # Make it with most priority
-                    compile_data.executors_list.insert(0, e)
+                    # 2. Make the current one with most priority to be picked up by <forward_and_backward_from_trace>
+                    if e in compile_data.executors_list:
+                        compile_data.executors_list.insert(0, compile_data.executors_list.pop(compile_data.executors_list.index(e)))
+                    else:
+                        compile_data.executors_list.insert(0, e)
+                    # TODO: write why we have to place torchex as near as possible to the start of the list
+                    if torchex not in compile_data.executors_list:
+                        torchex_index = max(1, find_torchex_index())
+                        compile_data.executors_list.insert(torchex_index, torchex)
                     log(
                             f"================================================================================ Before Autotune Tuning: Testing compile data executors: {compile_data.executors_list}", level=LogLevel.INFO)
+                    try:
+                        primal_trace, fw_extrace, bw_extrace, fw_traces, bw_traces = split()
+                    except Exception as exception:
+                        import traceback
+                        ex_str = traceback.format_exc()
+                        log(
+                                f"================================================================================ Before Autotune Tuning: Failed to place {e.name}: {exception}\n{ex_str}")
+                        continue
 
-                    primal_trace, fw_extrace, bw_extrace, fw_traces, bw_traces = split()
-                    time_fw, mem_fw, _ = benchmark_trace(fw_extrace, iters=10, apply_del_last_used=False)
-                    time_bw, mem_bw, _ = benchmark_trace(bw_extrace, iters=10, apply_del_last_used=False)
+                    time_fw, mem_fw, _ = benchmark_trace(fw_extrace, iters=benchmark_iters, apply_del_last_used=False)
+                    time_bw, mem_bw, _ = benchmark_trace(bw_extrace, iters=benchmark_iters, apply_del_last_used=False)
                     tot_time = time_fw + time_bw
                     tot_mem = mem_fw + mem_bw
                     log(
@@ -437,64 +470,51 @@ def split_forward_backward(computation_trc: TraceCtx, compile_data, compile_stat
                         best_bw_traces = bw_traces
                         best_primal_trace = primal_trace
                         best_executor = e
+                    print(f'Best executor end iteration: {best_executor}')
 
-                        # c, m , _ = benchmark_trace(best_fw_extrace, iters=10, apply_del_last_used=False)
-                        # print(f'inside update {c}')
-                        # c, m , _ = benchmark_trace(best_bw_extrace, iters=10, apply_del_last_used=False)
-                        # print(f'inside update {c}')
-
-                c, m , _ = benchmark_trace(best_fw_extrace, iters=10, apply_del_last_used=False)
+                c, m , _ = benchmark_trace(best_fw_extrace, iters=benchmark_iters, apply_del_last_used=False)
                 log(
                         f"================================================================================ Before Autotune Tuning: Benchmark {ex_type} best fw_extrace (time = {c}, mem = {m}):\n{best_fw_extrace}", level=LogLevel.INFO)
-                c, m , _ = benchmark_trace(best_bw_extrace, iters=10, apply_del_last_used=False)
+                c, m , _ = benchmark_trace(best_bw_extrace, iters=benchmark_iters, apply_del_last_used=False)
                 log(
                         f"================================================================================ Before Autotune Tuning: Benchmark {ex_type} best bw_extrace (time = {c}, mem = {m}):\n{best_bw_extrace}", level=LogLevel.INFO)
 
                 # Update the executor list with the winner executor for the current ex_type
                 cached_executor_list = [ex for ex in cached_executor_list if ex not in to_benchmark]
-                # We have a solution, we don't have it if not requested from the executor list
-                if best_executor is not None:
-                    cached_executor_list.insert(0, best_executor)
-                best_executor = None
+                if best_executor is None:
+                    log(
+                            f"================================================================================ Before Autotune Tuning: Could not find best executor for {ex_type}. Assigning torchex by default", level=LogLevel.INFO)
+                    best_executor = torchex
+                cached_executor_list.insert(0, best_executor)
+                placed.add(best_executor)
                 log(
-                        f"================================================================================ Before Autotune Tuning: Benchmark {ex_type}, new executor list: {cached_executor_list}", level=LogLevel.INFO)
+                        f"================================================================================ Before Autotune Tuning: Best executor for {ex_type}: {best_executor.name}", level=LogLevel.INFO)
+                log(
+                        f"================================================================================ Before Autotune Tuning: Benchmark {ex_type}, updated executor list: {cached_executor_list}", level=LogLevel.INFO)
 
                 # Update the compile stats on the last iter
                 if i == len(executors_candidates)-1:
                     # Check that we have solution, we don't have it if not requested from the executor list
-                    if is_tuned:
-                        # Restore
-                        compile_data.executors_list = list(cached_executor_list)
+                    if not is_tuned:
+                        raise AssertionError(
+                            f"No executors have been placed inside the trace. Will autotune the computation_trc ignoring the following executors:\n{executors_candidates}"
+                        )
+                    # Restore
+                    compile_data.executors_list = list(cached_executor_list)
+                    log(
+                            f"================================================================================ Before Autotune Tuning: autotuned split_forward_backward from {executors_candidates}", level=LogLevel.INFO)
+                    if compile_stats is not None:
+                        compile_stats.last_traces.append(best_primal_trace)
+                        compile_stats.last_traces += best_fw_traces
+                        compile_stats.last_backward_traces += best_bw_traces
 
-                        log(
-                                f"================================================================================ Before Autotune Tuning: autotuned split_forward_backward from {executors_candidates}", level=LogLevel.INFO)
-                        if compile_stats is not None:
-                            compile_stats.last_traces.append(best_primal_trace)
-                            compile_stats.last_traces += best_fw_traces
-                            compile_stats.last_backward_traces += best_bw_traces
-
-                        return best_fw_extrace, best_bw_extrace
-                    # If no solution is found at this optmization step, we proceed normally
-                    else:
-                        # Restore before calling split
-                        compile_data.executors_list = list(cached_executor_list)
-
-                        log(
-                                f"================================================================================ Before Autotune Tuning: not autotuned split_forward_backward from {executors_candidates}", level=LogLevel.INFO)
-                        primal_trace, fw_extrace, bw_extrace, fw_traces, bw_traces = split()
-                        if compile_stats is not None:
-                            compile_stats.last_traces.append(primal_trace)
-                            compile_stats.last_traces += fw_traces
-                            compile_stats.last_backward_traces += bw_traces
-
-                        return fw_extrace, bw_extrace
-        # TODO: catch individual failures
-        except Exception as e:
+                    return best_fw_extrace, best_bw_extrace
+        except Exception as exception:
             import traceback
-            log(f'Exception occured when tuning {executors_candidates}:\n{e}\nTraceback:')
-            traceback.print_exc()
+            ex_str = traceback.format_exc()
+            log(f'Exception occured when tuning {executors_candidates}: {exception}\n{ex_str}')
             # Restore before calling split
-            compile_data.executors_list = list(cached_executor_list)
+            compile_data.executors_list = cached_executor_list_copy
 
             log(
                 f"================================================================================ Before Autotune Tuning: exception occured, executors:\n{executors_candidates} will not be autotuned (priority list policy will be used)",
