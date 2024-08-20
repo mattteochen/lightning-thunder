@@ -1,7 +1,31 @@
+from collections.abc import Sequence
 import torch
 from thunder.backend_optimizer.utils import benchmark_trace
+from thunder.core.trace import TraceCtx
 
 warm_up_iters = 50
+
+class AutotunerTorchAutogradBenchmarkUtils():
+    def __init__(
+        self,
+        cost: float = float('inf'),
+        fw_trace: TraceCtx | None = None,
+        bw_trace: TraceCtx | None = None,
+        fw_traces: Sequence[TraceCtx] = [],
+        bw_traces: Sequence[TraceCtx] = [],
+        primal_trace: TraceCtx | None = None,
+        executor = None,
+        selected_executors: Sequence = []
+        ) -> None:
+        self.cost: float = cost
+        self.fw_trace = fw_trace
+        self.bw_trace = bw_trace
+        self.fw_traces = fw_traces
+        self.bw_traces = bw_traces
+        self.primal_trace = primal_trace
+        self.executor = executor
+        self.selected_executors = selected_executors
+
 
 def torch_fw_bw_benchmark_nvsight(models: list, labels: list, inputs: list, iters: int) -> None:
 
@@ -123,8 +147,14 @@ def torch_total_benchmark(models: list, labels: list, inputs: list, iters: int) 
         print(f'{label} max allocated memory: {max_allocated_bytes / (2**30)} GB')
 
 
-def thunder_fw_bw_benchmark(traces: list, labels: list, iters: int, nvsight: bool = False) -> None:
-    for trc, label in zip(traces, labels):
+def thunder_fw_bw_benchmark(fw_traces: list, bw_traces: list, fw_labels: list, bw_labels: list, iters: int, nvsight: bool = False) -> None:
+    assert(len(fw_traces) == len(bw_traces) == len(fw_labels) == len(bw_labels))
+    for trc, label in zip(fw_traces, fw_labels):
         c, m, _ = benchmark_trace(trc, apply_del_last_used=False, snapshot=True, snapshot_name=label, iters=iters, nvsight=nvsight, nvsight_fn_name=label)
         print(f'Executing {label} trace:\n{c} ms, {m / (2**30)} GB')
 
+    i = 0
+    for trc, label in zip(bw_traces, bw_labels):
+        c, m, _ = benchmark_trace(trc, apply_del_last_used=False, snapshot=True, snapshot_name=label, iters=iters, nvsight=nvsight, nvsight_fn_name=label, fw_trace=fw_traces[i])
+        print(f'Executing {label} trace:\n{c} ms, {m / (2**30)} GB')
+        i += 1

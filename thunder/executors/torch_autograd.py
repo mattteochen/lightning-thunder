@@ -257,23 +257,10 @@ def split_forward_backward(computation_trc: TraceCtx, compile_data, compile_stat
 
         if autotune_type is None:
             # TODO Restore request for no rematerialization
-            # TODO (matteochen): remove these logs
-            c, m, _ = benchmark_trace(fw_extrace, iters=5)
-            log(f'before remat fw trace time = {c}, mem = {m}\n{fw_extrace}', level=LogLevel.INFO)
-            c, m, _ = benchmark_trace(bw_extrace, iters=5)
-            log(f'before remat bw trace time = {c}, mem = {m}', level=LogLevel.INFO)
             fw_extrace, bw_extrace = rematerialize_forward_and_backward(fw_extrace, bw_extrace)
-            c, m, _ = benchmark_trace(fw_extrace, iters=5)
-            log(f'after remat fw trace time = {c}, mem = {m}\n{fw_extrace}', level=LogLevel.INFO)
-            c, m, _ = benchmark_trace(bw_extrace, iters=5)
-            log(f'after remat bw trace time = {c}, mem = {m}', level=LogLevel.INFO)
         # Autotuner has been taken care of remat
         else:
-            # TODO (matteochen): remove this
-            c, m, _ = benchmark_trace(fw_extrace, iters=5)
-            log(f'after remat fw trace time = {c}, mem = {m}\n{fw_extrace}', level=LogLevel.INFO)
-            c, m, _ = benchmark_trace(bw_extrace, iters=5)
-            log(f'after remat bw trace time = {c}, mem = {m}', level=LogLevel.INFO)
+            pass
         fw_traces.append(fw_extrace)
         bw_traces.append(bw_extrace)
 
@@ -391,17 +378,15 @@ def split_forward_backward(computation_trc: TraceCtx, compile_data, compile_stat
             return min(len(cached_executor_list), index)
 
         try:
+            from thunder.benchmarks.utils import AutotunerTorchAutogradBenchmarkUtils
+
             is_tuned = False
             benchmark_iters: int = 20
+            global_optimal_result = AutotunerTorchAutogradBenchmarkUtils()
+
             for i, (ex_type, ex_list) in enumerate(executors_candidates.items()):
-                # We need to reference some additional tructtures other than the best fw and bw traces as we have to update compile data only after we got the optimal choice
-                best_cost: float = float('inf')
-                best_fw_extrace: TraceCtx | None = None
-                best_bw_extrace: TraceCtx | None = None
-                best_fw_traces: list[TraceCtx] = []
-                best_bw_traces: list[TraceCtx] = []
-                best_primal_trace: TraceCtx | None = None
-                best_executor: Executor | None = None
+                # We need to reference some additional structures other than the best fw and bw traces as we have to update compile data only after we got the optimal choice
+                result = AutotunerTorchAutogradBenchmarkUtils()
                 log(
                         f"================================================================================ Before Autotune Tuning: Optimizing {ex_type}",
                         level=LogLevel.INFO)
@@ -412,7 +397,9 @@ def split_forward_backward(computation_trc: TraceCtx, compile_data, compile_stat
                 if torchex not in to_benchmark:
                     to_benchmark.append(torchex)
                 # Verify that op is present in the trace
-                op_in_trace: bool = operation_in_trace(trace=computation_trc, op=ex_type)
+                # op_in_trace: bool = operation_in_trace(trace=computation_trc, op=ex_type)
+                # TODO (matteochen): currently it is bugged if op is not in trace
+                op_in_trace: bool = True
 
                 if (not to_benchmark and op_in_trace) or not op_in_trace:
                     log(
@@ -450,45 +437,62 @@ def split_forward_backward(computation_trc: TraceCtx, compile_data, compile_stat
                         continue
 
                     time_fw, mem_fw, _ = benchmark_trace(fw_extrace, iters=benchmark_iters, apply_del_last_used=False)
-                    time_bw, mem_bw, _ = benchmark_trace(bw_extrace, iters=benchmark_iters, apply_del_last_used=False)
+                    time_bw, mem_bw, _ = benchmark_trace(bw_extrace, iters=benchmark_iters, apply_del_last_used=False, fw_trace=fw_extrace)
                     tot_time = time_fw + time_bw
                     tot_mem = mem_fw + mem_bw
                     log(
                             f"================================================================================ Before Autotune Tuning: Benchmark {ex_type} options: {e.name}. Time fw = {time_fw} ms - Time bw = {time_bw} ms - Mem fw = {mem_fw / (2**30)} GB - Mem bw = {mem_bw / (2**30)} GB", level=LogLevel.INFO)
                     log(
                             f"================================================================================ Before Autotune Tuning: Benchmark {ex_type} options: {e.name}. Time = {tot_time} ms - Mem = {tot_mem / (2**30)} GB", level=LogLevel.INFO)
-                    log(f'Fw trace:\n{fw_extrace}', level=LogLevel.INFO)
-                    log(f'Bw trace:\n{bw_extrace}', level=LogLevel.INFO)
 
                     benchmark_cost = tot_time if autotune_type == OptimizerType.RUNTIME else tot_mem
-                    if benchmark_cost < best_cost:
+                    if benchmark_cost < result.cost:
                         is_tuned = True
-                        best_cost = benchmark_cost
-                        best_fw_extrace = fw_extrace
-                        best_bw_extrace = bw_extrace
-                        best_fw_traces = fw_traces
-                        best_bw_traces = bw_traces
-                        best_primal_trace = primal_trace
-                        best_executor = e
-                    print(f'Best executor end iteration: {best_executor}')
+                        result = AutotunerTorchAutogradBenchmarkUtils(
+                            benchmark_cost,
+                            fw_extrace,
+                            bw_extrace,
+                            fw_traces,
+                            bw_traces,
+                            primal_trace,
+                            e
+                        )
+                    if benchmark_cost < global_optimal_result.cost:
+                        is_tuned = True
+                        global_optimal_result = AutotunerTorchAutogradBenchmarkUtils(
+                            benchmark_cost,
+                            fw_extrace,
+                            bw_extrace,
+                            fw_traces,
+                            bw_traces,
+                            primal_trace,
+                            selected_executors=list(compile_data.executors_list)
+                        )
 
-                c, m , _ = benchmark_trace(best_fw_extrace, iters=benchmark_iters, apply_del_last_used=False)
+                    log(f'Best executor for {ex_type} iteration: {result.executor}')
+
+                c, m , _ = benchmark_trace(result.fw_trace, iters=benchmark_iters, apply_del_last_used=False, level=LogLevel.DEBUG)
                 log(
-                        f"================================================================================ Before Autotune Tuning: Benchmark {ex_type} best fw_extrace (time = {c}, mem = {m}):\n{best_fw_extrace}", level=LogLevel.INFO)
-                c, m , _ = benchmark_trace(best_bw_extrace, iters=benchmark_iters, apply_del_last_used=False)
+                        f"================================================================================ Before Autotune Tuning: Benchmark {ex_type} best fw_extrace (time = {c}, mem = {m}):\n{result.fw_trace}", level=LogLevel.DEBUG)
+                c, m , _ = benchmark_trace(result.bw_trace, iters=benchmark_iters, apply_del_last_used=False, fw_trace=result.fw_trace, level=LogLevel.DEBUG)
                 log(
-                        f"================================================================================ Before Autotune Tuning: Benchmark {ex_type} best bw_extrace (time = {c}, mem = {m}):\n{best_bw_extrace}", level=LogLevel.INFO)
+                        f"================================================================================ Before Autotune Tuning: Benchmark {ex_type} best bw_extrace (time = {c}, mem = {m}):\n{result.bw_trace}", level=LogLevel.DEBUG)
 
                 # Update the executor list with the winner executor for the current ex_type
+                # TODO: unify this by using global_optimal_result as it should contain already the optimal placement
                 cached_executor_list = [ex for ex in cached_executor_list if ex not in to_benchmark]
-                if best_executor is None:
+                if result.executor is None:
                     log(
                             f"================================================================================ Before Autotune Tuning: Could not find best executor for {ex_type}. Assigning torchex by default", level=LogLevel.INFO)
-                    best_executor = torchex
-                cached_executor_list.insert(0, best_executor)
-                placed.add(best_executor)
+                    result.executor = torchex
+                cached_executor_list.insert(0, result.executor)
+                placed.add(result.executor)
+                # Restore all placed but not included in the executor list
+                for ex_placed in placed:
+                    if ex_placed not in cached_executor_list:
+                        cached_executor_list.append(ex_placed)
                 log(
-                        f"================================================================================ Before Autotune Tuning: Best executor for {ex_type}: {best_executor.name}", level=LogLevel.INFO)
+                        f"================================================================================ Before Autotune Tuning: Best executor for {ex_type}: {result.executor.name}", level=LogLevel.INFO)
                 log(
                         f"================================================================================ Before Autotune Tuning: Benchmark {ex_type}, updated executor list: {cached_executor_list}", level=LogLevel.INFO)
 
@@ -499,16 +503,20 @@ def split_forward_backward(computation_trc: TraceCtx, compile_data, compile_stat
                         raise AssertionError(
                             f"No executors have been placed inside the trace. Will autotune the computation_trc ignoring the following executors:\n{executors_candidates}"
                         )
+
                     # Restore
-                    compile_data.executors_list = list(cached_executor_list)
+                    executors_list_to_restore = cached_executor_list if result.cost < global_optimal_result.cost else global_optimal_result.selected_executors
+                    result_to_assign = result if result.cost < global_optimal_result.cost else global_optimal_result
+
+                    compile_data.executors_list = list(executors_list_to_restore)
                     log(
                             f"================================================================================ Before Autotune Tuning: autotuned split_forward_backward from {executors_candidates}", level=LogLevel.INFO)
                     if compile_stats is not None:
-                        compile_stats.last_traces.append(best_primal_trace)
-                        compile_stats.last_traces += best_fw_traces
-                        compile_stats.last_backward_traces += best_bw_traces
+                        compile_stats.last_traces.append(result_to_assign.primal_trace)
+                        compile_stats.last_traces += result_to_assign.fw_traces
+                        compile_stats.last_backward_traces += result_to_assign.bw_traces
 
-                    return best_fw_extrace, best_bw_extrace
+                    return result_to_assign.fw_trace, result_to_assign.bw_trace
         except Exception as exception:
             import traceback
             ex_str = traceback.format_exc()

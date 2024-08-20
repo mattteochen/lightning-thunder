@@ -30,14 +30,17 @@ with torch.device('cuda'):
 
     iters = 100
     print('Results with thunder benchmark:')
-    traces = [
+    fw_traces = [
         thunder.last_traces(jmodel_def)[-1],
         thunder.last_traces(jmodel_auto)[-1],
+    ]
+    bw_traces = [
         thunder.last_backward_traces(jmodel_def)[-1],
         thunder.last_backward_traces(jmodel_auto)[-1],
     ]
-    labels = ['fw_def', 'fw_auto', 'bw_def', 'bw_auto']
-    thunder_fw_bw_benchmark(traces, labels, iters, nvsight = False)
+    fw_labels = ["fw_def", "fw_auto"]
+    bw_labels = ["bw_def", "bw_auto"]
+    thunder_fw_bw_benchmark(fw_traces, bw_traces, fw_labels, bw_labels, iters)
 
     callables = [jmodel_def, jmodel_auto]
     labels = ['def', 'auto']
@@ -48,5 +51,3 @@ with torch.device('cuda'):
     torch_total_benchmark(callables, labels, inputs, iters)
     torch_fw_bw_benchmark_nvsight(callables, labels, inputs, iters)
 
-    for t in traces:
-        print(f'{t}\n#####################################')

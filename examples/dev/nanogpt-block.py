@@ -117,17 +117,25 @@ with torch.device('cuda'):
     print('deviation def:', (jmodel_def(x) - model(x)).abs().max().item())
     print('deviation auto:', (jmodel_auto(x) - model(x)).abs().max().item())
 
-
+    iters = 100
     print('Results thunder benchmark:')
-    traces = [thunder.last_traces(jmodel_def)[-1], thunder.last_traces(jmodel_auto)[-1], thunder.last_backward_traces(jmodel_def)[-1], thunder.last_backward_traces(jmodel_auto)[-1]]
-    labels = ['fw_def', 'fw_auto', 'bw_def', 'bw_auto']
-    thunder_fw_bw_benchmark(traces, labels, 5)
+    fw_traces = [
+        thunder.last_traces(jmodel_def)[-1],
+        thunder.last_traces(jmodel_auto)[-1],
+    ]
+    bw_traces = [
+        thunder.last_backward_traces(jmodel_def)[-1],
+        thunder.last_backward_traces(jmodel_auto)[-1],
+    ]
+    fw_labels = ["fw_def", "fw_auto"]
+    bw_labels = ["bw_def", "bw_auto"]
+    thunder_fw_bw_benchmark(fw_traces, bw_traces, fw_labels, bw_labels, iters)
 
     print('\n\nResults torch fw bw benchmark:')
     callables = [jmodel_def, jmodel_auto]
     labels = ['def', 'auto']
     inputs = [x, x]
-    torch_fw_bw_benchmark(callables, labels, inputs, 5)
+    torch_fw_bw_benchmark(callables, labels, inputs, 100)
 
     print('\n\n\n\n\n\n')
     print(f'{thunder.last_traces(jmodel_def)[-1]}')
