@@ -10,8 +10,6 @@ from thunder.visualizer.visualizer_helper import Visualizer
 from typing import Hashable
 from thunder.backend_optimizer.utils import benchmark_trace
 
-
-# Currently this manages both time and memory
 class BenchmarkResult:
     def __init__(
         self,
@@ -27,7 +25,6 @@ class BenchmarkResult:
         self.trace: TraceCtx = trace
         self.label: str | Hashable = label
         self.index: int = index
-
 
 class OptimizerType(Enum):
     MEMORY = 0
@@ -273,22 +270,22 @@ class FusionPlacer_BeamSearch(PlacerBase):
                 pair_cost_time = 0
                 pair_cost_mem = 0
                 t, m, _ = benchmark_trace(fw, iters=self.benchmark_iters)
-                log(f"Pair fw time: {t} ms, mem: {m/(2**30)} GB", level=LogLevel.INFO)
+                # log(f"Pair fw time: {t} ms, mem: {m/(2**30)} GB", level=LogLevel.INFO)
                 pair_cost_time = pair_cost_time + t
                 pair_cost_mem = pair_cost_mem + m
                 t, m, _ = benchmark_trace(bw, iters=self.benchmark_iters, fw_trace=fw)
-                log(f"Pair bw time: {t} ms, mem: {m/(2**30)} GB", level=LogLevel.INFO)
+                # log(f"Pair bw time: {t} ms, mem: {m/(2**30)} GB", level=LogLevel.INFO)
                 pair_cost_time = pair_cost_time + t
                 pair_cost_mem = pair_cost_mem + m
 
                 if pair_cost_time < min_value_time:
                     best_pair_runtime = OutputCandidate(fw=fw, bw=bw, cost=pair_cost_time)
-                    log(f"New best runtime pair (no remat):\n{best_pair_runtime}", level=LogLevel.INFO)
+                    # log(f"New best runtime pair (no remat):\n{best_pair_runtime}", level=LogLevel.INFO)
                     min_value_time = pair_cost_time
 
                 if pair_cost_mem < min_value_mem:
                     best_pair_memory = OutputCandidate(fw=fw, bw=bw, cost=pair_cost_mem)
-                    log(f"New best memory pair (no remat):\n{best_pair_memory}", level=LogLevel.INFO)
+                    # log(f"New best memory pair (no remat):\n{best_pair_memory}", level=LogLevel.INFO)
                     min_value_mem = pair_cost_mem
 
         return best_pair_runtime, best_pair_memory
@@ -332,12 +329,10 @@ class FusionPlacer_BeamSearch(PlacerBase):
                 #     print(f"Caching fw with compile options mem: {compile_opt_mem.fusion_tag}")
 
                 for t, o in zip([trc_time, trc_mem], [compile_opt_time, compile_opt_mem]):
-                    log(f'Caching fw candidate [compile option: {o.fusion_tag if o else "None"}]\n{t}')
+                    log(f'Caching fw candidate [compile option: {o.fusion_tag if o else "None"}]')
                     self.cached_fw_traces.append(
                         TraceCandidate(trace=t, compile_opt=o, label=label + '_enabled_' + o.fusion_tag if o is not None else label)
                     )
-
-                log("End fw time mem pair", level=LogLevel.INFO)
 
         def bw_benchmark():
             time_result = BenchmarkResult()
@@ -829,7 +824,7 @@ class FusionPlacer_BeamSearch(PlacerBase):
             # Currently we are enabling one compile option at the time as testing all the permutations might need too much time.
             # TODO: Consider implementing patterns based on the executor under investingation
             if ex_compile_opts:
-                log(f'{ex.name} compile options: {ex_compile_opts}')
+                log(f'{ex.name} compile options: {[option.fusion_tag for option in ex_compile_opts]}')
                 for opt in ex_compile_opts:
                     # Search only if we have an instruction related to the compile option
                     op_in_trace: bool = operation_in_trace(trace=self.trace, op=opt.symbol_tag)
@@ -863,7 +858,7 @@ class FusionPlacer_BeamSearch(PlacerBase):
         match self.trace_type:
             case TraceType.FW:
                 log(
-                    f"New forward trace to optimize (strat = {self.optimizer_type}):\n{self.trace}", level=LogLevel.INFO
+                    f"New forward trace to optimize (strat = {self.optimizer_type}):\n{self.trace}", level=LogLevel.DEBUG
                 )
             # TODO (matteochen): support bw trace optimization even though with no fw traces cached (computational trace?)
             case TraceType.BW:
@@ -871,7 +866,7 @@ class FusionPlacer_BeamSearch(PlacerBase):
                     raise AssertionError("Can not optimize backward traces before forward traces")
                 log(
                     f"New backward trace to optimize (strat = {self.optimizer_type}):\n{self.trace}",
-                    level=LogLevel.INFO,
+                    level=LogLevel.DEBUG,
                 )
 
     def optimize(self):
@@ -951,8 +946,9 @@ class FusionPlacer_BeamSearch(PlacerBase):
                     self.trace = from_trace(cached_self_trace)
                     self.trace.bound_symbols = list(cached_self_trace.bound_symbols)
                     # Set the current active cached forward trace context
-                    print(
-                        f'Current fw cached ctx:\n{fw_trace_candidate.trace}\nOptions: {fw_trace_candidate.compile_opt.fusion_tag if fw_trace_candidate.compile_opt is not None else "None"}'
+                    log(
+                        f'Current fw cached ctx:\n{fw_trace_candidate.trace}\nOptions: {fw_trace_candidate.compile_opt.fusion_tag if fw_trace_candidate.compile_opt is not None else "None"}',
+                        level=LogLevel.DEBUG
                     )
                     self.active_fw_trace_ctx = fw_trace_candidate.trace, fw_trace_candidate.compile_opt
 

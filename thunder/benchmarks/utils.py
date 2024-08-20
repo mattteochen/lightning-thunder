@@ -1,7 +1,31 @@
+from collections.abc import Sequence
 import torch
 from thunder.backend_optimizer.utils import benchmark_trace
+from thunder.core.trace import TraceCtx
 
 warm_up_iters = 50
+
+class AutotunerTorchAutogradBenchmarkUtils():
+    def __init__(
+        self,
+        cost: float = float('inf'),
+        fw_trace: TraceCtx | None = None,
+        bw_trace: TraceCtx | None = None,
+        fw_traces: Sequence[TraceCtx] = [],
+        bw_traces: Sequence[TraceCtx] = [],
+        primal_trace: TraceCtx | None = None,
+        executor = None,
+        selected_executors: Sequence = []
+        ) -> None:
+        self.cost: float = cost
+        self.fw_trace = fw_trace
+        self.bw_trace = bw_trace
+        self.fw_traces = fw_traces
+        self.bw_traces = bw_traces
+        self.primal_trace = primal_trace
+        self.executor = executor
+        self.selected_executors = selected_executors
+
 
 def torch_fw_bw_benchmark_nvsight(models: list, labels: list, inputs: list, iters: int) -> None:
 

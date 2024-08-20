@@ -403,19 +403,23 @@ def benchmark_trace(
         shape = arg.shape
         device = arg.device
         requires_grad = arg.requires_grad
-
         torch_dtype = to_torch_dtype(dtype)
         if torch_dtype is None:
             raise AssertionError(f'Unrecognized thunder dtype: {dtype}')
         if is_float_dtype(dtype):
-            # Handle fp8 for TE executor
-            # NOTE: standard torch.float8 will not be parsed correctly!
-            tensor: torch.Tensor = torch.randn(
-                shape, dtype=torch_dtype if dtype.bytes > 1 else torch.float32, device=device.device_str(), requires_grad=requires_grad
-            )
-            if dtype.bytes == 1:
-                import transformer_engine.pytorch as te
-                tensor = te.float8_tensor.Float8Tensor.to_float8(tensor)
+            # Use TE Float8 if TE is enabled, it has float32 ad torch dtype
+            if te_used:
+                tensor: torch.Tensor = torch.randn(
+                    shape, dtype=torch_dtype if dtype.bytes > 1 else torch.float32, device=device.device_str(), requires_grad=requires_grad
+                )
+                if dtype.bytes == 1:
+                    import transformer_engine.pytorch as te
+                    tensor = te.float8_tensor.Float8Tensor.to_float8(tensor)
+            # Support standard float tensors
+            else:
+                tensor: torch.Tensor = torch.randn(
+                    shape, dtype=torch_dtype, device=device.device_str(), requires_grad=requires_grad
+                )
         elif is_signedinteger_dtype(dtype):
             tensor: torch.Tensor = torch.randint(
                 0, 8, shape, dtype=torch_dtype, device=device.device_str(), requires_grad=requires_grad
@@ -436,7 +440,9 @@ def benchmark_trace(
         for i, e in enumerate(inputs[0][0]):
             # This tensor should be an uint8 https://github.com/NVIDIA/TransformerEngine/blob/4edcff5777be08b6f89658572c433aa8f36acf0d/transformer_engine/pytorch/module/linear.py#L366
             if i == 1:
-                inputmat_t = torch.randint(0, 8, (e.shape), dtype=torch.uint8, device=e.device)
+                inputmat_t = e
+                if inputmat_t.dtype != torch.uint8:
+                    inputmat_t = torch.randint(0, 8, (e.shape), dtype=torch.uint8, device=e.device)
                 saved_for_bw.append(inputmat_t)
             else:
                 saved_for_bw.append(e)
