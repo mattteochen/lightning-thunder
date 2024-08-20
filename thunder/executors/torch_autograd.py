@@ -3,7 +3,6 @@ from typing import TYPE_CHECKING
 
 import torch
 
-from thunder.backend_optimizer.utils import operation_in_trace
 import thunder.core.utils as utils
 from thunder.core.prims import PrimIDs
 from thunder.core.proxies import TensorProxy, variableify
@@ -11,7 +10,6 @@ from thunder.core.pytree import tree_flatten
 from thunder.core.symbol import BoundSymbol
 from thunder.core.trace import TraceCtx, from_trace, set_tracectx, reset_tracectx
 from thunder.core.transform_common import replace_redundant_inputs
-from thunder.extend import OperatorExecutor, Executor
 from thunder.core.vjp_utils import get_saved_for_backward_tensors
 
 if TYPE_CHECKING:
