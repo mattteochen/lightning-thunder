@@ -370,11 +370,11 @@ def benchmark_trace(
             raise e
 
     # TODO (matteochen): use more appropriate mock int and float
-    def transform_input_tuple(t: tuple, level=0) -> tuple:
+    def transform_input_sequence(sequence: Sequence, level=0) -> tuple | list:
         res = []
-        for e in t:
+        for e in sequence:
             if type(e) is tuple:
-                res.append(transform_input_tuple(e, level + 1))
+                res.append(transform_input_sequence(e, level + 1))
             else:
                 if isinstance(e, TensorProxy):
                     res.append(transform_tensor(e))
@@ -392,7 +392,7 @@ def benchmark_trace(
                     res.append(None)
                 else:
                     raise AssertionError(f'Input arg type not recognized: {type(e)} with name: {e.name if hasattr(e, "name") else "unknown"} with value: {e}')
-        return tuple(res)
+        return tuple(res) if level > 0 else res
 
     def transform_tensor(arg: TensorProxy) -> torch.Tensor:
         from thunder.core.dtypes import is_float_dtype, is_signedinteger_dtype, is_boolean_dtype
@@ -450,9 +450,6 @@ def benchmark_trace(
         fixed_inputs_first_index = tuple([tuple(saved_for_bw), inputs[0][1]])
         return fixed_inputs_first_index
 
-    # Trace real input args
-    input_args = []
-
     # Check for correctness
     if trace.bound_symbols[-1].sym.id != PrimIDs.RETURN:
         raise AssertionError("Missing return statement")
@@ -481,32 +478,12 @@ def benchmark_trace(
         # Currently it will contain an empty transformer_engineex.Context but might be useful for the future
         cached_fw_te_ctx_out = fw_output[1][1][0]
 
-    # Can we remove this check?
-    # TODO (matteochen): use more appropriate mock int and float
-    if isinstance(trace.args, Sequence):
-        for arg in trace.args:
-            if isinstance(arg, tuple):
-                input_args.append(transform_input_tuple(arg))
-            elif isinstance(arg, TensorProxy):
-                e = transform_tensor(arg)
-                input_args.append(e)
-            elif isinstance(arg, IntegerProxy):
-                if arg.python_type is bool:
-                    input_args.append(False if arg.value is None else arg.value)
-                else:
-                    input_args.append(0 if arg.value is None else arg.value)
-            elif isinstance(arg, FloatProxy):
-                input_args.append(0.0 if arg.value is None else arg.value)
-            else:
-                raise AssertionError(f"Input arg type not recognized: {type(arg)}")
-    else:
-        raise AssertionError("Unexpexcted args type")
+    input_args: list = transform_input_sequence(trace.args)
 
     if te_used and trace_signature.startswith('def backward'):
         first_tuple = fix_te_backward_inputs(input_args)
         input_args.pop(0)
         input_args.insert(0, first_tuple)
-
 
     trace_tok = set_tracectx(trace)
 
