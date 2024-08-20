@@ -1,9 +1,18 @@
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 import torch
 from thunder.backend_optimizer.utils import benchmark_trace
 from thunder.core.trace import TraceCtx
 
 warm_up_iters = 50
+
+class SplitFwBwBenchmarkUtils():
+    def __init__(
+            self, *, cost: float = float("inf"), fw_fn: Callable | None = None, bw_fn: Callable | None = None, executor = None
+    ) -> None:
+        self.cost: float = cost
+        self.fw_fn: Callable | None = fw_fn
+        self.bw_fn: Callable | None = bw_fn
+        self.executor = executor
 
 class AutotunerTorchAutogradBenchmarkUtils():
     def __init__(

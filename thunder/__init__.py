@@ -273,7 +273,7 @@ def jit(
     disable_torch_autograd: bool = False,  # TODO Revisit this UX for RC1
     transforms: list[Transform] | None = None,
     record_history: bool = False,
-    autotune_type: Any | None = None,
+    # autotune_type: Any | None = None,
     **compile_options,  # TODO RC1 Make this explicit -- dict of options
 ) -> Callable:
     """Just-in-time compile a callable (function or model).
@@ -322,13 +322,12 @@ def jit(
     if transforms is None:
         transforms = []
 
-    if autotune_type is not None:
-        if autotune_type == 'runtime':
-            autotune_type = OptimizerType.RUNTIME
-        elif autotune_type == 'memory':
-            autotune_type = OptimizerType.MEMORY
-        else:
-            raise AssertionError(f'Not supported optimization: {autotune_type}')
+    required_autotune = compile_options.get('autotune_type', None)
+    if required_autotune is not None:
+        if required_autotune not in ['runtime', 'memory']:
+            raise AssertionError(f'Not supported optimization: {required_autotune}')
+
+        compile_options |= {"autotune_type": OptimizerType.RUNTIME if required_autotune == 'runtime' else OptimizerType.MEMORY}
 
         # Default the executors list to all_executors if no options are given
         # Otherwise the user restricted choice will be used
@@ -667,7 +666,7 @@ def jit(
                     # transform_for_execution and various sorting of symbols,
                     # applying transform_for_execution after this would be
                     # breaking the order of operations
-                    computation_trc, backward_trc = split_forward_backward(computation_trc, cd, cs, autotune_type, *inps)
+                    computation_trc, backward_trc = split_forward_backward(computation_trc, cd, cs, *inps)
                     # Note computation_trc and backward_trc have been appended to cs.last_(backward_)traces
                     # by split_forward_backward
 

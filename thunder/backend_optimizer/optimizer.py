@@ -10,6 +10,22 @@ from thunder.visualizer.visualizer_helper import Visualizer
 from typing import Hashable
 from thunder.backend_optimizer.utils import benchmark_trace
 
+# Defining a wrapper fn as the imports will crash in the global scope
+def get_fw_bw_split_backends_options(bsym: BoundSymbol) -> list:
+    from thunder.executors.sdpaex import sdpa_ex
+    from thunder.executors.cudnnex import cudnn_ex
+    from thunder.executors.fa3ex import fa3_ex
+    from thunder.executors.transformer_engineex import transformer_engine_ex
+    #Current configuration
+    options: dict[str, list] = {
+        # TODO: filter out TE only if requested
+        'linear': [transformer_engine_ex],
+        'scaled_dot_product_attention': [sdpa_ex, cudnn_ex, fa3_ex],
+    }
+
+    return options.get(bsym.sym.name, [])
+
+
 class BenchmarkResult:
     def __init__(
         self,

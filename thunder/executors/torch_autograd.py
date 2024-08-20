@@ -138,7 +138,7 @@ def update_bw_from_forward_optimization(*, fw: TraceCtx, bw:TraceCtx) -> TraceCt
 
     return bw
 
-def split_forward_backward(computation_trc: TraceCtx, compile_data, compile_stats, autotune_type, /, *flat_args):
+def split_forward_backward(computation_trc: TraceCtx, compile_data, compile_stats, /, *flat_args):
     from thunder.core.rematerialization import rematerialize_all_gather, rematerialize_forward_and_backward
     from thunder.core.transforms import forward_and_backward_from_trace
     from thunder.distributed.transforms import FSDPCommBucketing
@@ -147,393 +147,200 @@ def split_forward_backward(computation_trc: TraceCtx, compile_data, compile_stat
     from thunder.visualizer.visualizer_helper import Visualizer
     from thunder.backend_optimizer.optimizer import log, LogLevel, TraceType, BackendOptimizer, OptimizerType, benchmark_trace
 
-    def split():
-        utils.check(compile_data is not None, lambda: "`compile_data` is required")
-        # NOTE: This function is rather slow, so it's intended to be used
-        # behind a cache.
-        tensor_cls = (torch.Tensor, TensorProxy)
-        requires_grad_mask = tuple(isinstance(arg, tensor_cls) and arg.requires_grad for arg in flat_args)
-        # If none of the inputs require gradients, raise an error
-        if not any(requires_grad_mask):
-            raise RuntimeError("PyTorch's Autograd interface requires at least one tensor input with requires_grad=True")
+    utils.check(compile_data is not None, lambda: "`compile_data` is required")
+    # NOTE: This function is rather slow, so it's intended to be used
+    # behind a cache.
+    tensor_cls = (torch.Tensor, TensorProxy)
+    requires_grad_mask = tuple(isinstance(arg, tensor_cls) and arg.requires_grad for arg in flat_args)
+    # If none of the inputs require gradients, raise an error
+    if not any(requires_grad_mask):
+        raise RuntimeError("PyTorch's Autograd interface requires at least one tensor input with requires_grad=True")
 
-        primal_trace = computation_trc
-        primal_trace = sort_data_parallel_syncs(primal_trace)
+    autotune_type = compile_data.compile_options.get('autotune_type', None)
 
-        # Handled by the caller if autotune is not None
-        if compile_stats is not None and autotune_type is None:
-            compile_stats.last_traces.append(primal_trace)
+    primal_trace = computation_trc
+    primal_trace = sort_data_parallel_syncs(primal_trace)
 
-        # torch.autograd.Function doesn't support non-flat outputs, the
-        # grads wouldn't be propagated and backward receives None for each
-        # non-flat non-tensor output. The output must also be a flat tuple,
-        # not any other container type. So we need to flatten the outputs of
-        # the forward trace and inputs of the backward trace.
-        fw_trace, bw_trace = forward_and_backward_from_trace(primal_trace, torch_autograd=True)
+    # Handled by the caller if autotune is not None
+    if compile_stats is not None:
+        compile_stats.last_traces.append(primal_trace)
 
-        fw_traces = [fw_trace]
-        bw_traces = [bw_trace]
+    # torch.autograd.Function doesn't support non-flat outputs, the
+    # grads wouldn't be propagated and backward receives None for each
+    # non-flat non-tensor output. The output must also be a flat tuple,
+    # not any other container type. So we need to flatten the outputs of
+    # the forward trace and inputs of the backward trace.
+    fw_trace, bw_trace = forward_and_backward_from_trace(primal_trace, torch_autograd=True)
 
-        from thunder.distributed import FSDPType
+    fw_traces = [fw_trace]
+    bw_traces = [bw_trace]
 
-        # only enable rematerialize_params_in_backward when using FSDP ZeRO3
-        _rematerialize_params_in_backward = (
-            getattr(compile_data.fn, "use_fsdp", False) and getattr(compile_data.fn, "sharding_strategy") == FSDPType.ZERO3
+    from thunder.distributed import FSDPType
+
+    # only enable rematerialize_params_in_backward when using FSDP ZeRO3
+    _rematerialize_params_in_backward = (
+        getattr(compile_data.fn, "use_fsdp", False) and getattr(compile_data.fn, "sharding_strategy") == FSDPType.ZERO3
+    )
+    if _rematerialize_params_in_backward:
+        fw_trace, bw_trace = rematerialize_all_gather(fw_trace, bw_trace)
+
+    # Update the backward trace to only compute gradients for the
+    # inputs that require gradients
+    assert bw_trace.bound_symbols[-1].sym.id == PrimIDs.RETURN
+    filtered_grads = tuple(
+        (arg_grad if requires_grad else None)
+        for arg_grad, requires_grad in utils.safe_zip(bw_trace.bound_symbols[-1].args[0], requires_grad_mask)
+    )
+
+    # autograd.Function.backward expects a flat tuple of gradients
+    bw_trace.bound_symbols[-1] = replace(bw_trace.bound_symbols[-1], args=(filtered_grads,))
+
+    _fsdp_comm_bucketing: FSDPCommBucketing | None = None
+    if getattr(compile_data.fn, "use_fsdp", False):
+        _fsdp_comm_bucketing = FSDPCommBucketing(compile_data, computation_trc)
+        fw_trace = _fsdp_comm_bucketing.apply_bucketing_to_forward_trace(fw_trace)
+
+    do_apply_bucketing_bw_trace: bool = getattr(compile_data.fn, "use_fsdp", False)
+
+    # Now we can run the optimization passes on the forward trace
+    visualizer = Visualizer(produce_hidden=False)
+    backend_optimizer_ctx: BackendOptimizer | None = (
+        None
+        if autotune_type is None
+        else BackendOptimizer(
+            priority_executors=compile_data.executors_list,
+            apply_bucketing_bw_trace=do_apply_bucketing_bw_trace,
+            produce_log=True,
+            visualizer=visualizer,
+            optimizer_type=autotune_type,
+            compile_data=compile_data
         )
-        if _rematerialize_params_in_backward:
-            fw_trace, bw_trace = rematerialize_all_gather(fw_trace, bw_trace)
+    )
 
-        # Update the backward trace to only compute gradients for the
-        # inputs that require gradients
-        assert bw_trace.bound_symbols[-1].sym.id == PrimIDs.RETURN
-        filtered_grads = tuple(
-            (arg_grad if requires_grad else None)
-            for arg_grad, requires_grad in utils.safe_zip(bw_trace.bound_symbols[-1].args[0], requires_grad_mask)
+    visualizer.set_fw_initial_trace(fw_trace)
+    # Get optimzied fw trace
+    fw_extrace = (
+        transform_for_execution(fw_trace, executors_list=compile_data.executors_list)
+        if autotune_type is None
+        else autotune_transform_for_execution(
+            optimizer_context=backend_optimizer_ctx, trace=fw_trace, trace_type=TraceType.FW
         )
+    )
 
-        # autograd.Function.backward expects a flat tuple of gradients
-        bw_trace.bound_symbols[-1] = replace(bw_trace.bound_symbols[-1], args=(filtered_grads,))
+    # If in default mode, otherwise the best fw will be returned only at the end
+    if autotune_type is None:
+        # Here fw_extrace is not None
 
-        _fsdp_comm_bucketing: FSDPCommBucketing | None = None
-        if getattr(compile_data.fn, "use_fsdp", False):
-            _fsdp_comm_bucketing = FSDPCommBucketing(compile_data, computation_trc)
-            fw_trace = _fsdp_comm_bucketing.apply_bucketing_to_forward_trace(fw_trace)
-
-        do_apply_bucketing_bw_trace: bool = getattr(compile_data.fn, "use_fsdp", False)
-
-        # Now we can run the optimization passes on the forward trace
-        visualizer = Visualizer(produce_hidden=False)
-        backend_optimizer_ctx: BackendOptimizer | None = (
-            None
-            if autotune_type is None
-            else BackendOptimizer(
-                priority_executors=compile_data.executors_list,
-                apply_bucketing_bw_trace=do_apply_bucketing_bw_trace,
-                produce_log=True,
-                visualizer=visualizer,
-                optimizer_type=autotune_type,
-                compile_data=compile_data
-            )
-        )
-
-        visualizer.set_fw_initial_trace(fw_trace)
-        # Get optimzied fw trace
-        fw_extrace = (
-            transform_for_execution(fw_trace, executors_list=compile_data.executors_list)
-            if autotune_type is None
-            else autotune_transform_for_execution(
-                optimizer_context=backend_optimizer_ctx, trace=fw_trace, trace_type=TraceType.FW
-            )
-        )
-
-        # If in default mode, otherwise the best fw will be returned only at the end
-        if autotune_type is None:
-            # Here fw_extrace is not None
-
-            fw_traces.append(fw_extrace)
-            visualizer.set_fw_optimized_trace(fw_extrace)
-
-            # If autotuning is activated, it will take care of the followinf 2 calls
-            bw_trace = update_bw_from_forward_optimization(fw=fw_extrace, bw=bw_trace)
-            if do_apply_bucketing_bw_trace:
-                bw_trace = _fsdp_comm_bucketing.apply_bucketing_to_backward_trace(bw_trace)
-
-        # Now we can run the optimization passes on the backward trace
-        # TODO Restore request for no rematerialization
-        visualizer.set_bw_initial_trace(bw_trace)
-        if autotune_type is not None:
-            fw_extrace, bw_extrace = autotune_transform_for_execution(
-                optimizer_context=backend_optimizer_ctx, trace=bw_trace, trace_type=TraceType.BW
-            )
-            fw_traces.append(fw_extrace)
-            visualizer.set_bw_optimized_trace(fw_extrace)
-        else:
-            bw_extrace = transform_for_execution(
-                bw_trace,
-                executors_list=compile_data.executors_list,
-            )
-        bw_traces.append(bw_extrace)
-        visualizer.set_bw_optimized_trace(bw_extrace)
-
-        if autotune_type is None:
-            # TODO Restore request for no rematerialization
-            fw_extrace, bw_extrace = rematerialize_forward_and_backward(fw_extrace, bw_extrace)
-        # Autotuner has been taken care of remat
-        else:
-            pass
         fw_traces.append(fw_extrace)
-        bw_traces.append(bw_extrace)
+        visualizer.set_fw_optimized_trace(fw_extrace)
 
-        # We need to sort the waits in forward and backward trace to overlap
-        # computation with communication
-        # For performance we need the wait_prim_impl nodes in the execution trace to be as far from the
-        # communication ops as possible. But it causes the all_gather_prim_impl nodes gathered at the start of
-        # backward trace and increases the peak allocated memory
-        use_fsdp: bool = getattr(compile_data.fn, "use_fsdp", False)
-        if use_fsdp:
-            assert hasattr(compile_data.fn, "sharding_strategy")
-            if getattr(compile_data.fn, "sharding_strategy") == FSDPType.ZERO3:
-                from thunder.distributed import FSDPBucketingStrategy
-                from thunder.distributed.utils import limit_in_flight_allgathers
+        # If autotuning is activated, it will take care of the following 2 calls
+        bw_trace = update_bw_from_forward_optimization(fw=fw_extrace, bw=bw_trace)
+        if do_apply_bucketing_bw_trace:
+            bw_trace = _fsdp_comm_bucketing.apply_bucketing_to_backward_trace(bw_trace)
 
-                fw_extrace = sort_communication_ops(fw_extrace)
-                fw_extrace = limit_in_flight_allgathers(
-                    fw_extrace,
-                    3,
-                    compile_data.fn.bucketing_strategy != FSDPBucketingStrategy.NONE,
-                )
-                bw_extrace = sort_communication_ops(bw_extrace)
-                bw_extrace = limit_in_flight_allgathers(
-                    bw_extrace,
-                    3,
-                    compile_data.fn.bucketing_strategy != FSDPBucketingStrategy.NONE,
-                )
-            if getattr(compile_data.fn, "sharding_strategy") == FSDPType.ZERO2:
-                from thunder.distributed import FSDPBucketingStrategy
-                from thunder.distributed.utils import limit_in_flight_allgathers
-                from sys import maxsize as INT_MAX
-
-                # sort the allgather+wait as consumer order just before consumer
-                fw_extrace = sort_communication_ops(fw_extrace)
-                # unlimited number of allgathers, i.e. allgathers are listed at the beginning of the trace in consumer order and wait stays just before wait
-                fw_extrace = limit_in_flight_allgathers(
-                    fw_extrace,
-                    INT_MAX,
-                    compile_data.fn.bucketing_strategy != FSDPBucketingStrategy.NONE,
-                )
-                bw_extrace = sort_waits(bw_extrace)
-        use_ddp: bool = getattr(compile_data.fn, "use_ddp", False)
-        if use_ddp:
-            bw_extrace = sort_waits(bw_extrace)
-        if (not use_ddp) and (not use_fsdp):
-            from thunder.distributed.utils import maybe_sort_waits
-
-            _, fw_extrace = maybe_sort_waits(fw_extrace)
-            _, bw_extrace = maybe_sort_waits(bw_extrace)
-
-        # Importing here to avoid cyclical dependencies in future.
-        from thunder.executors.transformer_engineex import _transformer_engine_bwd_fp8_meta_sync, transformer_engine_ex
-
-        if transformer_engine_ex in compile_data.executors_list:
-            # NOTE: `_transformer_engine_bwd_fp8_meta_sync` may mutate `fw_extrace` or `bw_extrace`.
-            _transformer_engine_bwd_fp8_meta_sync(fw_extrace, bw_extrace)
-
-        fw_extrace = del_last_used(fw_extrace)
-        fw_traces.append(fw_extrace)
-
-        bw_extrace = del_last_used(bw_extrace, clear_mutable_collections=True)
-        bw_traces.append(bw_extrace)
-
-        bw_trace = rename_bwd_trace_outputs(bw_extrace, fw_extrace)
-
-        # This is moved to the caller if autotune is enabled
-        if compile_stats is not None and autotune_type is None:
-            compile_stats.last_traces += fw_traces
-            compile_stats.last_backward_traces += bw_traces
-
-        # Enable wrapping with `te.fp8_autocast`.
-        fw_extrace._include_te_fp8_autocast = True
-        # We only want the forward function to be called with `te.fp8_autocast` manager.
-        bw_extrace._include_te_fp8_autocast = False
-
-        # Let's include the last traces also after all the passes
-        visualizer.set_fw_final_trace(fw_extrace)
-        visualizer.set_bw_final_trace(bw_extrace)
-
-        # TODO: implement new visualizer
-        # visualizer.produce()
-
-        if autotune_type is None:
-            return fw_extrace, bw_extrace
-        else:
-            return primal_trace, fw_extrace, bw_extrace, fw_traces, bw_traces
-
-    # Defined executors that are matched inside the fw and bw split, hence outside the autotuner scope
-    # TODO (matteochen): integrate Transofrmer Engine
-    from thunder.executors.sdpaex import sdpa_ex
-    from thunder.executors.cudnnex import cudnn_ex
-    from thunder.executors.fa3ex import fa3_ex
-    from thunder.executors.transformer_engineex import transformer_engine_ex
-    from thunder.executors.torchex import ex as torchex
-
-    executors_candidates: dict[str, list] = {
-        'linear': [transformer_engine_ex.name],
-        'scaled_dot_product_attention': [sdpa_ex.name, cudnn_ex.name, fa3_ex.name],
-    }
-
-    # TODO (matteochen): use BackendOptimizer tracing
-
-    # If autotuner is enabled, we compare different impl of executors which are assigned inside the call 'forward_and_backward_from_trace'
-    # as the autotuner will receive already split fw and bw traces
+    # Now we can run the optimization passes on the backward trace
+    visualizer.set_bw_initial_trace(bw_trace)
     if autotune_type is not None:
-        cached_executor_list = list(compile_data.executors_list)
-        cached_executor_list_copy = list(compile_data.executors_list)
-        placed = set()
-
-        def find_torchex_index():
-            index = 0
-            for i, e in enumerate(cached_executor_list):
-                if e in placed:
-                    index = i+1
-            return min(len(cached_executor_list), index)
-
-        try:
-            from thunder.benchmarks.utils import AutotunerTorchAutogradBenchmarkUtils
-
-            is_tuned = False
-            benchmark_iters: int = 20
-            global_optimal_result = AutotunerTorchAutogradBenchmarkUtils()
-
-            for i, (ex_type, ex_list) in enumerate(executors_candidates.items()):
-                # We need to reference some additional structures other than the best fw and bw traces as we have to update compile data only after we got the optimal choice
-                result = AutotunerTorchAutogradBenchmarkUtils()
-                log(
-                        f"================================================================================ Before Autotune Tuning: Optimizing {ex_type}",
-                        level=LogLevel.INFO)
-                # Filter out the executors based on the executors list, maybe not all the options have to be used
-                # Torch executor (default kernel) will be given a chance always
-                to_benchmark: list[Executor] = [ex for ex in cached_executor_list if ex.name in ex_list]
-                # Add torchexecutor if not present
-                if torchex not in to_benchmark:
-                    to_benchmark.append(torchex)
-                # Verify that op is present in the trace
-                # op_in_trace: bool = operation_in_trace(trace=computation_trc, op=ex_type)
-                # TODO (matteochen): currently it is bugged if op is not in trace
-                op_in_trace: bool = True
-
-                if (not to_benchmark and op_in_trace) or not op_in_trace:
-                    log(
-                        f"================================================================================ Before Autotune Tuning: Skipping optimization for {ex_type} as not requested or not present in computation_trc.",
-                        level=LogLevel.INFO,
-                    )
-                    continue
-
-                log(
-                        f"================================================================================ Before Autotune Tuning: Executors to bench for {ex_type}: {to_benchmark}",
-                    level=LogLevel.INFO,
-                )
-                for e in to_benchmark:
-                    # Create the executor list putting the executor under analysis at the head of queue
-                    # 1. Add all executors except the ones under benchmark
-                    compile_data.executors_list = [ex for ex in cached_executor_list if ex not in to_benchmark]
-                    # 2. Make the current one with most priority to be picked up by <forward_and_backward_from_trace>
-                    if e in compile_data.executors_list:
-                        compile_data.executors_list.insert(0, compile_data.executors_list.pop(compile_data.executors_list.index(e)))
-                    else:
-                        compile_data.executors_list.insert(0, e)
-                    # TODO: write why we have to place torchex as near as possible to the start of the list
-                    if torchex not in compile_data.executors_list:
-                        torchex_index = max(1, find_torchex_index())
-                        compile_data.executors_list.insert(torchex_index, torchex)
-                    log(
-                            f"================================================================================ Before Autotune Tuning: Testing compile data executors: {compile_data.executors_list}", level=LogLevel.INFO)
-                    try:
-                        primal_trace, fw_extrace, bw_extrace, fw_traces, bw_traces = split()
-                    except Exception as exception:
-                        import traceback
-                        ex_str = traceback.format_exc()
-                        log(
-                                f"================================================================================ Before Autotune Tuning: Failed to place {e.name}: {exception}\n{ex_str}")
-                        continue
-
-                    time_fw, mem_fw, _ = benchmark_trace(fw_extrace, iters=benchmark_iters, apply_del_last_used=False)
-                    time_bw, mem_bw, _ = benchmark_trace(bw_extrace, iters=benchmark_iters, apply_del_last_used=False, fw_trace=fw_extrace)
-                    tot_time = time_fw + time_bw
-                    tot_mem = mem_fw + mem_bw
-                    log(
-                            f"================================================================================ Before Autotune Tuning: Benchmark {ex_type} options: {e.name}. Time fw = {time_fw} ms - Time bw = {time_bw} ms - Mem fw = {mem_fw / (2**30)} GB - Mem bw = {mem_bw / (2**30)} GB", level=LogLevel.INFO)
-                    log(
-                            f"================================================================================ Before Autotune Tuning: Benchmark {ex_type} options: {e.name}. Time = {tot_time} ms - Mem = {tot_mem / (2**30)} GB", level=LogLevel.INFO)
-
-                    benchmark_cost = tot_time if autotune_type == OptimizerType.RUNTIME else tot_mem
-                    if benchmark_cost < result.cost:
-                        is_tuned = True
-                        result = AutotunerTorchAutogradBenchmarkUtils(
-                            benchmark_cost,
-                            fw_extrace,
-                            bw_extrace,
-                            fw_traces,
-                            bw_traces,
-                            primal_trace,
-                            e
-                        )
-                    if benchmark_cost < global_optimal_result.cost:
-                        is_tuned = True
-                        global_optimal_result = AutotunerTorchAutogradBenchmarkUtils(
-                            benchmark_cost,
-                            fw_extrace,
-                            bw_extrace,
-                            fw_traces,
-                            bw_traces,
-                            primal_trace,
-                            selected_executors=list(compile_data.executors_list)
-                        )
-
-                    log(f'Best executor for {ex_type} iteration: {result.executor}')
-
-                c, m , _ = benchmark_trace(result.fw_trace, iters=benchmark_iters, apply_del_last_used=False, level=LogLevel.DEBUG)
-                log(
-                        f"================================================================================ Before Autotune Tuning: Benchmark {ex_type} best fw_extrace (time = {c}, mem = {m}):\n{result.fw_trace}", level=LogLevel.DEBUG)
-                c, m , _ = benchmark_trace(result.bw_trace, iters=benchmark_iters, apply_del_last_used=False, fw_trace=result.fw_trace, level=LogLevel.DEBUG)
-                log(
-                        f"================================================================================ Before Autotune Tuning: Benchmark {ex_type} best bw_extrace (time = {c}, mem = {m}):\n{result.bw_trace}", level=LogLevel.DEBUG)
-
-                # Update the executor list with the winner executor for the current ex_type
-                # TODO: unify this by using global_optimal_result as it should contain already the optimal placement
-                cached_executor_list = [ex for ex in cached_executor_list if ex not in to_benchmark]
-                if result.executor is None:
-                    log(
-                            f"================================================================================ Before Autotune Tuning: Could not find best executor for {ex_type}. Assigning torchex by default", level=LogLevel.INFO)
-                    result.executor = torchex
-                cached_executor_list.insert(0, result.executor)
-                placed.add(result.executor)
-                # Restore all placed but not included in the executor list
-                for ex_placed in placed:
-                    if ex_placed not in cached_executor_list:
-                        cached_executor_list.append(ex_placed)
-                log(
-                        f"================================================================================ Before Autotune Tuning: Best executor for {ex_type}: {result.executor.name}", level=LogLevel.INFO)
-                log(
-                        f"================================================================================ Before Autotune Tuning: Benchmark {ex_type}, updated executor list: {cached_executor_list}", level=LogLevel.INFO)
-
-                # Update the compile stats on the last iter
-                if i == len(executors_candidates)-1:
-                    # Check that we have solution, we don't have it if not requested from the executor list
-                    if not is_tuned:
-                        raise AssertionError(
-                            f"No executors have been placed inside the trace. Will autotune the computation_trc ignoring the following executors:\n{executors_candidates}"
-                        )
-
-                    # Restore
-                    executors_list_to_restore = cached_executor_list if result.cost < global_optimal_result.cost else global_optimal_result.selected_executors
-                    result_to_assign = result if result.cost < global_optimal_result.cost else global_optimal_result
-
-                    compile_data.executors_list = list(executors_list_to_restore)
-                    log(
-                            f"================================================================================ Before Autotune Tuning: autotuned split_forward_backward from {executors_candidates}", level=LogLevel.INFO)
-                    if compile_stats is not None:
-                        compile_stats.last_traces.append(result_to_assign.primal_trace)
-                        compile_stats.last_traces += result_to_assign.fw_traces
-                        compile_stats.last_backward_traces += result_to_assign.bw_traces
-
-                    return result_to_assign.fw_trace, result_to_assign.bw_trace
-        except Exception as exception:
-            import traceback
-            ex_str = traceback.format_exc()
-            log(f'Exception occured when tuning {executors_candidates}: {exception}\n{ex_str}')
-            # Restore before calling split
-            compile_data.executors_list = cached_executor_list_copy
-
-            log(
-                f"================================================================================ Before Autotune Tuning: exception occured, executors:\n{executors_candidates} will not be autotuned (priority list policy will be used)",
-                level=LogLevel.INFO,
-            )
-            primal_trace, fw_extrace, bw_extrace, fw_traces, bw_traces = split()
-            if compile_stats is not None:
-                compile_stats.last_traces.append(primal_trace)
-                compile_stats.last_traces += fw_traces
-                compile_stats.last_backward_traces += bw_traces
-
-            return fw_extrace, bw_extrace
+        fw_extrace, bw_extrace = autotune_transform_for_execution(
+            optimizer_context=backend_optimizer_ctx, trace=bw_trace, trace_type=TraceType.BW
+        )
+        fw_traces.append(fw_extrace)
+        visualizer.set_bw_optimized_trace(fw_extrace)
     else:
-        return split()
+        bw_extrace = transform_for_execution(
+            bw_trace,
+            executors_list=compile_data.executors_list,
+        )
+    bw_traces.append(bw_extrace)
+    visualizer.set_bw_optimized_trace(bw_extrace)
+
+    if autotune_type is None:
+        # TODO Restore request for no rematerialization
+        fw_extrace, bw_extrace = rematerialize_forward_and_backward(fw_extrace, bw_extrace)
+    # Autotuner has been taken care of remat
+    else:
+        pass
+    fw_traces.append(fw_extrace)
+    bw_traces.append(bw_extrace)
+
+    # We need to sort the waits in forward and backward trace to overlap
+    # computation with communication
+    # For performance we need the wait_prim_impl nodes in the execution trace to be as far from the
+    # communication ops as possible. But it causes the all_gather_prim_impl nodes gathered at the start of
+    # backward trace and increases the peak allocated memory
+    use_fsdp: bool = getattr(compile_data.fn, "use_fsdp", False)
+    if use_fsdp:
+        assert hasattr(compile_data.fn, "sharding_strategy")
+        if getattr(compile_data.fn, "sharding_strategy") == FSDPType.ZERO3:
+            from thunder.distributed import FSDPBucketingStrategy
+            from thunder.distributed.utils import limit_in_flight_allgathers
+
+            fw_extrace = sort_communication_ops(fw_extrace)
+            fw_extrace = limit_in_flight_allgathers(
+                fw_extrace,
+                3,
+                compile_data.fn.bucketing_strategy != FSDPBucketingStrategy.NONE,
+            )
+            bw_extrace = sort_communication_ops(bw_extrace)
+            bw_extrace = limit_in_flight_allgathers(
+                bw_extrace,
+                3,
+                compile_data.fn.bucketing_strategy != FSDPBucketingStrategy.NONE,
+            )
+        if getattr(compile_data.fn, "sharding_strategy") == FSDPType.ZERO2:
+            from thunder.distributed import FSDPBucketingStrategy
+            from thunder.distributed.utils import limit_in_flight_allgathers
+            from sys import maxsize as INT_MAX
+
+            # sort the allgather+wait as consumer order just before consumer
+            fw_extrace = sort_communication_ops(fw_extrace)
+            # unlimited number of allgathers, i.e. allgathers are listed at the beginning of the trace in consumer order and wait stays just before wait
+            fw_extrace = limit_in_flight_allgathers(
+                fw_extrace,
+                INT_MAX,
+                compile_data.fn.bucketing_strategy != FSDPBucketingStrategy.NONE,
+            )
+            bw_extrace = sort_waits(bw_extrace)
+    use_ddp: bool = getattr(compile_data.fn, "use_ddp", False)
+    if use_ddp:
+        bw_extrace = sort_waits(bw_extrace)
+    if (not use_ddp) and (not use_fsdp):
+        from thunder.distributed.utils import maybe_sort_waits
+
+        _, fw_extrace = maybe_sort_waits(fw_extrace)
+        _, bw_extrace = maybe_sort_waits(bw_extrace)
+
+    # Importing here to avoid cyclical dependencies in future.
+    from thunder.executors.transformer_engineex import _transformer_engine_bwd_fp8_meta_sync, transformer_engine_ex
+
+    if transformer_engine_ex in compile_data.executors_list:
+        # NOTE: `_transformer_engine_bwd_fp8_meta_sync` may mutate `fw_extrace` or `bw_extrace`.
+        _transformer_engine_bwd_fp8_meta_sync(fw_extrace, bw_extrace)
+
+    fw_extrace = del_last_used(fw_extrace)
+    fw_traces.append(fw_extrace)
+
+    bw_extrace = del_last_used(bw_extrace, clear_mutable_collections=True)
+    bw_traces.append(bw_extrace)
+
+    bw_trace = rename_bwd_trace_outputs(bw_extrace, fw_extrace)
+
+    # This is moved to the caller if autotune is enabled
+    if compile_stats is not None:
+        compile_stats.last_traces += fw_traces
+        compile_stats.last_backward_traces += bw_traces
+
+    # Enable wrapping with `te.fp8_autocast`.
+    fw_extrace._include_te_fp8_autocast = True
+    # We only want the forward function to be called with `te.fp8_autocast` manager.
+    bw_extrace._include_te_fp8_autocast = False
+
+    # Let's include the last traces also after all the passes
+    visualizer.set_fw_final_trace(fw_extrace)
+    visualizer.set_bw_final_trace(bw_extrace)
+
+    # TODO: implement new visualizer
+    # visualizer.produce()
+
+    return fw_extrace, bw_extrace
