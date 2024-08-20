@@ -432,9 +432,10 @@ def _te_functional_linear_backward_meta(
         TensorProxy(like=g, shape=b_shape) if b_shape else None,
     )
 
+te_functional_linear_backward_name: str = "te_functional_linear_backward"
 
 te_functional_linear_backward = transformer_engine_ex.register_operator(
-    "te_functional_linear_backward", meta=_te_functional_linear_backward_meta, fn=_te_functional_linear_backward_impl
+    te_functional_linear_backward_name, meta=_te_functional_linear_backward_meta, fn=_te_functional_linear_backward_impl
 )
 
 LINEAR_CALLS_COUNTER = 0
@@ -446,13 +447,15 @@ IMPORT_CTX_TE_KEY = "transformer_engine"
 FP8_RECIPE_KEY = "te_fp8_recipe"
 
 
+linear_bound_symbol_name_prefix: str = "te_linear"
+
 # Creates a new stateful operator for each invocation of `linear`.
 def _create_fp8_linear_bound_symbol(
     a: TensorProxy, w: TensorProxy, b: TensorProxy, is_grad_enabled=False
 ) -> tuple[torch.Tensor, AnyProxy | None]:
     linear_fn = partial(TELinear(w.shape[1], w.shape[0]), is_grad_enabled=is_grad_enabled)
     global LINEAR_CALLS_COUNTER
-    name = f"te_linear_{LINEAR_CALLS_COUNTER}"
+    name = f"{linear_bound_symbol_name_prefix}_{LINEAR_CALLS_COUNTER}"
 
     desc = "transformer_engine_ex: Optional fp8_recipe for `fp8_autocast` context manager."
     if (fp8_recipe := get_compile_option(FP8_RECIPE_KEY, desc)) is None:

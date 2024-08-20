@@ -1,8 +1,8 @@
 from collections.abc import Callable, Hashable, Sequence
 from typing import Any
-from thunder.core.dtypes import dtype, to_torch_dtype
+from thunder.core.dtypes import to_torch_dtype
 from thunder.core.prims import PrimIDs
-from thunder.core.proxies import CollectionProxy, FloatProxy, IntegerProxy, Proxy, TensorProxy, Variable, variableify
+from thunder.core.proxies import AnyProxy, CollectionProxy, FloatProxy, IntegerProxy, Proxy, TensorProxy, Variable, variableify
 from thunder.core.symbol import BoundSymbol, Symbol
 from thunder.core.trace import TraceCtx, get_tracectx, reset_tracectx, set_tracectx
 from thunder.extend import Executor, FusionExecutor, OperatorExecutor
@@ -10,8 +10,6 @@ from thunder.core.utils import check, safe_map_flat
 import thunder.core.transforms as transforms
 from itertools import chain
 import torch
-import thunder
-
 
 def sequence_hash(s: Sequence) -> str:
     def rec(s) -> str:
@@ -257,6 +255,13 @@ def operation_in_trace(*, trace: TraceCtx, op: str) -> bool:
             return True
     return False
 
+def is_te_used(trace: TraceCtx) -> bool:
+    from thunder.executors.transformer_engineex import linear_bound_symbol_name_prefix
+    from thunder.executors.transformer_engineex import te_functional_linear_backward_name
+    for bsym in trace.bound_symbols:
+        if bsym.sym.name.startswith(linear_bound_symbol_name_prefix) or bsym.sym.name.startswith(te_functional_linear_backward_name):
+            return True
+    return False
 
 def benchmark_trace(
     trace: TraceCtx,
@@ -267,14 +272,13 @@ def benchmark_trace(
     snapshot_name="",
     nvsight: bool = False,
     nvsight_fn_name: str = "",
+    **kwargs
 ) -> tuple[float, float, Any]:
     from thunder.executors.passes import del_last_used
     import inspect
 
-    input_args = []
-
-    if trace.bound_symbols[-1].sym.id != PrimIDs.RETURN:
-        raise AssertionError("Missing return statement")
+    # In order to benchmark traces with TE enabled, the backward pass needs the context object returned from the forward trace
+    cached_fw_te_ctx_out = None
 
     def compute_time_cost_nvsight(fn: Callable, iters: int, *args) -> tuple[float, float, Any]:
         try:
@@ -303,22 +307,40 @@ def benchmark_trace(
             print(f"#NVSIGHT FN EXECUTION FAILED:\n{trc}")
             raise e
 
+    def clone_args(args):
+        res = []
+        for arg in args:
+            if isinstance(arg, Sequence):
+                res.append(clone_args(arg))
+            else:
+                if isinstance(arg, torch.Tensor):
+                    res.append(arg.clone())
+                else:
+                    res.append(arg)
+        return tuple(res)
+
     def compute_time_cost_ms(fn: Callable, repr: str, iters: int, *args) -> tuple[float, float, Any]:
         try:
             warm_up_iters = 50
             out = None
 
+            # print_args(args)
+
             # Warm up cycles
             for _ in range(warm_up_iters):
-                fn(*args)
+                cloned_args = clone_args(args)
+                out = fn(*cloned_args)
+                del cloned_args
             # Snapshot request
             if snapshot:
+                cloned_args = clone_args(args)
                 torch.cuda.empty_cache()
                 torch.cuda.synchronize()
                 torch.cuda.memory._record_memory_history()
-                fn(*args)
+                fn(*cloned_args)
                 torch.cuda.memory._dump_snapshot(snapshot_name + "_benchmark.pickle")
                 torch.cuda.memory._record_memory_history(enabled=None)
+                del cloned_args
             # Benchmark
             stream = torch.cuda.current_stream()
             max_allocated_bytes = 0
@@ -326,15 +348,17 @@ def benchmark_trace(
             end_events = [torch.cuda.Event(enable_timing=True) for _ in range(iters)]
             torch.cuda.synchronize()
             for i in range(iters):
+                cloned_args = clone_args(args)
                 torch.cuda.reset_peak_memory_stats(torch.cuda.current_device())
                 torch.cuda.empty_cache()
                 torch.cuda._sleep(1_000_000)
                 start_events[i].record(stream)
-                fn(*args)
+                fn(*cloned_args)
                 end_events[i].record(stream)
                 max_allocated_bytes = max(
                     max_allocated_bytes, torch.cuda.max_memory_allocated(torch.cuda.current_device())
                 )
+                del cloned_args
 
             torch.cuda.synchronize()
             times = [s.elapsed_time(e) for s, e in zip(start_events, end_events)]
@@ -344,50 +368,6 @@ def benchmark_trace(
         except Exception as e:
             print(f"#FN EXECUTION FAILED:\n{repr}")
             raise e
-
-    def print_input_args(args, level=0, show_content=False):
-        for e in args:
-            if isinstance(e, tuple) or isinstance(e, list):
-                print_input_args(e, level=level + 1)
-            else:
-                print(f"level {level}", type(e))
-
-    # def print_trace_execution_output(out: Any, show_content=False):
-    #     if isinstance(out, tuple):
-    #         for e in out:
-    #             print(f'{type(e)}')
-    #     else:
-    #         print(f'{type(out)}')
-
-    # TODO (matteochen): convert this into dict
-    def thunder_to_torch_float_dtype(tp: dtype, byte: int) -> torch.dtype:
-        if byte == 1:
-            raise AssertionError("Not implmented: 8 bit float")
-        # Dispatch flaot 16 type 1 from type 2
-        elif byte == 2:
-            if tp._name == thunder.bfloat16._name:
-                return torch.bfloat16
-            else:
-                return torch.float16
-        elif byte == 4:
-            return torch.float32
-        elif byte == 8:
-            return torch.float64
-        else:
-            raise AssertionError(f"Not supported byte = {byte}")
-
-    # TODO (matteochen): convert this into dict
-    def thunder_to_torch_int_dtype(byte: int) -> torch.dtype:
-        if byte == 1:
-            return torch.int8
-        elif byte == 2:
-            return torch.int16
-        elif byte == 4:
-            return torch.int32
-        elif byte == 8:
-            return torch.int64
-        else:
-            raise AssertionError(f"Not supported byte = {byte}")
 
     # TODO (matteochen): use more appropriate mock int and float
     def transform_input_tuple(t: tuple, level=0) -> tuple:
@@ -405,10 +385,13 @@ def benchmark_trace(
                         res.append(0 if e.value is None else e.value)
                 elif isinstance(e, FloatProxy):
                     res.append(0.0 if e.value is None else e.value)
+                # Transformer engine context object
+                elif hasattr(e, 'name') and isinstance(e, AnyProxy) and e.name.startswith('ctx_te'):
+                    res.append(cached_fw_te_ctx_out)
                 elif e is None:
                     res.append(None)
                 else:
-                    raise AssertionError(f"Input arg type not recognized: {type(e)}")
+                    raise AssertionError(f'Input arg type not recognized: {type(e)} with name: {e.name if hasattr(e, "name") else "unknown"} with value: {e}')
         return tuple(res)
 
     def transform_tensor(arg: TensorProxy) -> torch.Tensor:
@@ -425,9 +408,14 @@ def benchmark_trace(
         if torch_dtype is None:
             raise AssertionError(f'Unrecognized thunder dtype: {dtype}')
         if is_float_dtype(dtype):
+            # Handle fp8 for TE executor
+            # NOTE: standard torch.float8 will not be parsed correctly!
             tensor: torch.Tensor = torch.randn(
-                shape, dtype=torch_dtype, device=device.device_str(), requires_grad=requires_grad
+                shape, dtype=torch_dtype if dtype.bytes > 1 else torch.float32, device=device.device_str(), requires_grad=requires_grad
             )
+            if dtype.bytes == 1:
+                import transformer_engine.pytorch as te
+                tensor = te.float8_tensor.Float8Tensor.to_float8(tensor)
         elif is_signedinteger_dtype(dtype):
             tensor: torch.Tensor = torch.randint(
                 0, 8, shape, dtype=torch_dtype, device=device.device_str(), requires_grad=requires_grad
@@ -442,23 +430,50 @@ def benchmark_trace(
 
         return tensor
 
-    # print(f'BENCHMARKING:\n{trace}')
-    # def p(args):
-    #     for e in args:
-    #         if not isinstance(e, Sequence):
-    #             if isinstance(e, torch.Tensor):
-    #                 print(f'{e.size()}')
-    #             else:
-    #                 try:
-    #                     print(f'{e.name} -> {e}')
-    #                 except:
-    #                     print(f'{e}')
-    #         else:
-    #             print('rec')
-    #             p(e)
-    # p(trace.args)
-    # print('##################')
-    # p(input_args)
+    # We have to fix the saved_for_backward tuple as TE output TensorProxy don't have a correct one
+    def fix_te_backward_inputs(inputs: list):
+        saved_for_bw = []
+        for i, e in enumerate(inputs[0][0]):
+            # This tensor should be an uint8 https://github.com/NVIDIA/TransformerEngine/blob/4edcff5777be08b6f89658572c433aa8f36acf0d/transformer_engine/pytorch/module/linear.py#L366
+            if i == 1:
+                inputmat_t = torch.randint(0, 8, (e.shape), dtype=torch.uint8, device=e.device)
+                saved_for_bw.append(inputmat_t)
+            else:
+                saved_for_bw.append(e)
+
+        fixed_inputs_first_index = tuple([tuple(saved_for_bw), inputs[0][1]])
+        return fixed_inputs_first_index
+
+    # Trace real input args
+    input_args = []
+
+    # Check for correctness
+    if trace.bound_symbols[-1].sym.id != PrimIDs.RETURN:
+        raise AssertionError("Missing return statement")
+
+    if apply_del_last_used:
+        trace = del_last_used(trace)
+
+    # Enable TE fp8 autocast if needed
+    te_used = is_te_used(trace)
+    if te_used:
+        cached_te_fp8_autocast_value = trace._include_te_fp8_autocast
+        trace._include_te_fp8_autocast = True
+
+    # If transformer_engine executor is used and it is the bw function we have to recover the forward context from the forward trace
+    trace_signature = trace.signature_with_no_ctx()
+    if te_used and trace_signature.startswith('def backward') and 'fw_trace' not in kwargs:
+        raise RuntimeError('Set the associated forward trace in order to benchmark backward pass with TE executor')
+    elif te_used and trace_signature.startswith('def backward'):
+        # print('TE Benchmarking fw trace for bw')
+        fw_trace = kwargs.get('fw_trace', None)
+        if not isinstance(fw_trace, TraceCtx):
+            raise AssertionError(f'forward trace is not a TraceCtx. Received: {type(fw_trace)}')
+        # Run the fw trace and get the outputs
+        fw_output = benchmark_trace(fw_trace, apply_del_last_used=False)[2]
+        # Retrive the context from the fw pass output
+        # Currently it will contain an empty transformer_engineex.Context but might be useful for the future
+        cached_fw_te_ctx_out = fw_output[1][1][0]
 
     # Can we remove this check?
     # TODO (matteochen): use more appropriate mock int and float
@@ -481,8 +496,11 @@ def benchmark_trace(
     else:
         raise AssertionError("Unexpexcted args type")
 
-    if apply_del_last_used:
-        trace = del_last_used(trace)
+    if te_used and trace_signature.startswith('def backward'):
+        first_tuple = fix_te_backward_inputs(input_args)
+        input_args.pop(0)
+        input_args.insert(0, first_tuple)
+
 
     trace_tok = set_tracectx(trace)
 
@@ -520,6 +538,10 @@ def benchmark_trace(
                 print(f"Compiled trace execution still failed:\n{e}")
     finally:
         reset_tracectx(trace_tok)
+
+    # Restore the autocast value to not mess up the input trace
+    if te_used:
+        trace._include_te_fp8_autocast = cached_te_fp8_autocast_value
 
     return t, m, answer
 
@@ -569,3 +591,21 @@ def wrap_fn_with_exeuctor_compile_option(option, fn: Callable | None = None, *ar
         cd.compile_options[option.fusion_tag] = old_opt
 
     return out
+
+def print_trace_args(trace: TraceCtx):
+    print_args(trace.args)
+
+# Display nest sequence arguments
+def print_args(args):
+    print('\n\n###################################### Debug args')
+    def _print(args):
+        print('Sequence start')
+        for arg in args:
+            if isinstance(arg, Sequence):
+                _print(arg)
+            else:
+                tensor_shape = arg.shape if isinstance(arg, torch.Tensor) else None
+                print(f'{type(arg)} {tensor_shape if tensor_shape else ""}')
+        print('Sequence end')
+    _print(args)
+    print('###################################### Debug args\n')

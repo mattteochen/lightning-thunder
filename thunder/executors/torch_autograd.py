@@ -257,23 +257,10 @@ def split_forward_backward(computation_trc: TraceCtx, compile_data, compile_stat
 
         if autotune_type is None:
             # TODO Restore request for no rematerialization
-            # TODO (matteochen): remove these logs
-            c, m, _ = benchmark_trace(fw_extrace, iters=5)
-            log(f'before remat fw trace time = {c}, mem = {m}\n{fw_extrace}', level=LogLevel.INFO)
-            c, m, _ = benchmark_trace(bw_extrace, iters=5)
-            log(f'before remat bw trace time = {c}, mem = {m}', level=LogLevel.INFO)
             fw_extrace, bw_extrace = rematerialize_forward_and_backward(fw_extrace, bw_extrace)
-            c, m, _ = benchmark_trace(fw_extrace, iters=5)
-            log(f'after remat fw trace time = {c}, mem = {m}\n{fw_extrace}', level=LogLevel.INFO)
-            c, m, _ = benchmark_trace(bw_extrace, iters=5)
-            log(f'after remat bw trace time = {c}, mem = {m}', level=LogLevel.INFO)
         # Autotuner has been taken care of remat
         else:
-            # TODO (matteochen): remove this
-            c, m, _ = benchmark_trace(fw_extrace, iters=5)
-            log(f'after remat fw trace time = {c}, mem = {m}\n{fw_extrace}', level=LogLevel.INFO)
-            c, m, _ = benchmark_trace(bw_extrace, iters=5)
-            log(f'after remat bw trace time = {c}, mem = {m}', level=LogLevel.INFO)
+            pass
         fw_traces.append(fw_extrace)
         bw_traces.append(bw_extrace)
 
@@ -412,7 +399,9 @@ def split_forward_backward(computation_trc: TraceCtx, compile_data, compile_stat
                 if torchex not in to_benchmark:
                     to_benchmark.append(torchex)
                 # Verify that op is present in the trace
-                op_in_trace: bool = operation_in_trace(trace=computation_trc, op=ex_type)
+                # op_in_trace: bool = operation_in_trace(trace=computation_trc, op=ex_type)
+                # TODO (matteochen): currently it is bugged if op is not in trace
+                op_in_trace: bool = True
 
                 if (not to_benchmark and op_in_trace) or not op_in_trace:
                     log(
@@ -450,7 +439,7 @@ def split_forward_backward(computation_trc: TraceCtx, compile_data, compile_stat
                         continue
 
                     time_fw, mem_fw, _ = benchmark_trace(fw_extrace, iters=benchmark_iters, apply_del_last_used=False)
-                    time_bw, mem_bw, _ = benchmark_trace(bw_extrace, iters=benchmark_iters, apply_del_last_used=False)
+                    time_bw, mem_bw, _ = benchmark_trace(bw_extrace, iters=benchmark_iters, apply_del_last_used=False, fw_trace=fw_extrace)
                     tot_time = time_fw + time_bw
                     tot_mem = mem_fw + mem_bw
                     log(
@@ -475,7 +464,7 @@ def split_forward_backward(computation_trc: TraceCtx, compile_data, compile_stat
                 c, m , _ = benchmark_trace(best_fw_extrace, iters=benchmark_iters, apply_del_last_used=False)
                 log(
                         f"================================================================================ Before Autotune Tuning: Benchmark {ex_type} best fw_extrace (time = {c}, mem = {m}):\n{best_fw_extrace}", level=LogLevel.INFO)
-                c, m , _ = benchmark_trace(best_bw_extrace, iters=benchmark_iters, apply_del_last_used=False)
+                c, m , _ = benchmark_trace(best_bw_extrace, iters=benchmark_iters, apply_del_last_used=False, fw_trace=best_fw_extrace)
                 log(
                         f"================================================================================ Before Autotune Tuning: Benchmark {ex_type} best bw_extrace (time = {c}, mem = {m}):\n{best_bw_extrace}", level=LogLevel.INFO)
 

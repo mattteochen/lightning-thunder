@@ -27,22 +27,25 @@ with torch.device('cuda'):
     x = torch.randn(1 << 9, in_features, requires_grad=True)
 
     jmodel_def = thunder.jit(model)
-    jmodel_auto = thunder.jit(model, autotune_type='runtime', executors=['nvfuser', 'cudnn', 'torch', 'python'])
+    jmodel_auto = thunder.jit(model, autotune_type="runtime", executors=["nvfuser", "cudnn", "torch", "python"])
 
     y = jmodel_def(x)
     y = jmodel_auto(x)
 
     iters = 100
     print('Results thunder benchmark:')
-    traces = [
+    fw_traces = [
         thunder.last_traces(jmodel_def)[-1],
         thunder.last_traces(jmodel_auto)[-1],
+    ]
+    bw_traces = [
         thunder.last_backward_traces(jmodel_def)[-1],
         thunder.last_backward_traces(jmodel_auto)[-1],
     ]
-    labels = ['fw_def', 'fw_auto', 'bw_def', 'bw_auto']
-    thunder_fw_bw_benchmark(traces, labels, iters)
-    thunder_fw_bw_benchmark(traces, labels, iters, nvsight=True)
+    fw_labels = ["fw_def", "fw_auto"]
+    bw_labels = ["bw_def", "bw_auto"]
+    thunder_fw_bw_benchmark(fw_traces, bw_traces, fw_labels, bw_labels, iters)
+    # thunder_fw_bw_benchmark(traces, labels, iters, nvsight=True)
 
     callables = [jmodel_def, jmodel_auto]
     labels = ['def', 'auto']
@@ -52,5 +55,7 @@ with torch.device('cuda'):
     torch_total_benchmark(callables, labels, inputs, iters)
     torch_fw_bw_benchmark_nvsight(callables, labels, inputs, iters)
 
-    for t in traces:
+    for t in fw_traces:
+        print(f'{t}\n#########################################')
+    for t in bw_traces:
         print(f'{t}\n#########################################')

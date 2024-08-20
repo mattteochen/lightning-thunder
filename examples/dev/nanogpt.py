@@ -147,16 +147,17 @@ def run(target: str = 'runtime'):
         measure(jmodel_def, 'def')
 
         print('\n\nResults thunder benchmark:')
-        traces = [
+        fw_traces = [
             thunder.last_traces(jmodel_def)[-1],
             thunder.last_traces(jmodel_auto)[-1],
+        ]
+        bw_traces = [
             thunder.last_backward_traces(jmodel_def)[-1],
             thunder.last_backward_traces(jmodel_auto)[-1],
         ]
-        traces.reverse()
-        labels = ['fw_def', 'fw_auto', 'bw_def', 'bw_auto']
-        labels.reverse()
-        thunder_fw_bw_benchmark(traces, labels, 100)
+        fw_labels = ["fw_def", "fw_auto"]
+        bw_labels = ["bw_def", "bw_auto"]
+        thunder_fw_bw_benchmark(fw_traces, bw_traces, fw_labels, bw_labels, 20)
 
         measure_nvsight(jmodel_def, 'def')
         measure_nvsight(jmodel_auto, 'auto')

@@ -1,6 +1,6 @@
 import torch
 import thunder
-from thunder.backend_optimizer.optimizer import benchmark_trace
+from thunder.benchmarks.utils import thunder_fw_bw_benchmark
 
 class Model(torch.nn.Module):
     def __init__(self) -> None:
@@ -24,15 +24,18 @@ with torch.device('cuda'):
     print('deviation def:', (jmodel_def(q, k, v) - model(q, k, v)).abs().max().item())
     print('deviation auto:', (jmodel_auto(q, k, v) - model(q, k, v)).abs().max().item())
 
-    print('########################################')
-    c, m, o = benchmark_trace(thunder.last_traces(jmodel_def)[-1], apply_del_last_used=False, snapshot=True, snapshot_name='sdpa_def_fw', iters=10)
-    print(f'Executing default fw trace:\n{c} ms, {m / (2**30)} GB')
-    c, m, o = benchmark_trace(thunder.last_traces(jmodel_auto)[-1], apply_del_last_used=False, snapshot=True, snapshot_name='sdpa_auto_fw', iters=10)
-    print(f'Executing auto fw trace:\n{c} ms, {m / (2**30)} GB')
-    c, m, o = benchmark_trace(thunder.last_backward_traces(jmodel_def)[-1], apply_del_last_used=False, snapshot=True, snapshot_name='sdpa_def_bw', iters=10)
-    print(f'Executing default bw trace:\n{c} ms, {m / (2**30)} GB')
-    c, m, o = benchmark_trace(thunder.last_backward_traces(jmodel_auto)[-1], apply_del_last_used=False, snapshot=True, snapshot_name='sdpa_auto_bw', iters=10)
-    print(f'Executing auto bw trace:\n{c} ms, {m / (2**30)} GB')
+    iters = 100
+    fw_traces = [
+        thunder.last_traces(jmodel_def)[-1],
+        thunder.last_traces(jmodel_auto)[-1],
+    ]
+    bw_traces = [
+        thunder.last_backward_traces(jmodel_def)[-1],
+        thunder.last_backward_traces(jmodel_auto)[-1],
+    ]
+    fw_labels = ["fw_def", "fw_auto"]
+    bw_labels = ["bw_def", "bw_auto"]
+    thunder_fw_bw_benchmark(fw_traces, bw_traces, fw_labels, bw_labels, iters)
 
     print('\n\n\n\n\n\n')
     print(f'{thunder.last_traces(jmodel_def)[-1]}')

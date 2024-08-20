@@ -101,7 +101,7 @@ class OutputCandidate:
         self.tot_cost: float = cost
 
     def __repr__(self) -> str:
-        return f"Final output candidate: forward trace:\n{self.fw.__repr__()}\nFinal output candidate: backward trace:{self.bw.__repr__()}"
+        return f"Final output candidate: forward trace:\n{self.fw.__repr__()}\nFinal output candidate: backward trace:\n{self.bw.__repr__()}"
 
 
 # Benchmark only traces will contain traces after the rematerialization call with fw and bw calls, reproducing what will be the real traces after the autotune pass
@@ -273,11 +273,11 @@ class FusionPlacer_BeamSearch(PlacerBase):
                 pair_cost_time = 0
                 pair_cost_mem = 0
                 t, m, _ = benchmark_trace(fw, iters=self.benchmark_iters)
-                log(f"Pair fw time: {t}, mem: {m}", level=LogLevel.INFO)
+                log(f"Pair fw time: {t} ms, mem: {m/(2**30)} GB", level=LogLevel.INFO)
                 pair_cost_time = pair_cost_time + t
                 pair_cost_mem = pair_cost_mem + m
-                t, m, _ = benchmark_trace(bw, iters=self.benchmark_iters)
-                log(f"Pair bw time: {t}, mem: {m}", level=LogLevel.INFO)
+                t, m, _ = benchmark_trace(bw, iters=self.benchmark_iters, fw_trace=fw)
+                log(f"Pair bw time: {t} ms, mem: {m/(2**30)} GB", level=LogLevel.INFO)
                 pair_cost_time = pair_cost_time + t
                 pair_cost_mem = pair_cost_mem + m
 
@@ -310,18 +310,18 @@ class FusionPlacer_BeamSearch(PlacerBase):
                 label = list(pair_time.keys())[0]
                 # TODO (matteochen): remove the benchmark here as will done later on the bw pass
                 c, m, _ = benchmark_trace(trc_time, self.benchmark_iters)
-                log(
-                    f'Benchmark fw end: Trace = [{label}] (time = {c} ms, mem = {m / (2**30)} GB)":\n{trc_time}',
-                    level=LogLevel.INFO,
-                )
+                # log(
+                #     f'Benchmark fw end: Trace = [{label}] (time = {c} ms, mem = {m / (2**30)} GB)":\n{trc_time}',
+                #     level=LogLevel.INFO,
+                # )
                 self.debug_msg += (
                     f"Trace name = [{label}] - Target: TIME - Time = {c} ms - Mem = {m / (2**30)} GB\n{trc_time}\n\n"
                 )
                 c, m, _ = benchmark_trace(trc_mem, self.benchmark_iters)
-                log(
-                    f'Benchmark fw end: Trace = [{label}] (time = {c} ms, mem = {m / (2**30)} GB)":\n{trc_mem}',
-                    level=LogLevel.INFO,
-                )
+                # log(
+                #     f'Benchmark fw end: Trace = [{label}] (time = {c} ms, mem = {m / (2**30)} GB)":\n{trc_mem}',
+                #     level=LogLevel.INFO,
+                # )
                 self.debug_msg += (
                     f"Trace name = [{label}] - Target: MEM - Mem = {m / (2**30)} GB - Time = {c} ms\n{trc_mem}\n\n"
                 )
@@ -348,12 +348,12 @@ class FusionPlacer_BeamSearch(PlacerBase):
                 # Unpack the dict
                 label = list(pair.keys())[0]
                 trace = list(pair.values())[0]
-                trace_time, trace_mem, res = benchmark_trace(trace, self.benchmark_iters)
+                trace_time, trace_mem, res = benchmark_trace(trace, self.benchmark_iters, fw_trace=self.active_fw_trace_ctx[0])
                 self.debug_msg += f"Trace name = [{label}] - Target: TIME - Time = {trace_time} ms - Mem = {trace_mem / (2**30)} GB\n{trace}\n\n"
-                log(
-                    f'Benchmark trace (target TIME) "{label}" (time = {trace_time} ms, mem = {trace_mem / (2**30)} GB:\n{trace}',
-                    level=LogLevel.INFO,
-                )
+                # log(
+                #     f'Benchmark trace (target TIME) "{label}" (time = {trace_time} ms, mem = {trace_mem / (2**30)} GB:\n{trace}',
+                #     level=LogLevel.INFO,
+                # )
                 if trace_time < time_result.runtime:
                     time_result = BenchmarkResult(time=trace_time, memory=trace_mem, trace=trace, label=label, index=i)
 
@@ -363,26 +363,26 @@ class FusionPlacer_BeamSearch(PlacerBase):
                 label = list(pair.keys())[0]
                 trace = list(pair.values())[0]
 
-                trace_time, trace_mem, res = benchmark_trace(trace, self.benchmark_iters)
+                trace_time, trace_mem, res = benchmark_trace(trace, self.benchmark_iters, fw_trace=self.active_fw_trace_ctx[0])
                 del res
                 self.debug_msg += f"Trace name = [{label}] - Target: MEM - Mem = {trace_mem / (2**30)} GB - Time = {trace_time} ms\n{trace}\n\n"
-                log(
-                    f'Benchmark trace (target MEM) "{label}" (time = {trace_time} ms, mem = {trace_mem / (2**30)} GB:\n{trace}',
-                    level=LogLevel.INFO,
-                )
+                # log(
+                #     f'Benchmark trace (target MEM) "{label}" (time = {trace_time} ms, mem = {trace_mem / (2**30)} GB:\n{trace}',
+                #     level=LogLevel.INFO,
+                # )
                 if trace_mem < memory_result.memory:
                     memory_result = BenchmarkResult(
                         time=trace_time, memory=trace_mem, trace=trace, label=label, index=i
                     )
 
-            log(
-                f'Benchmark end: Best trace time "{time_result.label} (time = {time_result.runtime} ms)":\n{time_result.trace}',
-                level=LogLevel.INFO,
-            )
-            log(
-                f'Benchmark end: Best trace mem "{memory_result.label} (mem = {memory_result.memory / (2 ** 30)} GB)":\n{memory_result.trace}',
-                level=LogLevel.INFO,
-            )
+            # log(
+            #     f'Benchmark end: Best trace time "{time_result.label} (time = {time_result.runtime} ms)":\n{time_result.trace}',
+            #     level=LogLevel.INFO,
+            # )
+            # log(
+            #     f'Benchmark end: Best trace mem "{memory_result.label} (mem = {memory_result.memory / (2 ** 30)} GB)":\n{memory_result.trace}',
+            #     level=LogLevel.INFO,
+            # )
 
             # Here we have to recover the traces without the pass through remat in order to be compliant
             # with thunder flow as we might have request for no remat
@@ -594,7 +594,7 @@ class FusionPlacer_BeamSearch(PlacerBase):
                         if self.trace_type == TraceType.BW and self.active_fw_trace_ctx[0] is not None:
                             _, trc = rematerialize_forward_and_backward(self.active_fw_trace_ctx[0], trc)
                         # Now, benchmark
-                        t, m, _ = benchmark_trace(trc, self.benchmark_iters)
+                        t, m, _ = benchmark_trace(trc, self.benchmark_iters, fw_trace=self.active_fw_trace_ctx[0])
                         # Update results
                         if t < candidate_best_time.runtime:
                             candidate_best_time = BenchmarkResult(time=t, index=i)
@@ -640,7 +640,7 @@ class FusionPlacer_BeamSearch(PlacerBase):
                     trc, keys, placements = get_placed_trace(dict_time_strat, increasing_symbols)
                     if self.trace_type == TraceType.BW and self.active_fw_trace_ctx[0] is not None:
                         _, trc = rematerialize_forward_and_backward(self.active_fw_trace_ctx[0], trc)
-                    cost, mem, _ = benchmark_trace(trc, self.benchmark_iters)
+                    cost, mem, _ = benchmark_trace(trc, self.benchmark_iters, fw_trace=self.active_fw_trace_ctx[0])
                     log(f"Placed trace (cost = {cost} ms, mem = {mem/(2**30)} GB)\n{trc}", level=LogLevel.DEBUG)
                     if cost < best_res_time.runtime or (cost == best_res_time.runtime and mem < best_res_time.memory):
                         best_res_time = BenchmarkResult(time=cost, memory=mem, trace=trc)
@@ -829,6 +829,7 @@ class FusionPlacer_BeamSearch(PlacerBase):
             # Currently we are enabling one compile option at the time as testing all the permutations might need too much time.
             # TODO: Consider implementing patterns based on the executor under investingation
             if ex_compile_opts:
+                log(f'{ex.name} compile options: {ex_compile_opts}')
                 for opt in ex_compile_opts:
                     # Search only if we have an instruction related to the compile option
                     op_in_trace: bool = operation_in_trace(trace=self.trace, op=opt.symbol_tag)

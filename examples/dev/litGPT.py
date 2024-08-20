@@ -32,9 +32,17 @@ for test in layers:
 
             iters = 100
             print(f'Results thunder benchmark ({iters} iters):')
-            traces = [thunder.last_traces(jmodel_def)[-1], thunder.last_traces(jmodel_auto)[-1], thunder.last_backward_traces(jmodel_def)[-1], thunder.last_backward_traces(jmodel_auto)[-1]]
-            labels = ['fw_def', 'fw_auto', 'bw_def', 'bw_auto']
-            thunder_fw_bw_benchmark(traces, labels, iters)
+            fw_traces = [
+                thunder.last_traces(jmodel_def)[-1],
+                thunder.last_traces(jmodel_auto)[-1],
+            ]
+            bw_traces = [
+                thunder.last_backward_traces(jmodel_def)[-1],
+                thunder.last_backward_traces(jmodel_auto)[-1],
+            ]
+            fw_labels = ["fw_def", "fw_auto"]
+            bw_labels = ["bw_def", "bw_auto"]
+            thunder_fw_bw_benchmark(fw_traces, bw_traces, fw_labels, bw_labels, iters)
 
             print(f'\n\nResults torch fw bw benchmark ({iters} iters):')
             callables = [jmodel_def, jmodel_auto]
