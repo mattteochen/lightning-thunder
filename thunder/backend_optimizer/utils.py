@@ -394,27 +394,30 @@ def benchmark_trace(
     def build_static_args(sequence: Sequence, **kwargs):
         return transform_proxy_to_torch(sequence, level=0, **kwargs)
 
-    # We have to fix the saved_for_backward tuple as TE output TensorProxy don't have a correct one
-    def fix_te_backward_inputs(inputs: list):
-        saved_for_bw = []
-        for i, e in enumerate(inputs[0][0]):
-            # This tensor should be an uint8 https://github.com/NVIDIA/TransformerEngine/blob/4edcff5777be08b6f89658572c433aa8f36acf0d/transformer_engine/pytorch/module/linear.py#L366
-            if i == 1:
-                inputmat_t = e
-                if inputmat_t.dtype != torch.uint8:
-                    inputmat_t = torch.randint(0, 8, (e.shape), dtype=torch.uint8, device=e.device)
-                saved_for_bw.append(inputmat_t)
-            else:
-                saved_for_bw.append(e)
-
-        fixed_inputs_first_index = tuple([tuple(saved_for_bw), inputs[0][1]])
-        return fixed_inputs_first_index
-
     def TE_backward_trace_preprocessing():
         nonlocal input_args
-        # Due to the fw and bw split benchmarking we have to check the bw nature by looking for the bsym
+        # Due to the fw and bw split benchmarking we have to check the bw nature by looking at the bsym
         is_bw = is_te_ex_bw_used(trace)
-        # If transformer_engine executor is used and it is the bw function we have to recover the forward context from the forward trace
+        """
+        If transformer_engine executor is used and it is the bw function we have to recover the forward context and saved_for_backward tensors from the forward trace.
+        Why we can't generate saved_for_bw tensors from static compiation data? Yes we could but the static compilation data are broken. See the function below:
+
+            def fix_te_backward_inputs(inputs: list):
+                # inputs = old saved_for_backward
+                saved_for_bw = []
+                for i, e in enumerate(inputs[0][0]):
+                    # This tensor should be an uint8 https://github.com/NVIDIA/TransformerEngine/blob/4edcff5777be08b6f89658572c433aa8f36acf0d/transformer_engine/pytorch/module/linear.py#L366
+                    if i == 1:
+                        inputmat_t = e
+                        if inputmat_t.dtype != torch.uint8:
+                            inputmat_t = torch.randint(0, 8, (e.shape), dtype=torch.uint8, device=e.device)
+                        saved_for_bw.append(inputmat_t)
+                    else:
+                        saved_for_bw.append(e)
+
+                fixed_inputs_first_index = tuple([tuple(saved_for_bw), inputs[0][1]])
+                return fixed_inputs_first_index
+        """
         if is_bw and 'fw_trace' not in kwargs:
             raise RuntimeError('Set the associated forward trace in order to benchmark backward pass with TE executor')
         elif is_bw:
@@ -422,19 +425,60 @@ def benchmark_trace(
             fw_trace = kwargs.get('fw_trace', None)
             if not isinstance(fw_trace, TraceCtx):
                 raise AssertionError(f'forward trace is not a TraceCtx. Received: {type(fw_trace)}')
-            # Run the fw trace and get the outputs
+            # Run the fw trace and get the runtime outputs
             fw_output = benchmark_trace(fw_trace, apply_del_last_used=False)[2]
-            # Retrive the context from the fw pass output
-            # Currently it will contain an empty transformer_engineex.Context but might be useful for the future
-            cached_fw_te_ctx_out = fw_output[1][1][0]
 
-            # After got the Context object from the fw pass we con build the input args list for the bw pass
-            input_args = build_static_args(trace.args, cached_fw_te_ctx_out=cached_fw_te_ctx_out, te_used=True)
+            # Check if the fw trace is a final trace or an intermediate one (used for single trace region benchmarks)
+            sig = fw_trace.signature_with_no_ctx()
+            is_fw_final_trace = sig.startswith('def augmented')
 
-            # Fix TE arguments for benchmark
-            first_tuple = fix_te_backward_inputs(input_args)
-            input_args.pop(0)
-            input_args.insert(0, first_tuple)
+            # Filter the output tuple
+            saved_for_bw_C0 = fw_output[1] if not is_fw_final_trace else fw_output[1][0]
+
+            # After got the Context object from the fw pass we can build the input args list for the bw pass
+            # The underlying API will generate TE.Floa8 tensors also hence it must know if we are dealing with torch.float8 or TE.Float8
+            input_args = build_static_args(trace.args, te_used=True)
+
+            # Now, we expect that if the fw trace is a final trace also the bw trace is a final one. And vice versa
+            if is_fw_final_trace:
+                # Swap saved_for_backward_traces
+                saved_for_bw = saved_for_bw_C0, fw_output[1][1] # Saved for backward tuple unpacks in (C0, _)
+                # Subsitute the static inputs for saved_for_backward with the runtime ones
+                input_args.pop(0)
+                input_args.insert(0, saved_for_bw)
+            else:
+                # Transformer Engine single trace region backward trace receives as input the saved_for_bw tensors plus some others.
+                # They are indexed like [saved_for_bw, others...]
+                # NOTE: This may change in the future
+                """
+                Example:
+                    @transformer_engine.fp8_autocast(fp8_recipe=te_fp8_recipe)
+                    @torch.no_grad()
+                    @no_autocast
+                    def _linear_grad(a, w, b):
+                      # a: "cuda:0 f32[768, 4096]"
+                      # w: "cuda:0 f32[4096, 4096]"
+                      # b: "cuda:0 f32[4096]"
+                      (t5, (t0, t1, t2, t3, _, t4), ctx_te_2) = te_linear_2(a, w, b)
+                      return (t5, [ctx_te_2, t0, t1, t2, t3, t4])
+                    Trace
+                    import torch
+                    from thunder.executors.torchex import no_autocast
+
+                    @torch.no_grad()
+                    @no_autocast
+                    def linear_backward(ctx_te_2, t0, t1, t2, t3, t4, t6):
+                      (t7, t8, t9) = te_functional_linear_backward((768, 4096), (4096, 4096), (4096,), ctx_te_2, (t0, t1, t2, t3, None, t4), t6)
+                      return {'a': t7, 'w': t8, 'bias': t9}
+
+                See how the backward trace need t6 as argument recoveered from the static args
+                """
+                updated_input_args = [t for t in saved_for_bw_C0]
+                updated_input_args.extend(input_args[len(updated_input_args):])
+                input_args = updated_input_args
+        # Forward pass
+        else:
+            input_args = build_static_args(trace.args)
 
     def SDPA_backward_trace_preprocessing():
         nonlocal input_args
@@ -449,7 +493,6 @@ def benchmark_trace(
         # Check if the fw trace is a final trace or an intermediate one (used for single trace region benchmarks)
         sig = fw_trace.signature_with_no_ctx()
         is_fw_final_trace = sig.startswith('def augmented')
-        print(f'Is backward sdpa final trace? {is_fw_final_trace}')
 
         # Filter the output tuple
         saved_for_bw_C0 = fw_output[1] if not is_fw_final_trace else fw_output[1][0]
@@ -461,11 +504,13 @@ def benchmark_trace(
         if is_fw_final_trace:
             # Swap saved_for_backward_traces
             saved_for_bw = saved_for_bw_C0, fw_output[1][1] # Saved for backward tuple unpacks in (C0, _)
+            # Subsitute the static inputs for saved_for_backward with the runtime ones
             input_args.pop(0)
             input_args.insert(0, saved_for_bw)
         else:
-            # SDPA single region backward trace receives as input the saved_for_bw tensors plus some others.
+            # SDPA single trace region backward trace receives as input the saved_for_bw tensors plus some others.
             # They are indexed like [saved_for_bw, others...]
+            # NOTE: This may change in the future
             """
             Example:
                 @torch.no_grad()
@@ -489,8 +534,6 @@ def benchmark_trace(
             """
             updated_input_args = [t for t in saved_for_bw_C0]
             updated_input_args.extend(input_args[len(updated_input_args):])
-            # print('Updated input_args')
-            # print_args(updated_input_args)
             input_args = updated_input_args
 
     # Input args for the trace to benchmark
@@ -519,7 +562,6 @@ def benchmark_trace(
     # "Default" trace, parse the input args...(input args parsing will be performed by the TE trace handling)
     else:
         input_args: list = build_static_args(trace.args)
-
 
     trace_tok = set_tracectx(trace)
 
@@ -612,10 +654,10 @@ def wrap_fn_with_exeuctor_compile_option(option, fn: Callable | None = None, *ar
     return out
 
 def print_trace_args(trace: TraceCtx):
-    print_args(trace.args)
+    print_nested_sequence(trace.args)
 
 # Display nest sequence arguments
-def print_args(args):
+def print_nested_sequence(args, show_dicts=False):
 
     def is_tensor(t):
         return isinstance(t, torch.Tensor) or isinstance(t, TensorProxy)
@@ -633,7 +675,7 @@ def print_args(args):
                 tensor_shape = arg.shape if is_tensor(arg) else None
                 dtype = arg.dtype if is_tensor(arg) else None
                 name = arg.name if isinstance(arg, TensorProxy) else ""
-                print(f'{tabs}{name + ": " if name else ""}{type(arg)}{arg if isinstance(arg, dict) else ""} {tensor_shape if tensor_shape else ""} {dtype if dtype else ""}')
+                print(f'{tabs}{name + ": " if name else ""}{type(arg)}{arg if isinstance(arg, dict) and show_dicts else ""} {tensor_shape if tensor_shape else ""} {dtype if dtype else ""}')
         print(f'Level {level} end')
     _print(args, 0)
     print('###################################### Debug args\n')
@@ -674,6 +716,7 @@ def transform_tensor(arg: TensorProxy, **kwargs) -> torch.Tensor:
         raise AssertionError(f'Unrecognized thunder dtype: {dtype}')
     if is_float_dtype(dtype):
         # Use TE Float8 if TE is enabled, it has float32 ad torch dtype
+        # NOTE: if we have a standalone torch.float8 inside the args and it is not the TE Float8 it won't be parsed correctly for now
         te_used = kwargs.get('te_used', False)
         if te_used:
             tensor: torch.Tensor = torch.randn(
@@ -703,10 +746,11 @@ def transform_tensor(arg: TensorProxy, **kwargs) -> torch.Tensor:
 
 # TODO (matteochen): use more appropriate mock int and float
 def transform_proxy_to_torch(sequence: Sequence, level=0, **kwargs) -> tuple | list:
+    from thunder.executors.transformer_engineex import Context as C
     res = []
     for e in sequence:
         if type(e) is tuple:
-            res.append(transform_proxy_to_torch(e, level + 1))
+            res.append(transform_proxy_to_torch(e, level + 1, **kwargs))
         else:
             if isinstance(e, TensorProxy):
                 res.append(transform_tensor(e, **kwargs))
@@ -717,11 +761,22 @@ def transform_proxy_to_torch(sequence: Sequence, level=0, **kwargs) -> tuple | l
                     res.append(0 if e.value is None else e.value)
             elif isinstance(e, FloatProxy):
                 res.append(0.0 if e.value is None else e.value)
-            # Transformer engine context object
+            # Transformer engine Context object
+            #
+            # This instruction will populate the args with a dummy context which is not correct in theory.
+            # For the benchmark purpose (where this fn is currently used) this error will not impact on the runtime correctness as at the end we 
+            # will use the cached runtime contexts from the forward pass.
+            # We need this only to generate a context for the static inputs (which are discarded afterwards).
+            #
+            # Backward args: (saved_for_backward, cotangents)
+            # saved_for_backward -> replaced by the runtime tuple
+            # cotangents -> static inputs will be used
+            # If the static input generator will be capable to generate only the cotangents then branch will not be used anymore
+            #
+            # Currently an option to fill a custom maybe real context is left.
             elif hasattr(e, 'name') and isinstance(e, AnyProxy) and e.name.startswith('ctx_te'):
-                context = kwargs.get('cached_fw_te_ctx_out', None)
-                assert context is not None
-                res.append(context)
+                required_context = kwargs.get('cached_fw_te_ctx_out', None)
+                res.append(required_context if required_context is not None else C())
             elif e is None:
                 res.append(None)
             else:

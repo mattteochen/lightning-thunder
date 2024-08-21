@@ -7,11 +7,12 @@ class Module(torch.nn.Module):
         super().__init__()
         self.linear = torch.nn.Sequential(
             torch.nn.Linear(in_features, out_features),
+            torch.nn.Linear(out_features, in_features),
+            torch.nn.Linear(in_features, out_features),
         )
 
     def forward(self, x: torch.Tensor):
-        a = x + x
-        return self.linear(a)
+        return self.linear(x)
 
 with torch.device('cuda'):
     m = 1
@@ -24,7 +25,7 @@ with torch.device('cuda'):
     jmodel_auto = thunder.jit(
         model,
         autotune_type="runtime",
-        executors=["nvfuser", "transformer_engine", "cudnn", "torch"],
+        executors=["nvfuser", "transformer_engine", ],
         use_cudagraphs=False,
     )
 
