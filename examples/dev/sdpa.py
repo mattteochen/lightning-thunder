@@ -4,7 +4,7 @@ from thunder.benchmarks.utils import thunder_fw_bw_benchmark
 
 dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
 torch.set_default_dtype(dtype)
-print(f'Script data type: {dtype}')
+print(f'Script data type: {dtype}\n')
 
 class Model(torch.nn.Module):
     def __init__(self) -> None:
