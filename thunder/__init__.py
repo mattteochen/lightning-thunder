@@ -339,6 +339,9 @@ def jit(
             # Remove python and cudagraph
             executors = [ex for ex in executors if ex.name != 'python' and ex.name != 'cudagraphex']
 
+        from thunder.backend_optimizer.utils import reorder_executors_list
+        executors = reorder_executors_list(executors)
+
     # Resolve names of executors
     executors = resolve_executors(executors)
 

@@ -782,3 +782,27 @@ def transform_proxy_to_torch(sequence: Sequence, level=0, **kwargs) -> tuple | l
             else:
                 raise AssertionError(f'Input arg type not recognized: {type(e)} with name: {e.name if hasattr(e, "name") else "unknown"} with value: {e}')
     return tuple(res) if level > 0 else res
+
+def reorder_executors_list(executors: Sequence):
+    from thunder.backend_optimizer.optimizer import get_fw_bw_split_backends_options
+
+    reordered = []
+    options = get_fw_bw_split_backends_options()
+
+    are_inputs_names = isinstance(executors[0], str)
+
+    # Put these in front to be picked up by _get_gradfn_and_executor
+    for _, v in options.items():
+        print(v)
+        for ex in v:
+            if are_inputs_names:
+                if ex.name in executors:
+                    reordered.append(ex.name)
+            elif ex in executors:
+                reordered.append(ex)
+
+    # Add others
+    for ex in executors:
+        if ex not in reordered:
+            reordered.append(ex)
+    return reordered
