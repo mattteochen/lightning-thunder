@@ -235,7 +235,6 @@ def make_aug_forward_and_backward(bsym: BoundSymbol) -> tuple[Callable, Callable
             fw_time, fw_mem, _ = benchmark_trace(fw_trace, iters=20, apply_del_last_used=False)
             bw_time, bw_mem, _ = benchmark_trace(bw_trace, iters=20, apply_del_last_used=False, fw_trace=fw_trace)
             cost = fw_time + bw_time if cd.compile_options['autotune_type'] == OptimizerType.RUNTIME else fw_mem + bw_mem
-            print('cost', cost)
             if cost < best.cost:
                 best = SplitFwBwBenchmarkUtils(cost = cost, fw_fn = fw_fn, bw_fn = bw_fn, executor = b)
 
