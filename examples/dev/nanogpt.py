@@ -42,7 +42,7 @@ def run(target: str = 'runtime'):
     # model init
     gptconf = GPTConfig(
         block_size = block_size, # how far back does the model look? i.e. context size
-        n_layer = 12, n_head = 12, n_embd = 768, # size of the model
+        n_layer = 4, n_head = 12, n_embd = 768, # size of the model
         dropout = 0, # for determinism
         bias = bias,
     )
@@ -51,7 +51,7 @@ def run(target: str = 'runtime'):
 
     jmodel_def = thunder.jit(model)
     # Currently sdpa does not work?
-    jmodel_auto = thunder.jit(model, autotune_type=target, executors = ['torchcompile', 'nvfuser', 'cudnn', 'sdpa', 'torch', 'python'], use_cudagraphs=False)
+    jmodel_auto = thunder.jit(model, autotune_type=target, executors = ['torchcompile', 'nvfuser', 'cudnn', 'sdpa'], use_cudagraphs=False)
 
     if compile:
         print("Compiling model...")
@@ -157,7 +157,7 @@ def run(target: str = 'runtime'):
         ]
         fw_labels = ["fw_def", "fw_auto"]
         bw_labels = ["bw_def", "bw_auto"]
-        thunder_fw_bw_benchmark(fw_traces, bw_traces, fw_labels, bw_labels, 20)
+        thunder_fw_bw_benchmark(fw_traces, bw_traces, fw_labels, bw_labels, 100)
 
         measure_nvsight(jmodel_def, 'def')
         measure_nvsight(jmodel_auto, 'auto')

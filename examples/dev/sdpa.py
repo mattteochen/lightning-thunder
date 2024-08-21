@@ -43,9 +43,6 @@ with torch.device('cuda'):
     print('Thunder benchmark:')
     thunder_fw_bw_benchmark(fw_traces, bw_traces, fw_labels, bw_labels, iters)
 
-    # print('\n\nThunder benchmark:')
-    # torch_total_benchmark([jmodel_def, jmodel_auto], ['def', 'auto'], [(q, k, v), (q, k, v)], iters)
-
     print('\n\n\n\n\n\n')
     print(f'{thunder.last_traces(jmodel_def)[-1]}')
     print('###############################################################################')
@@ -55,3 +52,7 @@ with torch.device('cuda'):
     print(f'{thunder.last_backward_traces(jmodel_def)[-1]}')
     print('###############################################################################')
     print(f'{thunder.last_backward_traces(jmodel_auto)[-1]}')
+
+    print('\nTorch benchmark:')
+    bench(jmodel_def, 'def', iters)
+    bench(jmodel_auto, 'auto', iters)

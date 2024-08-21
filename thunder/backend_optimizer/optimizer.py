@@ -19,7 +19,7 @@ def get_fw_bw_split_backends_options(bsym: BoundSymbol | None = None) -> list | 
     #Current configuration
     options: dict[str, list] = {
         # TODO: filter out TE only if requested
-        'linear': [transformer_engine_ex],
+        # 'linear': [transformer_engine_ex],
         'scaled_dot_product_attention': [sdpa_ex, cudnn_ex, fa3_ex],
     }
 

@@ -224,9 +224,9 @@ def make_aug_forward_and_backward(bsym: BoundSymbol) -> tuple[Callable, Callable
         backends = list(requested_executors_list_for_bsym)
 
         from thunder.backend_optimizer.optimizer import log, LogLevel
-        log(f'Search space for {bsym.sym.name}: {backends}', level=LogLevel.DEBUG)
+        log(f'Search space for {bsym.sym.name}: {backends}', level=LogLevel.INFO)
         for b in backends:
-            log(f'Benchmarking executor {b.name} for {bsym.sym.name}', level=LogLevel.DEBUG)
+            log(f'Benchmarking executor {b.name} for {bsym.sym.name}', level=LogLevel.INFO)
             # Let downstream fn to pick up this
             requested_executors_list_for_bsym.remove(b)
             requested_executors_list_for_bsym.insert(0, b)
@@ -240,7 +240,7 @@ def make_aug_forward_and_backward(bsym: BoundSymbol) -> tuple[Callable, Callable
 
         assert best.cost != float('inf')
         from thunder.backend_optimizer.optimizer import log
-        log(f'Best executor for symbol [{bsym.output.name} = {bsym.sym.name}]: {best.executor.name}', level=LogLevel.DEBUG)
+        log(f'Best executor for symbol [{bsym.output.name} = {bsym.sym.name}]: {best.executor.name}', level=LogLevel.INFO)
 
         # Update the compile options
         cd.compile_options["executors_placed_by_fw_bw_split"].add(best.executor)
