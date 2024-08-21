@@ -137,13 +137,14 @@ def update_bw_from_forward_optimization(*, fw: TraceCtx, bw:TraceCtx) -> TraceCt
     return bw
 
 def split_forward_backward(computation_trc: TraceCtx, compile_data, compile_stats, /, *flat_args):
+    from thunder.backend_optimizer.optimizer import TraceType, BackendOptimizer
+    from thunder.backend_optimizer.utils import update_compile_options_executor_list_after_fw_bw_split
     from thunder.core.rematerialization import rematerialize_all_gather, rematerialize_forward_and_backward
     from thunder.core.transforms import forward_and_backward_from_trace
     from thunder.distributed.transforms import FSDPCommBucketing
     from thunder.distributed.utils import sort_data_parallel_syncs, sort_waits, sort_communication_ops
     from thunder.executors.passes import del_last_used, transform_for_execution, autotune_transform_for_execution
     from thunder.visualizer.visualizer_helper import Visualizer
-    from thunder.backend_optimizer.optimizer import log, LogLevel, TraceType, BackendOptimizer, OptimizerType, benchmark_trace
 
     utils.check(compile_data is not None, lambda: "`compile_data` is required")
     # NOTE: This function is rather slow, so it's intended to be used
@@ -169,6 +170,10 @@ def split_forward_backward(computation_trc: TraceCtx, compile_data, compile_stat
     # not any other container type. So we need to flatten the outputs of
     # the forward trace and inputs of the backward trace.
     fw_trace, bw_trace = forward_and_backward_from_trace(primal_trace, torch_autograd=True)
+
+    # Update the autotuned executors list
+    if autotune_type:
+        update_compile_options_executor_list_after_fw_bw_split()
 
     fw_traces = [fw_trace]
     bw_traces = [bw_trace]

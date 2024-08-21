@@ -2,33 +2,34 @@ import torch
 import thunder
 from thunder.benchmarks.utils import thunder_fw_bw_benchmark
 
-torch.set_default_dtype(torch.bfloat16)
+dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
+torch.set_default_dtype(dtype)
+print(f'Script data type: {dtype}')
 
 class Model(torch.nn.Module):
     def __init__(self) -> None:
         super().__init__()
 
-    def forward(self, query, key, value, q_l, k_l, v_l):
+    def forward(self, query, key, value):
         a = torch.nn.functional.scaled_dot_product_attention(query, key, value)
-        b = torch.nn.functional.scaled_dot_product_attention(q_l, k_l, v_l)
-        return a, b
+        # Make different inputs as happens in a real model
+        b = torch.nn.functional.scaled_dot_product_attention(query+query, key+key, value+value)
+        c = torch.nn.functional.scaled_dot_product_attention(query+query, key+key, value+value)
+        d = torch.nn.functional.scaled_dot_product_attention(query+query, key+key, value+value)
+        return a * b + c - d
 
 with torch.device('cuda'):
     model = Model()
 
     jmodel_def = thunder.jit(model)
-    jmodel_auto = thunder.jit(model, autotune_type='runtime', executors = ['nvfuser', 'sdpa', 'cudnn', 'torch', 'python'])
+    jmodel_auto = thunder.jit(model, autotune_type='runtime', executors = ['nvfuser', 'cudnn', 'sdpa'], use_cudagraphs=False)
 
     q = torch.rand(32, 8, 128, 64*1, requires_grad=True)
     k = torch.rand(32, 8, 128, 64*1, requires_grad=True)
     v = torch.rand(32, 8, 128, 64*1, requires_grad=True)
 
-    q_l = torch.rand(32, 8, 128, 64*1, requires_grad=True)
-    k_l = torch.rand(32, 8, 128, 64*1, requires_grad=True)
-    v_l = torch.rand(32, 8, 128, 64*1, requires_grad=True)
-
-    jmodel_def(q, k, v, q_l, k_l, v_l)
-    jmodel_auto(q, k, v, q_l, k_l, v_l)
+    jmodel_def(q, k, v)
+    jmodel_auto(q, k, v)
 
     iters = 100
     fw_traces = [

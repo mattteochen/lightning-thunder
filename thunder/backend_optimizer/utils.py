@@ -1,5 +1,6 @@
 from collections.abc import Callable, Hashable, Sequence
 from typing import Any
+from thunder.core.compile_data import get_compile_data
 from thunder.core.dtypes import to_torch_dtype
 from thunder.core.prims import PrimIDs
 from thunder.core.proxies import AnyProxy, CollectionProxy, FloatProxy, IntegerProxy, Proxy, TensorProxy, Variable, variableify
@@ -11,6 +12,7 @@ import thunder.core.transforms as transforms
 from itertools import chain
 import torch
 
+# Maybe we can use id(s)
 def sequence_hash(s: Sequence) -> str:
     def rec(s) -> str:
         name = "["
@@ -258,8 +260,30 @@ def operation_in_trace(*, trace: TraceCtx, op: str) -> bool:
 def is_te_used(trace: TraceCtx) -> bool:
     from thunder.executors.transformer_engineex import linear_bound_symbol_name_prefix
     from thunder.executors.transformer_engineex import te_functional_linear_backward_name
+
     for bsym in trace.bound_symbols:
-        if bsym.sym.name.startswith(linear_bound_symbol_name_prefix) or bsym.sym.name.startswith(te_functional_linear_backward_name):
+        if (
+            bsym.sym.name.startswith(linear_bound_symbol_name_prefix)
+            or bsym.sym.name == te_functional_linear_backward_name
+        ):
+            return True
+    return False
+
+def is_te_ex_bw_used(trace: TraceCtx) -> bool:
+    from thunder.executors.transformer_engineex import te_functional_linear_backward_name
+    for bsym in trace.bound_symbols:
+        if bsym.sym.name == te_functional_linear_backward_name:
+            return True
+    return False
+
+def is_sdpa_ex_bw_used(trace: TraceCtx) -> bool:
+    from thunder.executors.sdpaex import (
+        sdpaex_scaled_dot_product_efficient_attention_backward_name as n1,
+        sdpafx_scaled_dot_product_efficient_attention_backward_name as n2,
+    )
+
+    for bsym in trace.bound_symbols:
+        if bsym.sym.name == n1 or bsym.sym.name == n2:
             return True
     return False
 
@@ -276,9 +300,6 @@ def benchmark_trace(
 ) -> tuple[float, float, Any]:
     from thunder.executors.passes import del_last_used
     import inspect
-
-    # In order to benchmark traces with TE enabled, the backward pass needs the context object returned from the forward trace
-    cached_fw_te_ctx_out = None
 
     def compute_time_cost_nvsight(fn: Callable, iters: int, *args) -> tuple[float, float, Any]:
         try:
@@ -302,9 +323,8 @@ def benchmark_trace(
             return float("inf"), float("inf"), None
         except Exception as e:
             import inspect
-
             trc = inspect.getsource(fn)
-            print(f"#NVSIGHT FN EXECUTION FAILED:\n{trc}")
+            print(f"#Trace execution failed for nvsight (error: {e}):\n{trc}")
             raise e
 
     def clone_args(args):
@@ -321,6 +341,7 @@ def benchmark_trace(
 
     def compute_time_cost_ms(fn: Callable, repr: str, iters: int, *args) -> tuple[float, float, Any]:
         try:
+            current_iter = 0
             warm_up_iters = 50
             out = None
 
@@ -348,6 +369,7 @@ def benchmark_trace(
             end_events = [torch.cuda.Event(enable_timing=True) for _ in range(iters)]
             torch.cuda.synchronize()
             for i in range(iters):
+                current_iter = i
                 cloned_args = clone_args(args)
                 torch.cuda.reset_peak_memory_stats(torch.cuda.current_device())
                 torch.cuda.empty_cache()
@@ -366,73 +388,11 @@ def benchmark_trace(
             tot_time = sum(times) / iters
             return tot_time, max_allocated_bytes, out
         except Exception as e:
-            print(f"#FN EXECUTION FAILED:\n{repr}")
+            print(f"#Trace execution failed at iter {current_iter} (error: {e})\n{repr}")
             raise e
 
-    # TODO (matteochen): use more appropriate mock int and float
-    def transform_input_sequence(sequence: Sequence, level=0) -> tuple | list:
-        res = []
-        for e in sequence:
-            if type(e) is tuple:
-                res.append(transform_input_sequence(e, level + 1))
-            else:
-                if isinstance(e, TensorProxy):
-                    res.append(transform_tensor(e))
-                elif isinstance(e, IntegerProxy):
-                    if e.python_type is bool:
-                        res.append(False if e.value is None else e.value)
-                    else:
-                        res.append(0 if e.value is None else e.value)
-                elif isinstance(e, FloatProxy):
-                    res.append(0.0 if e.value is None else e.value)
-                # Transformer engine context object
-                elif hasattr(e, 'name') and isinstance(e, AnyProxy) and e.name.startswith('ctx_te'):
-                    res.append(cached_fw_te_ctx_out)
-                elif e is None:
-                    res.append(None)
-                else:
-                    raise AssertionError(f'Input arg type not recognized: {type(e)} with name: {e.name if hasattr(e, "name") else "unknown"} with value: {e}')
-        return tuple(res) if level > 0 else res
-
-    def transform_tensor(arg: TensorProxy) -> torch.Tensor:
-        from thunder.core.dtypes import is_float_dtype, is_signedinteger_dtype, is_boolean_dtype
-
-        # TODO (matteochen): Missing parallel and fsdp handling...
-        # TODO (matteochen): Missing support for meta types ...
-        dtype = arg.dtype
-        shape = arg.shape
-        device = arg.device
-        requires_grad = arg.requires_grad
-        torch_dtype = to_torch_dtype(dtype)
-        if torch_dtype is None:
-            raise AssertionError(f'Unrecognized thunder dtype: {dtype}')
-        if is_float_dtype(dtype):
-            # Use TE Float8 if TE is enabled, it has float32 ad torch dtype
-            if te_used:
-                tensor: torch.Tensor = torch.randn(
-                    shape, dtype=torch_dtype if dtype.bytes > 1 else torch.float32, device=device.device_str(), requires_grad=requires_grad
-                )
-                if dtype.bytes == 1:
-                    import transformer_engine.pytorch as te
-                    tensor = te.float8_tensor.Float8Tensor.to_float8(tensor)
-            # Support standard float tensors
-            else:
-                tensor: torch.Tensor = torch.randn(
-                    shape, dtype=torch_dtype, device=device.device_str(), requires_grad=requires_grad
-                )
-        elif is_signedinteger_dtype(dtype):
-            tensor: torch.Tensor = torch.randint(
-                0, 8, shape, dtype=torch_dtype, device=device.device_str(), requires_grad=requires_grad
-            )
-        elif is_boolean_dtype(dtype):
-            # TODO (matteochen): maybe random?
-            tensor: torch.Tensor = torch.zeros(
-                *shape, dtype=torch.bool, device=device.device_str(), requires_grad=requires_grad
-            )
-        else:
-            raise AssertionError(f"dtype {dtype} not supported yet")
-
-        return tensor
+    def build_static_args(sequence: Sequence, **kwargs):
+        return transform_proxy_to_torch(sequence, level=0, **kwargs)
 
     # We have to fix the saved_for_backward tuple as TE output TensorProxy don't have a correct one
     def fix_te_backward_inputs(inputs: list):
@@ -450,6 +410,92 @@ def benchmark_trace(
         fixed_inputs_first_index = tuple([tuple(saved_for_bw), inputs[0][1]])
         return fixed_inputs_first_index
 
+    def TE_backward_trace_preprocessing():
+        nonlocal input_args
+        # Due to the fw and bw split benchmarking we have to check the bw nature by looking for the bsym
+        is_bw = is_te_ex_bw_used(trace)
+        # If transformer_engine executor is used and it is the bw function we have to recover the forward context from the forward trace
+        if is_bw and 'fw_trace' not in kwargs:
+            raise RuntimeError('Set the associated forward trace in order to benchmark backward pass with TE executor')
+        elif is_bw:
+            # print('TE Benchmarking fw trace for bw')
+            fw_trace = kwargs.get('fw_trace', None)
+            if not isinstance(fw_trace, TraceCtx):
+                raise AssertionError(f'forward trace is not a TraceCtx. Received: {type(fw_trace)}')
+            # Run the fw trace and get the outputs
+            fw_output = benchmark_trace(fw_trace, apply_del_last_used=False)[2]
+            # Retrive the context from the fw pass output
+            # Currently it will contain an empty transformer_engineex.Context but might be useful for the future
+            cached_fw_te_ctx_out = fw_output[1][1][0]
+
+            # After got the Context object from the fw pass we con build the input args list for the bw pass
+            input_args = build_static_args(trace.args, cached_fw_te_ctx_out=cached_fw_te_ctx_out, te_used=True)
+
+            # Fix TE arguments for benchmark
+            first_tuple = fix_te_backward_inputs(input_args)
+            input_args.pop(0)
+            input_args.insert(0, first_tuple)
+
+    def SDPA_backward_trace_preprocessing():
+        nonlocal input_args
+        if 'fw_trace' not in kwargs:
+            raise RuntimeError('Set the associated forward trace in order to benchmark backward pass with sdpa executor')
+        fw_trace = kwargs.get('fw_trace', None)
+        if not isinstance(fw_trace, TraceCtx):
+            raise AssertionError(f'forward trace is not a TraceCtx. Received: {type(fw_trace)}')
+        # Run the fw trace and get the outputs
+        fw_output = benchmark_trace(fw_trace, apply_del_last_used=False)[2]
+
+        # Check if the fw trace is a final trace or an intermediate one (used for single trace region benchmarks)
+        sig = fw_trace.signature_with_no_ctx()
+        is_fw_final_trace = sig.startswith('def augmented')
+        print(f'Is backward sdpa final trace? {is_fw_final_trace}')
+
+        # Filter the output tuple
+        saved_for_bw_C0 = fw_output[1] if not is_fw_final_trace else fw_output[1][0]
+
+        # Retrieve the compile time arguments
+        input_args = build_static_args(trace.args)
+
+        # Now, we expected that if the fw trace is a final trace also the bw trace is a final one. And vice versa
+        if is_fw_final_trace:
+            # Swap saved_for_backward_traces
+            saved_for_bw = saved_for_bw_C0, fw_output[1][1] # Saved for backward tuple unpacks in (C0, _)
+            input_args.pop(0)
+            input_args.insert(0, saved_for_bw)
+        else:
+            # SDPA single region backward trace receives as input the saved_for_bw tensors plus some others.
+            # They are indexed like [saved_for_bw, others...]
+            """
+            Example:
+                @torch.no_grad()
+                @no_autocast
+                def _cudnn_sdpa_bwd_wrapper(query, key, value, attn_mask, dropout_p=0.0, is_causal=False, *, scale=None):
+                  # query: "cuda:0 bf16[32, 8, 128, 64]"
+                  # key: "cuda:0 bf16[32, 8, 128, 64]"
+                  # value: "cuda:0 bf16[32, 8, 128, 64]"
+                  # dropout_p: "float 0.0"
+                  # is_causal: "bool False"
+                  (t0, t1, t2, t3) = cudnn_sdpa_fwd(query, key, value, None, dropout_p, is_causal, scale=None)
+                  return (t0, [query, key, value, dropout_p, is_causal, t0, t1, t2, t3])
+
+                @torch.no_grad()
+                @no_autocast
+                def scaled_dot_product_attention_backward(query, key, value, dropout_p, is_causal, t0, t1, t2, t3, t4):
+                  (t5, t6, t7) = cudnn_sdpa_bwd(t4, query, key, value, None, dropout_p, is_causal, t0, t1, t2, t3, scale=None, cat_grad_qkv=False)
+                  return {'query': t5, 'key': t6, 'value': t7, 'attn_mask': None, 'dropout_p': None, 'is_causal': None, 'scale': None}
+
+            See how the backward trace need t4 as argument recoveered from the static args
+            """
+            updated_input_args = [t for t in saved_for_bw_C0]
+            updated_input_args.extend(input_args[len(updated_input_args):])
+            # print('Updated input_args')
+            # print_args(updated_input_args)
+            input_args = updated_input_args
+
+    # Input args for the trace to benchmark
+    input_args = []
+
     # Check for correctness
     if trace.bound_symbols[-1].sym.id != PrimIDs.RETURN:
         raise AssertionError("Missing return statement")
@@ -457,33 +503,23 @@ def benchmark_trace(
     if apply_del_last_used:
         trace = del_last_used(trace)
 
-    # Enable TE fp8 autocast if needed
+    # Handle TE traces
     te_used = is_te_used(trace)
+    sdpa_ex_bw_used = is_sdpa_ex_bw_used(trace)
+    if te_used and sdpa_ex_bw_used:
+        raise AssertionError("Not handled")
+
     if te_used:
         cached_te_fp8_autocast_value = trace._include_te_fp8_autocast
         trace._include_te_fp8_autocast = True
+        TE_backward_trace_preprocessing()
+    # Fix sdpaex arguments for backward benchmarks
+    elif sdpa_ex_bw_used:
+        SDPA_backward_trace_preprocessing()
+    # "Default" trace, parse the input args...(input args parsing will be performed by the TE trace handling)
+    else:
+        input_args: list = build_static_args(trace.args)
 
-    # If transformer_engine executor is used and it is the bw function we have to recover the forward context from the forward trace
-    trace_signature = trace.signature_with_no_ctx()
-    if te_used and trace_signature.startswith('def backward') and 'fw_trace' not in kwargs:
-        raise RuntimeError('Set the associated forward trace in order to benchmark backward pass with TE executor')
-    elif te_used and trace_signature.startswith('def backward'):
-        # print('TE Benchmarking fw trace for bw')
-        fw_trace = kwargs.get('fw_trace', None)
-        if not isinstance(fw_trace, TraceCtx):
-            raise AssertionError(f'forward trace is not a TraceCtx. Received: {type(fw_trace)}')
-        # Run the fw trace and get the outputs
-        fw_output = benchmark_trace(fw_trace, apply_del_last_used=False)[2]
-        # Retrive the context from the fw pass output
-        # Currently it will contain an empty transformer_engineex.Context but might be useful for the future
-        cached_fw_te_ctx_out = fw_output[1][1][0]
-
-    input_args: list = transform_input_sequence(trace.args)
-
-    if te_used and trace_signature.startswith('def backward'):
-        first_tuple = fix_te_backward_inputs(input_args)
-        input_args.pop(0)
-        input_args.insert(0, first_tuple)
 
     trace_tok = set_tracectx(trace)
 
@@ -580,15 +616,114 @@ def print_trace_args(trace: TraceCtx):
 
 # Display nest sequence arguments
 def print_args(args):
-    print('\n\n###################################### Debug args')
-    def _print(args):
-        print('Sequence start')
+
+    def is_tensor(t):
+        return isinstance(t, torch.Tensor) or isinstance(t, TensorProxy)
+
+    if not isinstance(args, Sequence):
+        return
+    print('###################################### Sequence start')
+    def _print(args, level):
+        tabs = '\t' * level
+        print(f'Level {level} start')
         for arg in args:
             if isinstance(arg, Sequence):
-                _print(arg)
+                _print(arg, level+1)
             else:
-                tensor_shape = arg.shape if isinstance(arg, torch.Tensor) else None
-                print(f'{type(arg)} {tensor_shape if tensor_shape else ""}')
-        print('Sequence end')
-    _print(args)
+                tensor_shape = arg.shape if is_tensor(arg) else None
+                dtype = arg.dtype if is_tensor(arg) else None
+                name = arg.name if isinstance(arg, TensorProxy) else ""
+                print(f'{tabs}{name + ": " if name else ""}{type(arg)}{arg if isinstance(arg, dict) else ""} {tensor_shape if tensor_shape else ""} {dtype if dtype else ""}')
+        print(f'Level {level} end')
+    _print(args, 0)
     print('###################################### Debug args\n')
+
+def update_compile_options_executor_list_after_fw_bw_split() -> None:
+    from thunder.backend_optimizer.optimizer import get_fw_bw_split_backends_options
+    cd = get_compile_data()
+    assert cd
+
+    # Get all the possible options that the vjp_optimization pass will use
+    options: dict = get_fw_bw_split_backends_options()
+    executors_list = list(cd.executors_list)
+
+    # Remove all the initial options
+    for _, v in options.items():
+        for ex in v:
+            if ex in executors_list:
+                executors_list.remove(ex)
+
+    # Putting at the front event though order does not matter
+    for ex in cd.compile_options['executors_placed_by_fw_bw_split']:
+        executors_list.insert(0, ex)
+
+    # Assign new compilation executors options
+    cd.executors_list = executors_list
+
+def transform_tensor(arg: TensorProxy, **kwargs) -> torch.Tensor:
+    from thunder.core.dtypes import is_float_dtype, is_signedinteger_dtype, is_boolean_dtype
+
+    # TODO (matteochen): Missing parallel and fsdp handling...
+    # TODO (matteochen): Missing support for meta types ...
+    dtype = arg.dtype
+    shape = arg.shape
+    device = arg.device
+    requires_grad = arg.requires_grad
+    torch_dtype = to_torch_dtype(dtype)
+    if torch_dtype is None:
+        raise AssertionError(f'Unrecognized thunder dtype: {dtype}')
+    if is_float_dtype(dtype):
+        # Use TE Float8 if TE is enabled, it has float32 ad torch dtype
+        te_used = kwargs.get('te_used', False)
+        if te_used:
+            tensor: torch.Tensor = torch.randn(
+                shape, dtype=torch_dtype if dtype.bytes > 1 else torch.float32, device=device.device_str(), requires_grad=requires_grad
+            )
+            if dtype.bytes == 1:
+                import transformer_engine.pytorch as te
+                tensor = te.float8_tensor.Float8Tensor.to_float8(tensor)
+        # Support standard float tensors
+        else:
+            tensor: torch.Tensor = torch.randn(
+                shape, dtype=torch_dtype, device=device.device_str(), requires_grad=requires_grad
+            )
+    elif is_signedinteger_dtype(dtype):
+        tensor: torch.Tensor = torch.randint(
+            0, 8, shape, dtype=torch_dtype, device=device.device_str(), requires_grad=requires_grad
+        )
+    elif is_boolean_dtype(dtype):
+        # TODO (matteochen): maybe random?
+        tensor: torch.Tensor = torch.zeros(
+            *shape, dtype=torch.bool, device=device.device_str(), requires_grad=requires_grad
+        )
+    else:
+        raise AssertionError(f"dtype {dtype} not supported yet")
+
+    return tensor
+
+# TODO (matteochen): use more appropriate mock int and float
+def transform_proxy_to_torch(sequence: Sequence, level=0, **kwargs) -> tuple | list:
+    res = []
+    for e in sequence:
+        if type(e) is tuple:
+            res.append(transform_proxy_to_torch(e, level + 1))
+        else:
+            if isinstance(e, TensorProxy):
+                res.append(transform_tensor(e, **kwargs))
+            elif isinstance(e, IntegerProxy):
+                if e.python_type is bool:
+                    res.append(False if e.value is None else e.value)
+                else:
+                    res.append(0 if e.value is None else e.value)
+            elif isinstance(e, FloatProxy):
+                res.append(0.0 if e.value is None else e.value)
+            # Transformer engine context object
+            elif hasattr(e, 'name') and isinstance(e, AnyProxy) and e.name.startswith('ctx_te'):
+                context = kwargs.get('cached_fw_te_ctx_out', None)
+                assert context is not None
+                res.append(context)
+            elif e is None:
+                res.append(None)
+            else:
+                raise AssertionError(f'Input arg type not recognized: {type(e)} with name: {e.name if hasattr(e, "name") else "unknown"} with value: {e}')
+    return tuple(res) if level > 0 else res

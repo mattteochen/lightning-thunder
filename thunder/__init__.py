@@ -327,7 +327,10 @@ def jit(
         if required_autotune not in ['runtime', 'memory']:
             raise AssertionError(f'Not supported optimization: {required_autotune}')
 
-        compile_options |= {"autotune_type": OptimizerType.RUNTIME if required_autotune == 'runtime' else OptimizerType.MEMORY}
+        compile_options |= {
+            "autotune_type": OptimizerType.RUNTIME if required_autotune == 'runtime' else OptimizerType.MEMORY,
+            "executors_placed_by_fw_bw_split": set()
+        }
 
         # Default the executors list to all_executors if no options are given
         # Otherwise the user restricted choice will be used

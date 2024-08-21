@@ -11,7 +11,7 @@ from typing import Hashable
 from thunder.backend_optimizer.utils import benchmark_trace
 
 # Defining a wrapper fn as the imports will crash in the global scope
-def get_fw_bw_split_backends_options(bsym: BoundSymbol) -> list:
+def get_fw_bw_split_backends_options(bsym: BoundSymbol | None = None) -> list | dict:
     from thunder.executors.sdpaex import sdpa_ex
     from thunder.executors.cudnnex import cudnn_ex
     from thunder.executors.fa3ex import fa3_ex
@@ -23,7 +23,7 @@ def get_fw_bw_split_backends_options(bsym: BoundSymbol) -> list:
         'scaled_dot_product_attention': [sdpa_ex, cudnn_ex, fa3_ex],
     }
 
-    return options.get(bsym.sym.name, [])
+    return options.get(bsym.sym.name, []) if bsym else options
 
 
 class BenchmarkResult:
@@ -602,8 +602,8 @@ class FusionPlacer_BeamSearch(PlacerBase):
                         # Retrieve partial trace and benchmark, apply remat if possible
                         trc, _, _ = get_placed_trace(dict_time_strat, increasing_symbols)
                         # Apply fw bw remat
-                        if self.trace_type == TraceType.BW and self.active_fw_trace_ctx[0] is not None:
-                            _, trc = rematerialize_forward_and_backward(self.active_fw_trace_ctx[0], trc)
+                        # if self.trace_type == TraceType.BW and self.active_fw_trace_ctx[0] is not None:
+                        #     _, trc = rematerialize_forward_and_backward(self.active_fw_trace_ctx[0], trc)
                         # Now, benchmark
                         t, m, _ = benchmark_trace(trc, self.benchmark_iters, fw_trace=self.active_fw_trace_ctx[0])
                         # Update results
@@ -649,8 +649,8 @@ class FusionPlacer_BeamSearch(PlacerBase):
                     nonlocal best_placement_mem
                     nonlocal best_keys_mem
                     trc, keys, placements = get_placed_trace(dict_time_strat, increasing_symbols)
-                    if self.trace_type == TraceType.BW and self.active_fw_trace_ctx[0] is not None:
-                        _, trc = rematerialize_forward_and_backward(self.active_fw_trace_ctx[0], trc)
+                    # if self.trace_type == TraceType.BW and self.active_fw_trace_ctx[0] is not None:
+                    #     _, trc = rematerialize_forward_and_backward(self.active_fw_trace_ctx[0], trc)
                     cost, mem, _ = benchmark_trace(trc, self.benchmark_iters, fw_trace=self.active_fw_trace_ctx[0])
                     log(f"Placed trace (cost = {cost} ms, mem = {mem/(2**30)} GB)\n{trc}", level=LogLevel.DEBUG)
                     if cost < best_res_time.runtime or (cost == best_res_time.runtime and mem < best_res_time.memory):
@@ -802,9 +802,9 @@ class FusionPlacer_BeamSearch(PlacerBase):
                     empty_str=self.empty_executor_hashable_placeholder,
                 )
                 # print(f"Assigned trace:\n{trc}")
-                if self.trace_type == TraceType.BW:
-                    # pass
-                    _, trc = rematerialize_forward_and_backward(self.active_fw_trace_ctx[0], trc)
+                # if self.trace_type == TraceType.BW:
+                #     # pass
+                #     _, trc = rematerialize_forward_and_backward(self.active_fw_trace_ctx[0], trc)
                 container.append({ex.name: trc})
 
             # Save executors in order to generate real fw and bw trace with correct output with the placer
@@ -874,7 +874,7 @@ class FusionPlacer_BeamSearch(PlacerBase):
         match self.trace_type:
             case TraceType.FW:
                 log(
-                    f"New forward trace to optimize (strat = {self.optimizer_type}):\n{self.trace}", level=LogLevel.DEBUG
+                    f"New forward trace to optimize (strat = {self.optimizer_type}):\n{self.trace}", level=LogLevel.INFO
                 )
             # TODO (matteochen): support bw trace optimization even though with no fw traces cached (computational trace?)
             case TraceType.BW:
@@ -882,7 +882,7 @@ class FusionPlacer_BeamSearch(PlacerBase):
                     raise AssertionError("Can not optimize backward traces before forward traces")
                 log(
                     f"New backward trace to optimize (strat = {self.optimizer_type}):\n{self.trace}",
-                    level=LogLevel.DEBUG,
+                    level=LogLevel.INFO,
                 )
 
     def optimize(self):

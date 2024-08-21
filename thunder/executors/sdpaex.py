@@ -389,7 +389,7 @@ def _scaled_dot_product_efficient_attention_backward_impl(
         scale=scale,
     )
 
-
+sdpaex_scaled_dot_product_efficient_attention_backward_name = "sdpaex_scaled_dot_product_efficient_attention_backward"
 sdpea_bwd = sdpa_ex.register_operator(
     "sdpaex_scaled_dot_product_efficient_attention_backward",
     meta=_scaled_dot_product_efficient_attention_backward_meta,
@@ -470,8 +470,9 @@ def _scaled_dot_product_flash_attention_backward_impl(
     return (_sdpa_slice_head_dimension(g, value.shape[-1]) for g in grads)
 
 
+sdpafx_scaled_dot_product_efficient_attention_backward_name = "sdpafx_scaled_dot_product_efficient_attention_backward"
 sdpfa_bwd = sdpa_ex.register_operator(
-    "sdpafx_scaled_dot_product_efficient_attention_backward",
+    sdpafx_scaled_dot_product_efficient_attention_backward_name,
     meta=_scaled_dot_product_flash_attention_backward_meta,
     fn=_scaled_dot_product_flash_attention_backward_impl,
 )
@@ -504,11 +505,13 @@ def _scaled_dot_product_attention_fused(
     tensor_args = (query, key, value)
     scalar_args = (dropout_p, is_causal)
     if backend == SpdaBackend.FLASH_ATTENTION:
+        print('FLASH ATT')
         # Use flash attention kernel
         (primal, logsumexp, cum_seq_q, cum_seq_k, max_q, max_k, philox_seed, philox_offset, _) = sdpfa_gradfwd(
             *tensor_args, *scalar_args, scale=scale
         )
     elif backend == SpdaBackend.MEMORY_EFFICIENT:
+        print('MEM EFF')
         # Use memory efficient kernel, which supports fp32 and attention mask arguments
         (primal, logsumexp, philox_seed, philox_offset) = sdpea_gradfwd(
             *tensor_args, attn_mask, *scalar_args, scale=scale

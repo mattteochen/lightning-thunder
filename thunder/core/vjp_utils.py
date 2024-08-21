@@ -202,8 +202,7 @@ def make_aug_forward_and_backward(bsym: BoundSymbol) -> tuple[Callable, Callable
         from thunder.backend_optimizer.utils import benchmark_trace
 
         # In order define this unique trace region we need a unique id
-        bsym_id = id(bsym)
-        key = (bsym.sym, Executor(f'{bsym_id}-autotuned'), subkey := _make_cache_key(bsym.args, bsym.kwargs))
+        key = (bsym.sym, Executor(f'{id(bsym)}-autotuned'), subkey := _make_cache_key(bsym.args, bsym.kwargs))
         # We do check the cache here as the key in the inner fn does not know about this special id
         cached_result = _cache.get(key, None) if subkey is not None else None
         # NOTE: cache is always enabled here
@@ -217,25 +216,24 @@ def make_aug_forward_and_backward(bsym: BoundSymbol) -> tuple[Callable, Callable
         cached_executors_list = list(cd.executors_list)
         # Retrieve all the executors which are requested to be used
         requested_executors_list_for_bsym = [ex for ex in cached_executors_list if ex in backends]
-        # from thunder.executors.torchex import ex as torchex
-        # if torchex not in executors_list:
-        #     executors_list.append(torchex)
         from thunder.benchmarks.utils import SplitFwBwBenchmarkUtils
         from thunder.backend_optimizer.optimizer import OptimizerType
         best = SplitFwBwBenchmarkUtils()
 
         # Restrict the search space
         backends = list(requested_executors_list_for_bsym)
-        print(f'Search space for {bsym.sym.name}: {backends}')
+
+        from thunder.backend_optimizer.optimizer import log, LogLevel
+        log(f'Search space for {bsym.sym.name}: {backends}', level=LogLevel.DEBUG)
         for b in backends:
-            print('Benchmarking backend', b.name)
+            log(f'Benchmarking executor {b.name} for {bsym.sym.name}', level=LogLevel.DEBUG)
             # Let downstream fn to pick up this
             requested_executors_list_for_bsym.remove(b)
             requested_executors_list_for_bsym.insert(0, b)
             cd.executors_list = requested_executors_list_for_bsym
             fw_fn, bw_fn, fw_trace, bw_trace = _make_aug_forward_and_backward(True)
             fw_time, fw_mem, _ = benchmark_trace(fw_trace, iters=20, apply_del_last_used=False)
-            bw_time, bw_mem, _ = benchmark_trace(bw_trace, iters=20, apply_del_last_used=False)
+            bw_time, bw_mem, _ = benchmark_trace(bw_trace, iters=20, apply_del_last_used=False, fw_trace=fw_trace)
             cost = fw_time + bw_time if cd.compile_options['autotune_type'] == OptimizerType.RUNTIME else fw_mem + bw_mem
             print('cost', cost)
             if cost < best.cost:
@@ -243,14 +241,13 @@ def make_aug_forward_and_backward(bsym: BoundSymbol) -> tuple[Callable, Callable
 
         assert best.cost != float('inf')
         from thunder.backend_optimizer.optimizer import log
-        log(f'Best executor for symbol [{bsym.output.name} = {bsym.sym.name}]: {best.executor.name}')
+        log(f'Best executor for symbol [{bsym.output.name} = {bsym.sym.name}]: {best.executor.name}', level=LogLevel.DEBUG)
 
         # Update the compile options
-        cached_executors_list = [ex for ex in cached_executors_list if ex not in backends]
-        cached_executors_list.insert(0, best.executor)
-
+        cd.compile_options["executors_placed_by_fw_bw_split"].add(best.executor)
         # Restore executor list for downstream optimizations
         cd.executors_list = cached_executors_list
+        # The executors used in this pass will be updated after the termination of the forward_and_backward_from_trace call
 
         _cache[key] = best.fw_fn, best.bw_fn
         return best.fw_fn, best.bw_fn
