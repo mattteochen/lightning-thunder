@@ -50,10 +50,10 @@ def get_first_available_operator_executor(
     return Executor(name=empty_hash)
 
 
-def get_not_used_intermediate_outsputs(trace_in: TraceCtx) -> list[TensorProxy]:
-    def is_in_sequence(seq: Sequence[Any], t: TensorProxy):
+def get_not_used_intermediate_outsputs(trace_in: TraceCtx) -> list[Proxy]:
+    def is_in_sequence(seq: Sequence[Any], t: Proxy):
         for e in seq:
-            if isinstance(e, TensorProxy) and e.name == t.name:
+            if hasattr(e, "name") and hasattr(t, "name") and e.name == t.name:
                 return True
         return False
 
@@ -63,25 +63,44 @@ def get_not_used_intermediate_outsputs(trace_in: TraceCtx) -> list[TensorProxy]:
         num = name[1:]
         return num.isdigit()
 
-    ans: list[TensorProxy] = []
-    for b in trace_in.bound_symbols:
+    def flatten_sequence(sequence: Sequence) -> list:
+        res = []
+        for e in sequence:
+            if isinstance(e, Sequence):
+                res.extend(flatten_sequence(e))
+            # Skip Nones as they are not useful
+            elif e is not None:
+                res.append(e)
+        return res
+
+    def unpack_output(out) -> Sequence[Proxy]:
+        if issubclass(type(out), Proxy):
+            return [out]
+        elif isinstance(out, Sequence):
+            return flatten_sequence(out)
+        else:
+            raise RuntimeError(f'Unpack operation not defined for {type(out)}')
+
+    ans: list[Proxy] = []
+    # Currently this is O(max(len(bsym.output)) * N^2)
+    # Can we check only bsym after the one in the outer loop in the inner loop (over trace.bound_symbols) ?
+    for a in trace_in.bound_symbols:
         f = False
-        # Not a tensor
-        if not isinstance(b.output, TensorProxy):
-            continue
-        # Not a produced tensor
-        if not is_possible_out(b.output.name):
-            continue
-        for test in trace_in.bound_symbols:
-            if (
-                test.args is not None
-                and (isinstance(test.args, tuple) or isinstance(test.args, list))
-                and is_in_sequence(test.args, b.output)
-            ):
-                f = True
-                break
-        if not f:
-            ans.append(b.output)
+        unpacked_out = unpack_output(a.output)
+        for e in unpacked_out:
+            # None values are checked inside the unpack_output fn
+            for b in trace_in.bound_symbols:
+                if (
+                    b.args is not None
+                    and isinstance(b.args, Sequence)
+                    and is_in_sequence(b.args, e)
+                ):
+                    f = True
+                    break
+            if not f:
+                ans.append(e)
+    from thunder.backend_optimizer.optimizer import log, LogLevel
+    log(f'Returning not used proxies: {[p.name for p in ans]}', level=LogLevel.DEBUG)
     return ans
 
 
@@ -224,7 +243,7 @@ def assign_executors(
         # Restore subsymbols
         # TODO (matteochen): Improve this search
         for k, v in cached_subsymbols.items():
-            # Note some symbols may be cut out by the fusion pass -> CSE
+            # NOTE: Some symbols may be cut out by the fusion pass -> CSE
             # For example:
             # a = 1 + 1
             # b = 1 + 1
