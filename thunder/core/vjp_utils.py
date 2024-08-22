@@ -201,7 +201,7 @@ def make_aug_forward_and_backward(bsym: BoundSymbol) -> tuple[Callable, Callable
         from thunder.backend_optimizer.optimizer import get_fw_bw_split_backends_options
         from thunder.backend_optimizer.utils import benchmark_trace
 
-        # In order define this unique trace region we need a unique id
+        # In order define this unique trace region we need an unique id
         key = (bsym.sym, Executor(f'{id(bsym)}-autotuned'), subkey := _make_cache_key(bsym.args, bsym.kwargs))
         # We do check the cache here as the key in the inner fn does not know about this special id
         cached_result = _cache.get(key, None) if subkey is not None else None
@@ -211,7 +211,10 @@ def make_aug_forward_and_backward(bsym: BoundSymbol) -> tuple[Callable, Callable
 
         # Get the possible backends for the current bsym
         backends = get_fw_bw_split_backends_options(bsym)
-        assert backends
+        if not backends:
+            raise AssertionError(
+                f"No enabled backends found for {bsym.sym.name} but an executor for that symbol it is present in the executors list. Either remove that from the executors list or enable at least one backend for {bsym.sym.linear} inside 'get_fw_bw_split_backends_options'."
+            )
 
         cached_executors_list = list(cd.executors_list)
         # Retrieve all the executors which are requested to be used
@@ -232,8 +235,9 @@ def make_aug_forward_and_backward(bsym: BoundSymbol) -> tuple[Callable, Callable
             requested_executors_list_for_bsym.insert(0, b)
             cd.executors_list = requested_executors_list_for_bsym
             fw_fn, bw_fn, fw_trace, bw_trace = _make_aug_forward_and_backward(True)
-            fw_time, fw_mem, _ = benchmark_trace(fw_trace, iters=20, apply_del_last_used=False)
-            bw_time, bw_mem, _ = benchmark_trace(bw_trace, iters=20, apply_del_last_used=False, fw_trace=fw_trace)
+            # What should be the optimal iter?
+            fw_time, fw_mem, _ = benchmark_trace(fw_trace, iters=100, apply_del_last_used=False)
+            bw_time, bw_mem, _ = benchmark_trace(bw_trace, iters=100, apply_del_last_used=False, fw_trace=fw_trace)
             cost = fw_time + bw_time if cd.compile_options['autotune_type'] == OptimizerType.RUNTIME else fw_mem + bw_mem
             if cost < best.cost:
                 best = SplitFwBwBenchmarkUtils(cost = cost, fw_fn = fw_fn, bw_fn = bw_fn, executor = b)
@@ -244,6 +248,8 @@ def make_aug_forward_and_backward(bsym: BoundSymbol) -> tuple[Callable, Callable
 
         # Update the compile options
         cd.compile_options["executors_placed_by_fw_bw_split"].add(best.executor)
+        from thunder.executors.transformer_engineex import transformer_engine_ex
+        cd.compile_options |= {'te_used': True if best.executor == transformer_engine_ex else False}
         # Restore executor list for downstream optimizations
         cd.executors_list = cached_executors_list
         # The executors used in this pass will be updated after the termination of the forward_and_backward_from_trace call
