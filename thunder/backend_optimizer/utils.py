@@ -287,6 +287,10 @@ def is_sdpa_ex_bw_used(trace: TraceCtx) -> bool:
             return True
     return False
 
+def is_backward_trace(trace: TraceCtx) -> bool:
+    sig = trace.signature_with_no_ctx()
+    return sig.find('backward') >= 0
+
 def benchmark_trace(
     trace: TraceCtx,
     iters: int = 1,
@@ -391,7 +395,7 @@ def benchmark_trace(
             print(f"#Trace execution failed at iter {current_iter} (error: {e})\n{repr}")
             raise e
 
-    def build_static_args(sequence: Sequence, **kwargs):
+    def build_static_args(sequence: Sequence, **kwargs) -> list:
         return transform_proxy_to_torch(sequence, level=0, **kwargs)
 
     def TE_backward_trace_preprocessing():
@@ -536,8 +540,71 @@ def benchmark_trace(
             updated_input_args.extend(input_args[len(updated_input_args):])
             input_args = updated_input_args
 
+    def backward_trace_args_preprocess() -> list:
+        if 'fw_trace' not in kwargs:
+            raise RuntimeError('Set the associated forward trace in order to benchmark backward pass with sdpa executor')
+        fw_trace = kwargs.get('fw_trace', None)
+        if not isinstance(fw_trace, TraceCtx):
+            raise AssertionError(f'forward trace is not a TraceCtx. Received: {type(fw_trace)}')
+        # Run the fw trace and get the outputs
+        fw_output = benchmark_trace(fw_trace, apply_del_last_used=False)[2]
+
+        # Check if the fw trace is a final trace or an intermediate one (used for single trace region benchmarks)
+        sig = fw_trace.signature_with_no_ctx()
+        is_fw_final_trace = sig.startswith('def augmented')
+
+        # Filter the output tuple
+        # These location might change if the implementation of the automatic
+        # differentiation transform changes. The saved tensors are the second output
+        # of the return statement. There's a prototype changing the saved tensors to
+        # be part of the output of a special symbol
+        # https://github.com/Lightning-AI/lightning-thunder/pull/214
+        saved_for_bw_C0 = fw_output[1] if not is_fw_final_trace else fw_output[1][0]
+
+        # te_used = is_te_used(trace)
+        # Retrieve the compile time arguments
+        input_args = build_static_args(trace.args, te_used=is_te_used(trace))
+
+        # Now, we expected that if the fw trace is a final trace also the bw trace is a final one. And vice versa
+        if is_fw_final_trace:
+            # Swap saved_for_backward_traces
+            saved_for_bw = saved_for_bw_C0, fw_output[1][1] # Saved for backward tuple unpacks in (C0, _)
+            # Subsitute the static inputs for saved_for_backward with the runtime ones
+            input_args.pop(0)
+            input_args.insert(0, saved_for_bw)
+        else:
+            # Currently single trace region backward trace receives as input the saved_for_bw tensors plus some others.
+            # They are indexed like [saved_for_bw, others...]
+            # NOTE: This may change in the future
+            """
+            Example:
+                @torch.no_grad()
+                @no_autocast
+                def _cudnn_sdpa_bwd_wrapper(query, key, value, attn_mask, dropout_p=0.0, is_causal=False, *, scale=None):
+                  # query: "cuda:0 bf16[32, 8, 128, 64]"
+                  # key: "cuda:0 bf16[32, 8, 128, 64]"
+                  # value: "cuda:0 bf16[32, 8, 128, 64]"
+                  # dropout_p: "float 0.0"
+                  # is_causal: "bool False"
+                  (t0, t1, t2, t3) = cudnn_sdpa_fwd(query, key, value, None, dropout_p, is_causal, scale=None)
+                  return (t0, [query, key, value, dropout_p, is_causal, t0, t1, t2, t3])
+
+                @torch.no_grad()
+                @no_autocast
+                def scaled_dot_product_attention_backward(query, key, value, dropout_p, is_causal, t0, t1, t2, t3, t4):
+                  (t5, t6, t7) = cudnn_sdpa_bwd(t4, query, key, value, None, dropout_p, is_causal, t0, t1, t2, t3, scale=None, cat_grad_qkv=False)
+                  return {'query': t5, 'key': t6, 'value': t7, 'attn_mask': None, 'dropout_p': None, 'is_causal': None, 'scale': None}
+
+            See how the backward trace need t4 as argument recoveered from the static args
+            """
+            updated_input_args = [t for t in saved_for_bw_C0]
+            updated_input_args.extend(input_args[len(updated_input_args):]) # Should be only one variable but leave this dyanamic
+            input_args = updated_input_args
+
+        return input_args
+
     # Input args for the trace to benchmark
-    input_args = []
+    # input_args = []
 
     # Check for correctness
     if trace.bound_symbols[-1].sym.id != PrimIDs.RETURN:
@@ -546,20 +613,22 @@ def benchmark_trace(
     if apply_del_last_used:
         trace = del_last_used(trace)
 
-    # Handle TE traces
+    # # Handle TE traces
     te_used = is_te_used(trace)
-    sdpa_ex_bw_used = is_sdpa_ex_bw_used(trace)
-    if te_used and sdpa_ex_bw_used:
-        raise AssertionError("Not handled")
+    # sdpa_ex_bw_used = is_sdpa_ex_bw_used(trace)
+    # if te_used and sdpa_ex_bw_used:
+    #     raise AssertionError("Not handled")
 
     if te_used:
         cached_te_fp8_autocast_value = trace._include_te_fp8_autocast
         trace._include_te_fp8_autocast = True
-        TE_backward_trace_preprocessing()
+        # TE_backward_trace_preprocessing()
     # Fix sdpaex arguments for backward benchmarks
-    elif sdpa_ex_bw_used:
-        SDPA_backward_trace_preprocessing()
+    # elif sdpa_ex_bw_used:
+    #     SDPA_backward_trace_preprocessing()
     # "Default" trace, parse the input args...(input args parsing will be performed by the TE trace handling)
+    if is_backward_trace(trace):
+        input_args = backward_trace_args_preprocess()
     else:
         input_args: list = build_static_args(trace.args)
 
@@ -781,10 +850,13 @@ def transform_proxy_to_torch(sequence: Sequence, level=0, **kwargs) -> tuple | l
                 res.append(None)
             else:
                 raise AssertionError(f'Input arg type not recognized: {type(e)} with name: {e.name if hasattr(e, "name") else "unknown"} with value: {e}')
+    # Outer container must be a list
     return tuple(res) if level > 0 else res
 
 def reorder_executors_list(executors: Sequence):
     from thunder.backend_optimizer.optimizer import get_fw_bw_split_backends_options
+    from thunder.executors.torch_compile import torch_compile_ex
+    from thunder.executors.nvfuserex_impl import ex as nvfuser_ex
 
     reordered = []
     options = get_fw_bw_split_backends_options()
@@ -805,4 +877,16 @@ def reorder_executors_list(executors: Sequence):
     for ex in executors:
         if ex not in reordered:
             reordered.append(ex)
+
+    # NOTE: Currently the autotuner expects at least one Fusion executor otherwise it won't work.
+    # If other techniques will be added then this constraint will not be necessary
+    found = False
+    for ex in reordered:
+        if are_inputs_names and (ex == nvfuser_ex.name or ex == torch_compile_ex.name):
+            found = True
+        elif (ex == nvfuser_ex or ex == torch_compile_ex):
+            found = True
+    if not found:
+        reordered.append(nvfuser_ex)
+
     return reordered
