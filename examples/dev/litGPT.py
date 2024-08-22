@@ -10,7 +10,7 @@ class Test:
         self.autotune_type = autotune_type
         self.batch_size = batch_size
 
-layers = [Test(8, 'runtime', 1), Test(8, 'runtime', 4)]
+layers = [Test(4, 'runtime', 1)]
 
 model_name = 'Llama-3-8B'
 
@@ -25,7 +25,7 @@ for test in layers:
             x = torch.randint(1, model.config.vocab_size, (test.batch_size, 512))
 
             jmodel_def = thunder.jit(model)
-            jmodel_auto = thunder.jit(model, autotune_type=test.autotune_type, executors = ['nvfuser', 'torchcompile', 'cudnn', 'torch', 'python'])
+            jmodel_auto = thunder.jit(model, autotune_type=test.autotune_type, executors = ['nvfuser', 'torchcompile', 'cudnn', 'torch', 'python'], use_cudagraphs=False)
 
             print('deviation def:', (jmodel_def(x) - model(x)).abs().max().item())
             print('deviation auto:', (jmodel_auto(x) - model(x)).abs().max().item())
