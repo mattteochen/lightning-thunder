@@ -10,7 +10,7 @@ class Test:
         self.autotune_type = autotune_type
         self.batch_size = batch_size
 
-layers = [Test(4, 'runtime', 1)]
+layers = [Test(4, 'runtime', 1), Test(4, 'memory', 1)]
 
 model_name = 'Llama-3-8B'
 
@@ -28,7 +28,7 @@ for test in layers:
             jmodel_auto = thunder.jit(
                 model,
                 autotune_type=test.autotune_type,
-                executors=["nvfuser", "torchcompile", "cudnn", "sdpa", "fa3"],
+                executors=["nvfuser", "torchcompile", "cudnn", "sdpa", "fa3", "transformer_engine"],
                 use_cudagraphs=False,
             )
 
