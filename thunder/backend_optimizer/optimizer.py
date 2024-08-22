@@ -542,8 +542,9 @@ class FusionPlacer_BeamSearch(PlacerBase):
             bound_symbol_groups = fuse_bound_symbols(
                 self.trace, merge_fn
             )
-            log(f"Num of groups = {len(bound_symbol_groups)}", level=LogLevel.DEBUG)
+            log(f"Number of Fusion groups = {len(bound_symbol_groups)}", level=LogLevel.DEBUG)
 
+            # Print fusion groups if requested
             for id, group in enumerate(bound_symbol_groups):
                 log(f"Group id: {id}", level=LogLevel.DEBUG)
                 for sub in group:
@@ -555,9 +556,9 @@ class FusionPlacer_BeamSearch(PlacerBase):
             dict_mem_strat: dict[str, Executor] = {}
             increasing_symbols = []
             for group_id, group in enumerate(bound_symbol_groups):
-                log(f"Group id: {group_id}", level=LogLevel.DEBUG)
-                log(f"group start = {group[0].sym.name}", level=LogLevel.DEBUG)
-                log(f"group end = {group[-1].sym.name}", level=LogLevel.DEBUG)
+                log(f"Fusion group id: {group_id}", level=LogLevel.DEBUG)
+                log(f"Fusion group start = [{group[0].output.name if hasattr(group[0].output, 'name') else 'unknown'} = {group[0].sym.name}]", level=LogLevel.DEBUG)
+                log(f"Fusion group end   = [{group[-1].output.name if hasattr(group[-1].output, 'name') else 'unknown'} = {group[-1].sym.name}]", level=LogLevel.DEBUG)
 
                 if group[0].sym.name != "return":
                     increasing_symbols += group
