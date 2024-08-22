@@ -412,7 +412,7 @@ def benchmark_trace(
         sig = fw_trace.signature_with_no_ctx()
         is_fw_final_trace = sig.startswith('def augmented')
 
-        # Filter the output tuple
+        # Filter the C0 tuple
         # These location might change if the implementation of the automatic
         # differentiation transform changes. The saved tensors are the second output
         # of the return statement. There's a prototype changing the saved tensors to
