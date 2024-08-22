@@ -25,7 +25,12 @@ for test in layers:
             x = torch.randint(1, model.config.vocab_size, (test.batch_size, 512))
 
             jmodel_def = thunder.jit(model)
-            jmodel_auto = thunder.jit(model, autotune_type=test.autotune_type, executors = ['nvfuser', 'torchcompile', 'cudnn', 'torch', 'python'], use_cudagraphs=False)
+            jmodel_auto = thunder.jit(
+                model,
+                autotune_type=test.autotune_type,
+                executors=["nvfuser", "torchcompile", "cudnn", "sdpa", "fa3"],
+                use_cudagraphs=False,
+            )
 
             print('deviation def:', (jmodel_def(x) - model(x)).abs().max().item())
             print('deviation auto:', (jmodel_auto(x) - model(x)).abs().max().item())
