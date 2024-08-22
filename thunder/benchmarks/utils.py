@@ -125,7 +125,7 @@ def torch_total_benchmark(models: list, labels: list, inputs: list, iters: int) 
     for m, input, label in zip(models, inputs, labels):
         # Warm up
         for _ in range(warm_up_iters):
-            y = m(*input if isinstance(input, tuple) else input)
+            y = m(input)
             y.sum().backward()
 
         start_events = [torch.cuda.Event(enable_timing=True) for _ in range(iters)]
@@ -139,7 +139,7 @@ def torch_total_benchmark(models: list, labels: list, inputs: list, iters: int) 
             torch.cuda.reset_peak_memory_stats(torch.cuda.current_device())
 
             start_events[i].record(stream)
-            y = m(*input if isinstance(input, tuple) else input)
+            y = m(input)
             loss = y.sum()
             loss.backward()
             end_events[i].record(stream)
