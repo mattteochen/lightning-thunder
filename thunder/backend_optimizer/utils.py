@@ -619,7 +619,7 @@ def update_compile_options_executor_list_after_fw_bw_split() -> None:
             if ex in executors_list:
                 executors_list.remove(ex)
 
-    # Putting at the front event though order does not matter
+    # Putting at the front even though order does not matter
     for ex in cd.compile_options['executors_placed_by_fw_bw_split']:
         executors_list.insert(0, ex)
 
