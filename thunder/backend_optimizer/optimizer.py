@@ -5,6 +5,7 @@ from thunder.core.prims import PrimIDs
 from thunder.core.proxies import CollectionProxy, FloatProxy, IntegerProxy, TensorProxy
 from thunder.core.symbol import BoundSymbol
 from thunder.core.trace import from_trace, TraceCtx
+from thunder.core.transforms import construct_trace
 from thunder.extend import Executor, FusionExecutor, OperatorExecutor, get_always_executors
 from thunder.visualizer.visualizer_helper import Visualizer
 from typing import Hashable
@@ -147,7 +148,7 @@ class LogLevel(Enum):
     INFO = 1
 
 
-log_level: LogLevel = LogLevel.INFO
+log_level: LogLevel = LogLevel.DEBUG
 
 
 def log(what: str, level: LogLevel = LogLevel.INFO):
@@ -239,7 +240,7 @@ class FusionPlacer_BeamSearch(PlacerBase):
         self.known_fusion_ex_compile_options: dict[str | Hashable, list[FusionCompileOptionsHelper]] = {
             "nvfuser": [
                 FusionCompileOptionsHelper("nv_enable_linear", "linear", PrimIDs.LINEAR, linear, _linear_check),
-                FusionCompileOptionsHelper("nv_enable_matmul", "matmul", PrimIDs.MATMUL, matmul, _matmul_check),
+                # FusionCompileOptionsHelper("nv_enable_matmul", "matmul", PrimIDs.MATMUL, matmul, _matmul_check),
                 # FusionCompileOptionsHelper("nv_enable_bookend", "bookend"),
             ]
         }
@@ -591,6 +592,9 @@ class FusionPlacer_BeamSearch(PlacerBase):
                     else:
                         log(f"Available executors for single region:\n{candidate_executors}", level=LogLevel.DEBUG)
 
+                    # Define the standalone trace in order to benchmark this symbol
+                    subtrace = construct_trace()(current_bsym.sym, *current_bsym.args, **current_bsym.kwargs)
+
                     # Helpers
                     candidate_best_time = BenchmarkResult()
                     candidate_best_mem = BenchmarkResult()
@@ -598,15 +602,12 @@ class FusionPlacer_BeamSearch(PlacerBase):
                     # TODO: enable requests for no remat becnhmarks
                     # TODO: we should consider also FusionExecutor that can execute this single bsym in this beam search
                     for i, candidate in enumerate(candidate_executors):
-                        # Match the current candidate to benchmark partial trace
-                        match_bsym_output(current_bsym, [dict_time_strat, dict_mem_strat], candidate)
-                        # Retrieve partial trace and benchmark, apply remat if possible
-                        trc, _, _ = get_placed_trace(dict_time_strat, increasing_symbols)
-                        # Apply fw bw remat
-                        # if self.trace_type == TraceType.BW and self.active_fw_trace_ctx[0] is not None:
-                        #     _, trc = rematerialize_forward_and_backward(self.active_fw_trace_ctx[0], trc)
-                        # Now, benchmark
-                        t, m, _ = benchmark_trace(trc, self.benchmark_iters, fw_trace=self.active_fw_trace_ctx[0])
+
+                        from thunder.common import transform_for_execution
+                        subtrace_placed = transform_for_execution(subtrace, executors_list=[candidate])[-1]
+                        log(f"Subtrace to benchmark single symbol:\n{subtrace_placed}", level=LogLevel.DEBUG)
+                        t, m, _ = benchmark_trace(subtrace_placed, self.benchmark_iters, fw_trace=self.active_fw_trace_ctx[0])
+                        log(f'Operator excutor [{candidate.name}] candidate perf: {t} ms {m/(2**30)} GB', level=LogLevel.DEBUG)
                         # Update results
                         if t < candidate_best_time.runtime:
                             candidate_best_time = BenchmarkResult(time=t, index=i)
