@@ -313,16 +313,20 @@ def benchmark_trace(
             torch.cuda.synchronize()
             # Warm up cycles
             for _ in range(warm_up_iters):
-                fn(*args)
+                cloned_args = clone_args(args)
+                fn(*cloned_args)
+                del cloned_args
             # Benchmark
             torch.cuda.empty_cache()
             torch.cuda.synchronize()
             torch.cuda.cudart().cudaProfilerStart()
             for i in range(iters):
+                cloned_args = clone_args(args)
                 torch.cuda.empty_cache()
                 torch.cuda.nvtx.range_push(f"thunder benchmark fn:{nvsight_fn_name}, iter{i}")
-                fn(*args)
+                fn(*cloned_args)
                 torch.cuda.nvtx.range_pop()
+                del cloned_args
             torch.cuda.cudart().cudaProfilerStop()
 
             return float("inf"), float("inf"), None
@@ -339,7 +343,7 @@ def benchmark_trace(
                 res.append(clone_args(arg))
             else:
                 if isinstance(arg, torch.Tensor):
-                    res.append(arg.clone())
+                    res.append(arg.clone().detach())
                 else:
                     res.append(arg)
         return tuple(res)
