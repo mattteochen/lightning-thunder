@@ -563,10 +563,10 @@ class FusionPlacer_BeamSearch(PlacerBase):
                 if group[0].sym.name != "return":
                     increasing_symbols += group
 
-                # Is not a fusion region, get the optimal executor (OperatorExecutor)
+                # We assign to a Fusion executor only region with at least 2 elements. Otherwise let the best OperatorExecutor pick the symbol up
                 if len(group) < 2:
                     current_bsym = group[0]
-                    log(f"--> Single group: {current_bsym.sym.name}", level=LogLevel.DEBUG)
+                    log(f"--> Single group: [{current_bsym.output.name if hasattr(current_bsym.output, 'name') else 'unknown'} = {current_bsym.sym.name}]", level=LogLevel.DEBUG)
                     # Filter out all possible candidates for the current symbol
                     candidate_executors = [
                         ex

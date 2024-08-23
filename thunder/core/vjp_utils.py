@@ -236,6 +236,7 @@ def make_aug_forward_and_backward(bsym: BoundSymbol) -> tuple[Callable, Callable
             cd.executors_list = requested_executors_list_for_bsym
             fw_fn, bw_fn, fw_trace, bw_trace = _make_aug_forward_and_backward(True)
             # What should be the optimal iter?
+            # TODO: make benchmark info taken from an autotuner config
             fw_time, fw_mem, _ = benchmark_trace(fw_trace, iters=100, apply_del_last_used=False)
             bw_time, bw_mem, _ = benchmark_trace(bw_trace, iters=100, apply_del_last_used=False, fw_trace=fw_trace)
             cost = fw_time + bw_time if cd.compile_options['autotune_type'] == OptimizerType.RUNTIME else fw_mem + bw_mem
