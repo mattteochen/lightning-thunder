@@ -766,9 +766,7 @@ class nvFuserExecutor(FusionExecutor):
 
         bound_symbol_groups = fuse_bound_symbols(trace, _should_fuse)
 
-        # Counts how many fusions (per executor) have been constructed
-        #   (Used to name fusions like nvFusion0, nvFusion1, ...)
-        fusion_counter: int = self.count_fusion_regions(trace, nvFuserExecutor)
+        fusion_counter = 0
         for bsyms in bound_symbol_groups:
             # TODO The following allows generating single node fusions, which
             #   may be suboptimal for real-world performance.

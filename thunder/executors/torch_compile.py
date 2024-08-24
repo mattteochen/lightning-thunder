@@ -155,8 +155,7 @@ class TorchCompileExecutor(FusionExecutor):
         bound_symbol_groups = fuse_bound_symbols(trace, _should_fuse)
 
         fused_bsyms = []
-        # Counts how many fusions (per executor) have been constructed
-        fusion_counter: int = self.count_fusion_regions(trace, TorchCompileExecutor)
+        fusion_counter = 0
         for bsyms in bound_symbol_groups:
             if len(bsyms) == 1:
                 bsym: BoundSymbol = bsyms[0]
