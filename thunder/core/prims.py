@@ -3841,8 +3841,8 @@ def convolution_meta(
 
         utils.check(len(seq) == 1 or len(seq) == rank, lambda: f"len({seq_str_name}) should be either 1 or {rank}")
 
-        for i, e in enumerate(seq):
         # Check all elements are >= min_val
+        for i, e in enumerate(seq):
             utils.check(
                 isinstance(e, (int, IntegerProxy)) and e >= min_val,
                 lambda: f"all elements in {seq_str_name} should be integers at least {min_val}, "
