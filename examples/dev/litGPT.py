@@ -22,7 +22,6 @@ for test in layers:
     try:
         print('\n\nLayers:', test.layers)
         cfg = Config.from_name(model_name)
-        print(cfg)
         cfg.n_layer = test.layers
         torch.set_default_dtype(torch.bfloat16)
         with torch.device('cuda'):
