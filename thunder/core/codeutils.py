@@ -5,11 +5,14 @@ from collections import deque
 from collections.abc import Mapping, Sequence, Iterable
 import inspect
 from inspect import Parameter
+import string
 import functools
 from functools import partial
 import dis
 import linecache
 import dataclasses
+
+import torch
 
 import thunder.core.baseutils as baseutils
 from thunder.core.baseutils import ProxyInterface, check
