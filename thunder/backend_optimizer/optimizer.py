@@ -148,7 +148,7 @@ class LogLevel(Enum):
     INFO = 1
 
 
-log_level: LogLevel = LogLevel.DEBUG
+log_level: LogLevel = LogLevel.INFO
 
 
 def log(what: str, level: LogLevel = LogLevel.INFO):
@@ -598,21 +598,27 @@ class FusionPlacer_BeamSearch(PlacerBase):
                     # Helpers
                     candidate_best_time = BenchmarkResult()
                     candidate_best_mem = BenchmarkResult()
-                    # Search for best candidate, by default remat will be called to find the optimal choice
-                    # TODO: enable requests for no remat becnhmarks
-                    # TODO: we should consider also FusionExecutor that can execute this single bsym in this beam search
-                    for i, candidate in enumerate(candidate_executors):
 
-                        from thunder.common import transform_for_execution
-                        subtrace_placed = transform_for_execution(subtrace, executors_list=[candidate])[-1]
-                        log(f"Subtrace to benchmark single symbol:\n{subtrace_placed}", level=LogLevel.DEBUG)
-                        t, m, _ = benchmark_trace(subtrace_placed, self.benchmark_iters, fw_trace=self.active_fw_trace_ctx[0])
-                        log(f'Operator excutor [{candidate.name}] candidate perf: {t} ms {m/(2**30)} GB', level=LogLevel.DEBUG)
-                        # Update results
-                        if t < candidate_best_time.runtime:
-                            candidate_best_time = BenchmarkResult(time=t, index=i)
-                        if m < candidate_best_mem.memory:
-                            candidate_best_mem = BenchmarkResult(memory=m, index=i)
+                    # No choices
+                    if len(candidate_executors) == 1:
+                        candidate_best_time = BenchmarkResult(index=0)
+                        candidate_best_mem = BenchmarkResult(index=0)
+                    else:
+                        # Search for best candidate, by default remat will be called to find the optimal choice
+                        # TODO: enable requests for no remat becnhmarks
+                        # TODO: we should consider also FusionExecutor that can execute this single bsym in this beam search
+                        for i, candidate in enumerate(candidate_executors):
+
+                            from thunder.common import transform_for_execution
+                            subtrace_placed = transform_for_execution(subtrace, executors_list=[candidate])[-1]
+                            log(f"Subtrace to benchmark single symbol:\n{subtrace_placed}", level=LogLevel.DEBUG)
+                            t, m, _ = benchmark_trace(subtrace_placed, self.benchmark_iters, fw_trace=self.active_fw_trace_ctx[0])
+                            log(f'Operator excutor [{candidate.name}] candidate perf: {t} ms {m/(2**30)} GB', level=LogLevel.DEBUG)
+                            # Update results
+                            if t < candidate_best_time.runtime:
+                                candidate_best_time = BenchmarkResult(time=t, index=i)
+                            if m < candidate_best_mem.memory:
+                                candidate_best_mem = BenchmarkResult(memory=m, index=i)
 
                     if candidate_best_time.index == -1 or candidate_best_mem.index == -1:
                         raise AssertionError(
