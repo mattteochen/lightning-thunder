@@ -3,6 +3,7 @@ from collections.abc import Callable
 from functools import wraps
 from inspect import Parameter, Signature
 from itertools import chain
+from os import execl
 
 from thunder.core import prims, utils
 from thunder.core.compile_data import get_compile_data
@@ -51,16 +52,20 @@ def make_aug_forward_and_backward(bsym: BoundSymbol) -> tuple[Callable, Callable
     from thunder.common import _make_cache_key
     from thunder.core.transforms import _get_gradfn_and_executor, eval_trace
 
-    def _make_aug_forward_and_backward(*, return_traces=False, update_cache=True):
+    def _make_aug_forward_and_backward(*, return_traces=False, update_cache=True) -> tuple:
         joint_forward_backward, executor = _get_gradfn_and_executor(bsym)
         utils.check(
             joint_forward_backward is not None,
             lambda: f"Cannot generate forward and backward functions for {bsym.sym.name}",
         )
         key = (bsym.sym, executor, subkey := _make_cache_key(bsym.args, bsym.kwargs))
-        cached_result = _cache.get(key, None) if subkey is not None else None
-        if cached_result is not None and not getattr(joint_forward_backward, "_disable_caching", False):
-            return cached_result
+        print(key)
+        # If we update the cache we are not using the autotuner hence cache values for the key entry generated above is valid.
+        # If autotuner is used, each bsym has an unique key id hence this cache entry is not valid anymore.
+        if update_cache:
+            cached_result = _cache.get(key, None) if subkey is not None else None
+            if cached_result is not None and not getattr(joint_forward_backward, "_disable_caching", False):
+                return cached_result
 
         joint_trace = thunder.trace(inline_trace=False, use_dce=False)(joint_forward_backward, *bsym.args, **bsym.kwargs)
         consumers = utils.consumers(joint_trace)
