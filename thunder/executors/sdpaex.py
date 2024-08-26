@@ -505,13 +505,11 @@ def _scaled_dot_product_attention_fused(
     tensor_args = (query, key, value)
     scalar_args = (dropout_p, is_causal)
     if backend == SpdaBackend.FLASH_ATTENTION:
-        print('FLASH ATT')
         # Use flash attention kernel
         (primal, logsumexp, cum_seq_q, cum_seq_k, max_q, max_k, philox_seed, philox_offset, _) = sdpfa_gradfwd(
             *tensor_args, *scalar_args, scale=scale
         )
     elif backend == SpdaBackend.MEMORY_EFFICIENT:
-        print('MEM EFF')
         # Use memory efficient kernel, which supports fp32 and attention mask arguments
         (primal, logsumexp, philox_seed, philox_offset) = sdpea_gradfwd(
             *tensor_args, attn_mask, *scalar_args, scale=scale

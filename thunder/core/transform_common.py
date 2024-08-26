@@ -9,6 +9,7 @@ from itertools import filterfalse, chain
 from functools import partial
 
 import thunder
+from thunder.core.compile_data import get_compile_data
 import thunder.core.prims as prims
 from thunder.core.baseutils import BoundSymbolInterface
 from thunder.core.proxies import Proxy, variableify, Variable, TensorProxy, unvariableify
@@ -98,65 +99,70 @@ def _inplace_copy_sanity_check(extrace: Trace):
 def dce(trace: Trace, needed_proxies: None | set[Variable] = None) -> Trace:
     start_time_ns = time.perf_counter_ns()
 
-    producer_map: ProxyDict = producers(trace)
+    cd = get_compile_data()
+    disabled = not(not cd or (cd and not cd.compile_options.get('disable_dce', None)))
+    if not disabled:
+        producer_map: ProxyDict = producers(trace)
 
-    flat_trace_outputs, _ = tree_flatten(trace.output)
-    if needed_proxies is None:
-        needed_proxies: set[Variable] = set(tuple(variableify(x) for x in flat_trace_outputs if isinstance(x, Proxy)))
-    else:
-        needed_proxies.update(tuple(variableify(x) for x in flat_trace_outputs if isinstance(x, Proxy)))
-    dced = []
-
-    bsym: BoundSymbol
-    for bsym in reversed(trace.bound_symbols):
-        # Preserves symbols that should never be collected
-        if has_tags(bsym, {prims.OpTags.DONT_DCE}):
-            needed = True
+        flat_trace_outputs, _ = tree_flatten(trace.output)
+        if needed_proxies is None:
+            needed_proxies: set[Variable] = set(tuple(variableify(x) for x in flat_trace_outputs if isinstance(x, Proxy)))
         else:
-            needed = False
+            needed_proxies.update(tuple(variableify(x) for x in flat_trace_outputs if isinstance(x, Proxy)))
+        dced = []
 
-        # NOTE This block is run even if we know we're preserving the operation, because it
-        #   may mark some of the operation's outputs as unused
-        some_unused = False
-        for out in bsym.flat_proxy_outs:
-            if variableify(out) in needed_proxies and producer_map[out] == bsym:
+        bsym: BoundSymbol
+        for bsym in reversed(trace.bound_symbols):
+            # Preserves symbols that should never be collected
+            if has_tags(bsym, {prims.OpTags.DONT_DCE}):
                 needed = True
             else:
-                some_unused = True
+                needed = False
 
-        if needed:
-            nbsym: BoundSymbol = bsym
+            # NOTE This block is run even if we know we're preserving the operation, because it
+            #   may mark some of the operation's outputs as unused
+            some_unused = False
+            for out in bsym.flat_proxy_outs:
+                if variableify(out) in needed_proxies and producer_map[out] == bsym:
+                    needed = True
+                else:
+                    some_unused = True
 
-            # Replaces unused Proxy outputs with None
-            if some_unused:
+            if needed:
+                nbsym: BoundSymbol = bsym
 
-                def _helper(x):
-                    if isinstance(x, Proxy) and (variableify(x) not in needed_proxies or producer_map[x] != bsym):
-                        return None
-                    return x
+                # Replaces unused Proxy outputs with None
+                if some_unused:
 
-                nbsym_output = tree_map(_helper, bsym.output)
-                nbsym = bsym.from_bsym(output=nbsym_output)
+                    def _helper(x):
+                        if isinstance(x, Proxy) and (variableify(x) not in needed_proxies or producer_map[x] != bsym):
+                            return None
+                        return x
 
-            # Eliminates no-op subsymbols
-            # NOTE In general editing subsymbols doesn't do anything, but no-op subsymbols are a pain
-            #   for transforms to deal with. Transforms typically look for a "flattened" version of an
-            #   operator for which they can apply their rules, and no-op subsymbols have no
-            #   flattening, requiring each transform handle them explicitly or DCE them themselves
-            #   while flattening.
-            _remove_noop_subsymbols(nbsym)
+                    nbsym_output = tree_map(_helper, bsym.output)
+                    nbsym = bsym.from_bsym(output=nbsym_output)
 
-            dced.append(nbsym)
-            for x in nbsym.flat_proxy_args:
-                needed_proxies.add(variableify(x))
+                # Eliminates no-op subsymbols
+                # NOTE In general editing subsymbols doesn't do anything, but no-op subsymbols are a pain
+                #   for transforms to deal with. Transforms typically look for a "flattened" version of an
+                #   operator for which they can apply their rules, and no-op subsymbols have no
+                #   flattening, requiring each transform handle them explicitly or DCE them themselves
+                #   while flattening.
+                _remove_noop_subsymbols(nbsym)
 
-    dcetrace = from_trace(trace)
-    dcetrace.bound_symbols = list(reversed(dced))
+                dced.append(nbsym)
+                for x in nbsym.flat_proxy_args:
+                    needed_proxies.add(variableify(x))
+
+        dcetrace = from_trace(trace)
+        dcetrace.bound_symbols = list(reversed(dced))
+    else:
+        dcetrace = trace
 
     end_time_ns = time.perf_counter_ns()
     elapsed_time_ns = end_time_ns - start_time_ns
     elapsed_time_millis = elapsed_time_ns // 1000000
-    dcetrace.set_provenance(TraceProvenance(f"Dead Code Elimination (took {elapsed_time_millis} milliseconds)"))
+    dcetrace.set_provenance(TraceProvenance(f"Dead Code Elimination{' Skipped Per Compile Options' if disabled else ''} (took {elapsed_time_millis} milliseconds)"))
 
     return dcetrace
 

@@ -494,6 +494,7 @@ def jit(
                     cs.last_traces = comp_traces
                     cs.last_interpreted_instructions = None
                     cs.last_interpreter_log = None
+                    cs.last_executors = cd.executors_list
                     cs.last_prologue_traces = pro_traces
                     cs.last_prologue = pro
                     cs.last_prologue_transformation_start = 0
@@ -533,6 +534,7 @@ def jit(
                 cs.last_traces = comp_traces
                 cs.last_interpreted_instructions = None
                 cs.last_interpreter_log = None
+                cs.last_executors = cd.executors_list
                 cs.last_prologue_traces = pro_traces
                 cs.last_prologue = pro
 
@@ -650,6 +652,7 @@ def jit(
             cs.last_prologue_traces = prologue_traces
             cs.last_prologue = pro
             cs.last_traces = computation_traces
+            cs.last_executors = cd.executors_list
             backward_traces = []
             cs.last_backward_traces = backward_traces
             cs.last_interpreter_log = last_interpreter_log
@@ -935,6 +938,19 @@ def last_prologue_traces(fn) -> TraceCtx:
     if cs.last_prologue_traces is None:
         raise TypeError(f"{fn} doesn't seem to have been called yet.")
     return cs.last_prologue_traces
+
+
+def executors_applied(fn) -> Sequence[Executor]:
+    """Obtains the list of executors that have been applied to the computational trace.
+    If the backward trace is not None, the list will include also executors used in the backward trace.
+
+    """
+    cs = compile_stats(fn)
+    if cs is None:
+        raise TypeError(f"{fn} doesn't seem to be a thunder compiled function.")
+    if cs.last_executors is None:
+        raise TypeError(f"{fn} doesn't seem to have been called yet.")
+    return cs.last_executors
 
 
 def cache_option(fn) -> CACHE_OPTIONS:

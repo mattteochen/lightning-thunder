@@ -8,6 +8,7 @@ from itertools import chain
 from functools import partial
 import time
 
+from thunder.core.compile_data import get_compile_data
 from thunder.core.trace import TraceCtx, from_trace, TraceProvenance, VariableInterface, reset_tracectx, set_tracectx
 from thunder.core.codeutils import SigInfo
 import thunder.core.dtypes as dtypes
@@ -352,21 +353,28 @@ def del_last_used(trace: TraceCtx, *, clear_mutable_collections=False) -> TraceC
     Returns:
         list: transformed trace
     """
+
+    # If dce is disabled, we have to disable this pass also
+    cd = get_compile_data()
+    disabled = not(not cd or (cd and not cd.compile_options.get('disable_dce', None)))
+
     start_time_ns = time.perf_counter_ns()
 
-    del_trace = from_trace(trace)
+    if not disabled:
+        del_trace = from_trace(trace)
+        outs = cutils.sequencify(trace.output)
+        flat_outs, _ = tree_flatten(outs)
 
-    outs = cutils.sequencify(trace.output)
-    flat_outs, _ = tree_flatten(outs)
-
-    del_trace.bound_symbols = _del_last_used(
-        trace.bound_symbols, flat_outs, clear_mutable_collections=clear_mutable_collections
-    )
+        del_trace.bound_symbols = _del_last_used(
+            trace.bound_symbols, flat_outs, clear_mutable_collections=clear_mutable_collections
+        )
+    else:
+        del_trace = trace
 
     end_time_ns = time.perf_counter_ns()
     elapsed_time_ns = end_time_ns - start_time_ns
     elapsed_time_millis = elapsed_time_ns // 1000000
 
-    del_trace.set_provenance(TraceProvenance(f"Delete Last Used (took {elapsed_time_millis} milliseconds)"))
+    del_trace.set_provenance(TraceProvenance(f"Delete Last Used{' Skipped Per Compile Options' if disabled else ''} (took {elapsed_time_millis} milliseconds)"))
 
     return del_trace

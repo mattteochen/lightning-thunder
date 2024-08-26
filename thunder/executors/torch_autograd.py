@@ -325,6 +325,7 @@ def split_forward_backward(computation_trc: TraceCtx, compile_data, compile_stat
     if compile_stats is not None:
         compile_stats.last_traces += fw_traces
         compile_stats.last_backward_traces += bw_traces
+        compile_stats.last_executors = compile_data.executors_list
 
     # Enable wrapping with `te.fp8_autocast`.
     fw_extrace._include_te_fp8_autocast = True

@@ -18,13 +18,13 @@ def sequence_hash(s: Sequence) -> str:
         name = "["
         for e in s:
             if e is None:
-                name += "None"
+                name += "None#"
             elif hasattr(e, "name"):
-                 name += e.name
-            elif isinstance(e, Sequence):
+                 name += e.name + '#'
+            elif isinstance(e, Sequence) and not isinstance(e, str):
                 name += rec(e)
             elif isinstance(e, int):
-                 name += 'int' + str(e)
+                 name += 'int' + str(e) + '#'
             else:
                 raise AssertionError(f"Unsupported type = {type(e)}")
         name += ']'
@@ -49,6 +49,15 @@ def get_first_available_operator_executor(
             return ex
     return Executor(name=empty_hash)
 
+def flatten_sequence(sequence: Sequence) -> list:
+    res = []
+    for e in sequence:
+        if isinstance(e, Sequence):
+            res.extend(flatten_sequence(e))
+        # Skip Nones as they are not useful
+        elif e is not None:
+            res.append(e)
+    return res
 
 def get_not_used_intermediate_outsputs(trace_in: TraceCtx) -> list[Proxy]:
     def is_in_sequence(seq: Sequence[Any], t: Proxy):
@@ -56,22 +65,6 @@ def get_not_used_intermediate_outsputs(trace_in: TraceCtx) -> list[Proxy]:
             if hasattr(e, "name") and hasattr(t, "name") and e.name == t.name:
                 return True
         return False
-
-    def is_possible_out(name: str):
-        if not name.startswith("t"):
-            return False
-        num = name[1:]
-        return num.isdigit()
-
-    def flatten_sequence(sequence: Sequence) -> list:
-        res = []
-        for e in sequence:
-            if isinstance(e, Sequence):
-                res.extend(flatten_sequence(e))
-            # Skip Nones as they are not useful
-            elif e is not None:
-                res.append(e)
-        return res
 
     def unpack_output(out) -> Sequence[Proxy]:
         if issubclass(type(out), Proxy):
@@ -107,7 +100,7 @@ def get_not_used_intermediate_outsputs(trace_in: TraceCtx) -> list[Proxy]:
 def assign_executors(
     *,
     in_trace: TraceCtx,
-    executor_list: list[Executor | FusionExecutor | OperatorExecutor]
+    executors_list: list[Executor | FusionExecutor | OperatorExecutor]
     | tuple[Executor | FusionExecutor | OperatorExecutor, ...],
     always_executors: list[Executor] | tuple[Executor, ...],
     empty_str: str | Hashable,
@@ -197,24 +190,24 @@ def assign_executors(
         def visit(bsym: BoundSymbol, ex: Executor) -> transforms.VISIT_TYPE:
             return transforms.VISIT_TYPE.NO_OP if visit_helper(bsym, ex) is None else transforms.VISIT_TYPE.REPLACE
 
-        if len(executor_list) != len(in_trace.bound_symbols):
-            raise AssertionError("len(executor_list) != len(in_trace.bound_symbols)")
+        if len(executors_list) != len(in_trace.bound_symbols):
+            raise AssertionError("len(executors_list) != len(in_trace.bound_symbols)")
 
         cached_subsymbols: dict[str, Sequence[BoundSymbol]] = {}
         executor_mapping: dict[str, Executor] = {}
         unique_fusion_executors = set()
 
         # Input should have equal length
-        if len(executor_list) != len(in_trace.bound_symbols):
-            raise AssertionError("len(executor_list) != len(extrace.bound_symbols)")
+        if len(executors_list) != len(in_trace.bound_symbols):
+            raise AssertionError("len(executors_list) != len(extrace.bound_symbols)")
 
-        for b, e in zip(in_trace.bound_symbols, executor_list):
+        for b, e in zip(in_trace.bound_symbols, executors_list):
             if isinstance(e, FusionExecutor):
                 unique_fusion_executors.add(e)
             if isinstance(b.output, TensorProxy):
                 executor_mapping[b.output.name] = e
 
-        extrace = transforms.visitor_transform_paired(in_trace, visit, zip(in_trace.bound_symbols, executor_list))
+        extrace = transforms.visitor_transform_paired(in_trace, visit, zip(in_trace.bound_symbols, executors_list))
 
         # Restores original variables
         bound_symbols: list[BoundSymbol] = []
@@ -692,7 +685,7 @@ def transform_proxy_to_torch(sequence: Sequence, level=0, **kwargs) -> tuple | l
             # Transformer engine Context object
             #
             # This instruction will populate the args with a dummy context which is not correct in theory.
-            # For the benchmark purpose (where this fn is currently used) this error will not impact on the runtime correctness as at the end we 
+            # For the benchmark purpose (where this fn is currently used) this error will not impact on the runtime correctness as at the end we
             # will use the cached runtime contexts from the forward pass.
             # We need this only to generate a context for the static inputs (which are discarded afterwards).
             #

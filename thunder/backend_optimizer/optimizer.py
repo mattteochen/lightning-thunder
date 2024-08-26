@@ -479,7 +479,7 @@ class FusionPlacer_BeamSearch(PlacerBase):
 
             placed_trace = assign_executors(
                 in_trace=trc,
-                executor_list=executor_configuration,
+                executors_list=executor_configuration,
                 always_executors=self.always_executors,
                 empty_str=self.empty_executor_hashable_placeholder,
             )
@@ -698,6 +698,7 @@ class FusionPlacer_BeamSearch(PlacerBase):
                         match_bsym_output(
                             group[k],
                             [dict_time_strat, dict_mem_strat],
+                            # In order to benchmark the fusion placecement, we can use any executor for the excluded bsym from the fusion region
                             get_first_available_operator_executor(
                                 bsym=group[k],
                                 executors=self.executors,
@@ -800,7 +801,7 @@ class FusionPlacer_BeamSearch(PlacerBase):
             ):
                 trc = assign_executors(
                     in_trace=trace,
-                    executor_list=executors,
+                    executors_list=executors,
                     always_executors=self.always_executors,
                     empty_str=self.empty_executor_hashable_placeholder,
                 )
@@ -916,7 +917,7 @@ class FusionPlacer_BeamSearch(PlacerBase):
             ):
                 trc = assign_executors(
                     in_trace=self.trace,
-                    executor_list=placement_ctx.placement,
+                    executors_list=placement_ctx.placement,
                     always_executors=self.always_executors,
                     empty_str=self.empty_executor_hashable_placeholder,
                     compile_data=self.compile_data,
@@ -930,7 +931,7 @@ class FusionPlacer_BeamSearch(PlacerBase):
             ):
                 trc = assign_executors(
                     in_trace=self.trace,
-                    executor_list=placement_ctx.placement,
+                    executors_list=placement_ctx.placement,
                     always_executors=self.always_executors,
                     empty_str=self.empty_executor_hashable_placeholder,
                     compile_data=self.compile_data,

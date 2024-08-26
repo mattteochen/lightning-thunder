@@ -53,6 +53,3 @@ with torch.device('cuda'):
     print('###############################################################################')
     print(f'{thunder.last_backward_traces(jmodel_auto)[-1]}')
 
-    print('\nTorch benchmark:')
-    bench(jmodel_def, 'def', iters)
-    bench(jmodel_auto, 'auto', iters)
