@@ -59,7 +59,6 @@ def make_aug_forward_and_backward(bsym: BoundSymbol) -> tuple[Callable, Callable
             lambda: f"Cannot generate forward and backward functions for {bsym.sym.name}",
         )
         key = (bsym.sym, executor, subkey := _make_cache_key(bsym.args, bsym.kwargs))
-        print(key)
         # If we update the cache we are not using the autotuner hence cache values for the key entry generated above is valid.
         # If autotuner is used, each bsym has an unique key id hence this cache entry is not valid anymore.
         if update_cache:
