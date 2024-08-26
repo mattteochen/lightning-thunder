@@ -51,7 +51,7 @@ def make_aug_forward_and_backward(bsym: BoundSymbol) -> tuple[Callable, Callable
     from thunder.common import _make_cache_key
     from thunder.core.transforms import _get_gradfn_and_executor, eval_trace
 
-    def _make_aug_forward_and_backward(return_traces = False) -> tuple[Callable, Callable] | tuple[Callable, Callable, TraceCtx, TraceCtx]:
+    def _make_aug_forward_and_backward(*, return_traces=False, update_cache=True):
         joint_forward_backward, executor = _get_gradfn_and_executor(bsym)
         utils.check(
             joint_forward_backward is not None,
@@ -139,6 +139,17 @@ def make_aug_forward_and_backward(bsym: BoundSymbol) -> tuple[Callable, Callable
         # Remove put/get grad and backward symbols from augmented forward trace
         augmented_forward_trace = dce(augmented_forward_trace)
 
+        # Check that the number of outputs of the original forward function is the
+        # same as the number of primal outputs of the augmented forward trace
+        utils.check(
+            len(utils.sequencify(bsym.output)) == len(utils.sequencify(augmented_forward_trace.output[0])),
+            lambda: f"While generating forward and backward functions for {bsym.sym.name}, encountered an error.\n"
+            "The number of outputs of the original forward function must be the same as the number of primal outputs of the augmented forward trace.\n"
+            f"Number of outputs of the original forward function: {len(utils.sequencify(bsym.output))}\n"
+            f"Number of primal outputs of the augmented forward trace: {len(utils.sequencify(augmented_forward_trace.output[0]))}\n"
+            "Please check the forward function and the augmented forward trace to ensure that they have the same number of outputs.",
+        )
+
         # Check if any of the bound symbols in the backward trace are also in the
         # augmented forward trace
         # If so, remove them from the backward trace
@@ -178,6 +189,9 @@ def make_aug_forward_and_backward(bsym: BoundSymbol) -> tuple[Callable, Callable
         def bw_fn(*args, **kwargs):
             return eval_trace(backward_trace, *args, **kwargs)
 
+        if update_cache:
+            _cache[key] = fw_fn, bw_fn
+
         if not return_traces:
             return fw_fn, bw_fn
         return fw_fn, bw_fn, augmented_forward_trace, backward_trace
@@ -193,7 +207,6 @@ def make_aug_forward_and_backward(bsym: BoundSymbol) -> tuple[Callable, Callable
         key = (bsym.sym, None, subkey := _make_cache_key(bsym.args, bsym.kwargs))
         # Cached will be checked in the inner fn if not miss
         fw_fn, bw_fn = _make_aug_forward_and_backward()
-        _cache[key] = fw_fn, bw_fn
         return fw_fn, bw_fn
     # We have a backend
     else:
@@ -233,7 +246,7 @@ def make_aug_forward_and_backward(bsym: BoundSymbol) -> tuple[Callable, Callable
             requested_executors_list_for_bsym.remove(b)
             requested_executors_list_for_bsym.insert(0, b)
             cd.executors_list = requested_executors_list_for_bsym
-            fw_fn, bw_fn, fw_trace, bw_trace = _make_aug_forward_and_backward(True)
+            fw_fn, bw_fn, fw_trace, bw_trace = _make_aug_forward_and_backward(return_traces=True, update_cache=False)
             # What should be the optimal iter?
             # TODO: make benchmark info taken from an autotuner config
             fw_time, fw_mem, _ = benchmark_trace(fw_trace, iters=100, apply_del_last_used=False)
