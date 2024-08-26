@@ -144,7 +144,6 @@ def split_forward_backward(computation_trc: TraceCtx, compile_data, compile_stat
     from thunder.distributed.transforms import FSDPCommBucketing
     from thunder.distributed.utils import sort_data_parallel_syncs, sort_waits, sort_communication_ops
     from thunder.executors.passes import del_last_used, transform_for_execution, autotune_transform_for_execution
-    from thunder.visualizer.visualizer_helper import Visualizer
 
     utils.check(compile_data is not None, lambda: "`compile_data` is required")
     # NOTE: This function is rather slow, so it's intended to be used
@@ -206,7 +205,6 @@ def split_forward_backward(computation_trc: TraceCtx, compile_data, compile_stat
     do_apply_bucketing_bw_trace: bool = getattr(compile_data.fn, "use_fsdp", False)
 
     # Now we can run the optimization passes on the forward trace
-    visualizer = Visualizer(produce_hidden=False)
     backend_optimizer_ctx: BackendOptimizer | None = (
         None
         if autotune_type is None
@@ -214,13 +212,11 @@ def split_forward_backward(computation_trc: TraceCtx, compile_data, compile_stat
             priority_executors=compile_data.executors_list,
             apply_bucketing_bw_trace=do_apply_bucketing_bw_trace,
             produce_log=True,
-            visualizer=visualizer,
             optimizer_type=autotune_type,
             compile_data=compile_data
         )
     )
 
-    visualizer.set_fw_initial_trace(fw_trace)
     # Get optimzied fw trace
     fw_extrace = (
         transform_for_execution(fw_trace, executors_list=compile_data.executors_list)
@@ -235,7 +231,6 @@ def split_forward_backward(computation_trc: TraceCtx, compile_data, compile_stat
         # Here fw_extrace is not None
 
         fw_traces.append(fw_extrace)
-        visualizer.set_fw_optimized_trace(fw_extrace)
 
         # If autotuning is activated, it will take care of the following 2 calls
         bw_trace = update_bw_from_forward_optimization(fw=fw_extrace, bw=bw_trace)
@@ -243,20 +238,17 @@ def split_forward_backward(computation_trc: TraceCtx, compile_data, compile_stat
             bw_trace = _fsdp_comm_bucketing.apply_bucketing_to_backward_trace(bw_trace)
 
     # Now we can run the optimization passes on the backward trace
-    visualizer.set_bw_initial_trace(bw_trace)
     if autotune_type is not None:
         fw_extrace, bw_extrace = autotune_transform_for_execution(
             optimizer_context=backend_optimizer_ctx, trace=bw_trace, trace_type=TraceType.BW
         )
         fw_traces.append(fw_extrace)
-        visualizer.set_bw_optimized_trace(fw_extrace)
     else:
         bw_extrace = transform_for_execution(
             bw_trace,
             executors_list=compile_data.executors_list,
         )
     bw_traces.append(bw_extrace)
-    visualizer.set_bw_optimized_trace(bw_extrace)
 
     if autotune_type is None:
         # TODO Restore request for no rematerialization
@@ -338,12 +330,5 @@ def split_forward_backward(computation_trc: TraceCtx, compile_data, compile_stat
     fw_extrace._include_te_fp8_autocast = True
     # We only want the forward function to be called with `te.fp8_autocast` manager.
     bw_extrace._include_te_fp8_autocast = False
-
-    # Let's include the last traces also after all the passes
-    visualizer.set_fw_final_trace(fw_extrace)
-    visualizer.set_bw_final_trace(bw_extrace)
-
-    # TODO: implement new visualizer
-    # visualizer.produce()
 
     return fw_extrace, bw_extrace

@@ -7,7 +7,6 @@ from thunder.core.symbol import BoundSymbol
 from thunder.core.trace import from_trace, TraceCtx
 from thunder.core.transforms import construct_trace
 from thunder.extend import Executor, FusionExecutor, OperatorExecutor, get_always_executors
-from thunder.visualizer.visualizer_helper import Visualizer
 from typing import Hashable
 from thunder.backend_optimizer.utils import benchmark_trace
 
@@ -163,7 +162,6 @@ class PlacerBase:
         produce_log: bool = True,
         apply_bucketing_bw_trace: bool,
         log_file_name: str,
-        visualizer: Visualizer | None = None,
         optimizer_type: OptimizerType = OptimizerType.RUNTIME,
         compile_data,
         ) -> None:
@@ -178,7 +176,6 @@ class PlacerBase:
 
         self.debug_msg: str = ""
         self.partial_costs: dict[TraceCtx, float] = {}
-        self.visualizer: Visualizer | None = visualizer
         self.log_file_name: str = log_file_name
         self.produce_log: bool = produce_log
 
@@ -217,7 +214,6 @@ class FusionPlacer_BeamSearch(PlacerBase):
         produce_log: bool = True,
         apply_bucketing_bw_trace: bool,
         log_file_name: str,
-        visualizer: Visualizer | None = None,
         optimizer_type: OptimizerType = OptimizerType.RUNTIME,
         compile_data,
     ) -> None:
@@ -226,7 +222,6 @@ class FusionPlacer_BeamSearch(PlacerBase):
             produce_log=produce_log,
             apply_bucketing_bw_trace=apply_bucketing_bw_trace,
             log_file_name=log_file_name,
-            visualizer=visualizer,
             optimizer_type=optimizer_type,
             compile_data=compile_data
         )
@@ -1007,7 +1002,6 @@ class BackendOptimizer:
         produce_log=True,
         apply_bucketing_bw_trace: bool,
         log_file_name="autotune_debug.log",
-        visualizer: Visualizer | None = None,
         optimizer_type: OptimizerType = OptimizerType.RUNTIME,
         optimizer_algorithm: OptimizationAlgorithm = OptimizationAlgorithm.BEST_FUSER,
         compile_data,
@@ -1020,7 +1014,6 @@ class BackendOptimizer:
                 produce_log=produce_log,
                 apply_bucketing_bw_trace=apply_bucketing_bw_trace,
                 log_file_name=log_file_name,
-                visualizer=visualizer,
                 optimizer_type=optimizer_type,
                 compile_data=compile_data,
             )
