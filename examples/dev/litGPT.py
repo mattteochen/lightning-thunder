@@ -3,19 +3,21 @@ from thunder.benchmarks.utils import thunder_fw_bw_benchmark, torch_fw_bw_benchm
 from thunder.tests.litgpt_model import Config
 import thunder
 import torch
+from thunder.executors.nvmathex import nvmath_ex
 
 torch.backends.cuda.matmul.allow_tf32 = True # allow tf32 on matmul
 torch.backends.cudnn.allow_tf32 = True # allow tf32 on cudnn
 
 class Test:
-    def __init__(self, layers: int, autotune_type: str, batch_size: int, seq_len: int = -1, model_name: str = 'Llama-3-8B') -> None:
+    def __init__(self, layers: int, autotune_type: str, batch_size: int, seq_len: int = -1, model_name: str = 'Llama-3-8B', executors = None) -> None:
         self.layers = layers
         self.autotune_type = autotune_type
         self.batch_size = batch_size
         self.seq_len = seq_len
         self.model_name = model_name
+        self.executors = executors
 
-layers = [Test(1, 'runtime', 1), Test(1, 'runtime', 1, model_name='Llama-2-7b-hf')]
+layers = [Test(1, 'runtime', 1, executors=["cudnn", "sdpa", "fa3", "nvfuser", "torchcompile", ]), Test(1, 'runtime', 1, model_name='Llama-2-7b-hf', executors=["cudnn", "sdpa", "fa3", "nvfuser", "torchcompile", nvmath_ex])]
 
 for test in layers:
     try:
@@ -31,11 +33,10 @@ for test in layers:
             print(f'Input size: {x.size()}')
 
             jmodel_def = thunder.jit(model)
-            from thunder.executors.nvmathex import nvmath_ex
             jmodel_auto = thunder.jit(
                 model,
                 autotune_type=test.autotune_type,
-                executors=["cudnn", "sdpa", "fa3", "nvfuser", "torchcompile", nvmath_ex],
+                executors=test.executors,
                 use_cudagraphs=False,
             )
 
