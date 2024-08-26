@@ -17,16 +17,41 @@ class Test:
         self.model_name = model_name
         self.executors = executors
 
-layers = [Test(1, 'runtime', 1, executors=["cudnn", "sdpa", "fa3", "nvfuser", "torchcompile", ]), Test(1, 'runtime', 1, model_name='Llama-2-7b-hf', executors=["cudnn", "sdpa", "fa3", "nvfuser", "torchcompile", nvmath_ex])]
+layers = [
+    Test(
+        1,
+        "runtime",
+        1,
+        executors=[
+            "cudnn",
+            "sdpa",
+            "fa3",
+            "nvfuser",
+            "torchcompile",
+        ],
+    ),
+    Test(
+        1,
+        "runtime",
+        1,
+        executors=["cudnn", "sdpa", "nvfuser", "torchcompile",],
+    ),
+    Test(
+        1,
+        "runtime",
+        1,
+        executors=["cudnn", "sdpa", "fa3", "nvfuser", "torchcompile", nvmath_ex],
+    ),
+]
 
 for test in layers:
     try:
-        print('\n\nLayers:', test.layers)
         cfg = Config.from_name(test.model_name)
         cfg.n_layer = test.layers
         if test.seq_len != -1:
             cfg.block_size = test.seq_len
         torch.set_default_dtype(torch.bfloat16)
+        print(cfg)
         with torch.device('cuda'):
             model = GPT(cfg)
             x = torch.randint(1, model.config.vocab_size, (test.batch_size, cfg.block_size))
