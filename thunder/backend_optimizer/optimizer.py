@@ -611,9 +611,9 @@ class FusionPlacer_BeamSearch(PlacerBase):
 
                             from thunder.common import transform_for_execution
                             subtrace_placed = transform_for_execution(subtrace, executors_list=[candidate])[-1]
-                            log(f"Subtrace to benchmark single symbol:\n{subtrace_placed}", level=LogLevel.DEBUG)
+                            log(f"Subtrace to benchmark single symbol:\n{subtrace_placed}", level=LogLevel.INFO)
                             t, m, _ = benchmark_trace(subtrace_placed, self.benchmark_iters, fw_trace=self.active_fw_trace_ctx[0])
-                            log(f'Operator excutor [{candidate.name}] candidate perf: {t} ms {m/(2**30)} GB', level=LogLevel.DEBUG)
+                            log(f'Operator excutor [{candidate.name}] candidate perf: {t} ms {m/(2**30)} GB', level=LogLevel.INFO)
                             # Update results
                             if t < candidate_best_time.runtime:
                                 candidate_best_time = BenchmarkResult(time=t, index=i)
