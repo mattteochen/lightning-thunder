@@ -160,10 +160,12 @@ def thunder_fw_bw_benchmark(fw_traces: list, bw_traces: list, fw_labels: list, b
     assert(len(fw_traces) == len(bw_traces) == len(fw_labels) == len(bw_labels))
     for trc, label in zip(fw_traces, fw_labels):
         c, m, _ = benchmark_trace(trc, apply_del_last_used=False, snapshot=True, snapshot_name=label, iters=iters, nvsight=nvsight, nvsight_fn_name=label)
-        print(f'Executing {label} trace:\n{c} ms, {m / (2**30)} GB')
+        if not nvsight:
+            print(f'Executing {label} trace:\n{c} ms, {m / (2**30)} GB')
 
     i = 0
     for trc, label in zip(bw_traces, bw_labels):
         c, m, _ = benchmark_trace(trc, apply_del_last_used=False, snapshot=True, snapshot_name=label, iters=iters, nvsight=nvsight, nvsight_fn_name=label, fw_trace=fw_traces[i])
-        print(f'Executing {label} trace:\n{c} ms, {m / (2**30)} GB')
+        if not nvsight:
+            print(f'Executing {label} trace:\n{c} ms, {m / (2**30)} GB')
         i += 1
