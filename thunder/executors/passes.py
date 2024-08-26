@@ -24,8 +24,6 @@ from thunder.executors.pythonex import clear_mutable_collection
 
 from thunder.extend import Executor, get_all_executors, get_always_executors, OperatorExecutor, FusionExecutor
 from thunder.backend_optimizer.optimizer import BackendOptimizer, OptimizerType, TraceCandidates, TraceType
-from thunder.visualizer.graphviz import create_graphviz_pdf
-from thunder.visualizer.visualizer_helper import Visualizer
 
 comment_symbols = {prims.PrimIDs.COMMENT, prims.PrimIDs.UNPACK_TRIVIAL}
 
