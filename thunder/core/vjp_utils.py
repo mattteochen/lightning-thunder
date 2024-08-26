@@ -183,9 +183,8 @@ def make_aug_forward_and_backward(bsym: BoundSymbol) -> tuple[Callable, Callable
         return fw_fn, bw_fn, augmented_forward_trace, backward_trace
 
     cd = get_compile_data()
-    assert cd
     # No autotuning
-    if not cd.compile_options.get('autotune_type', None):
+    if not cd or not cd.compile_options.get('autotune_type', None):
         return _make_aug_forward_and_backward()
 
     # This search will be performed on the requested executors list
@@ -213,7 +212,7 @@ def make_aug_forward_and_backward(bsym: BoundSymbol) -> tuple[Callable, Callable
         backends = get_fw_bw_split_backends_options(bsym)
         if not backends:
             raise AssertionError(
-                f"No enabled backends found for {bsym.sym.name} but an executor for that symbol it is present in the executors list. Either remove that from the executors list or enable at least one backend for {bsym.sym.linear} inside 'get_fw_bw_split_backends_options'."
+                f"No enabled backends found for {bsym.sym.name} but an executor for that symbol it is present in the executors list. Either remove that from the executors list or enable at least one backend for {bsym.sym.name} inside 'get_fw_bw_split_backends_options'."
             )
 
         cached_executors_list = list(cd.executors_list)
