@@ -3,7 +3,7 @@ from typing import Any
 from thunder.core.compile_data import get_compile_data
 from thunder.core.dtypes import to_torch_dtype
 from thunder.core.prims import PrimIDs
-from thunder.core.proxies import AnyProxy, CollectionProxy, FloatProxy, IntegerProxy, Proxy, TensorProxy, Variable, variableify
+from thunder.core.proxies import AnyProxy, FloatProxy, IntegerProxy, Proxy, TensorProxy, Variable, variableify
 from thunder.core.symbol import BoundSymbol, Symbol
 from thunder.core.trace import TraceCtx, get_tracectx, reset_tracectx, set_tracectx
 from thunder.extend import Executor, FusionExecutor, OperatorExecutor
@@ -636,8 +636,7 @@ def transform_tensor(arg: TensorProxy, **kwargs) -> torch.Tensor:
     if torch_dtype is None:
         raise AssertionError(f'Unrecognized thunder dtype: {dtype}')
     if is_float_dtype(dtype):
-        # Use TE Float8 if TE is enabled, it has float32 ad torch dtype
-        # NOTE: if we have a standalone torch.float8 inside the args and it is not the TE Float8 it won't be parsed correctly for now
+        # Use TE Float8 if TE is enabled, it has float32 torch dtype
         te_used = kwargs.get('te_used', False)
         if te_used:
             tensor: torch.Tensor = torch.randn(
@@ -665,7 +664,6 @@ def transform_tensor(arg: TensorProxy, **kwargs) -> torch.Tensor:
 
     return tensor
 
-# TODO (matteochen): use more appropriate mock int and float
 def transform_proxy_to_torch(sequence: Sequence, level=0, **kwargs) -> tuple | list:
     from thunder.executors.transformer_engineex import Context as C
     res = []
