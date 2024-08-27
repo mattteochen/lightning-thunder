@@ -1,6 +1,12 @@
 import torch
 import thunder
-from thunder.benchmarks.utils import thunder_fw_bw_benchmark, torch_fw_bw_benchmark, torch_fw_bw_benchmark_nvsight, torch_total_benchmark
+from thunder.benchmarks.utils import (
+    thunder_fw_bw_benchmark,
+    torch_fw_bw_benchmark,
+    torch_fw_bw_benchmark_nvsight,
+    torch_total_benchmark,
+)
+
 
 class Module(torch.nn.Module):
     def __init__(self, in_features, out_features) -> None:
@@ -9,7 +15,7 @@ class Module(torch.nn.Module):
             torch.nn.Linear(in_features, out_features),
             torch.nn.Linear(out_features, in_features),
             torch.nn.Linear(in_features, out_features),
-            torch.nn.Linear(out_features, in_features)
+            torch.nn.Linear(out_features, in_features),
         )
         self.silu = torch.nn.SiLU()
 
@@ -20,7 +26,8 @@ class Module(torch.nn.Module):
             c = c @ torch.transpose(c, 0, 1)
         return self.silu(c)
 
-with torch.device('cuda'):
+
+with torch.device("cuda"):
     in_features = 1 << 8
     out_features = 1 << 10
     model = Module(in_features, out_features)
@@ -33,7 +40,7 @@ with torch.device('cuda'):
     y = jmodel_auto(x)
 
     iters = 100
-    print('Results thunder benchmark:')
+    print("Results thunder benchmark:")
     fw_traces = [
         thunder.last_traces(jmodel_def)[-1],
         thunder.last_traces(jmodel_auto)[-1],
@@ -48,14 +55,14 @@ with torch.device('cuda'):
     # thunder_fw_bw_benchmark(traces, labels, iters, nvsight=True)
 
     callables = [jmodel_def, jmodel_auto]
-    labels = ['def', 'auto']
+    labels = ["def", "auto"]
     inputs = [x, x]
-    print('Results torch benchmark:')
+    print("Results torch benchmark:")
     torch_fw_bw_benchmark(callables, labels, inputs, iters)
     torch_total_benchmark(callables, labels, inputs, iters)
     torch_fw_bw_benchmark_nvsight(callables, labels, inputs, iters)
 
     for t in fw_traces:
-        print(f'{t}\n#########################################')
+        print(f"{t}\n#########################################")
     for t in bw_traces:
-        print(f'{t}\n#########################################')
+        print(f"{t}\n#########################################")

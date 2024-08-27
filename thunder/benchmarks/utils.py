@@ -5,27 +5,29 @@ from thunder.core.trace import TraceCtx
 
 warm_up_iters = 50
 
-class SplitFwBwBenchmarkUtils():
+
+class SplitFwBwBenchmarkUtils:
     def __init__(
-            self, *, cost: float = float("inf"), fw_fn: Callable | None = None, bw_fn: Callable | None = None, executor = None
+        self, *, cost: float = float("inf"), fw_fn: Callable | None = None, bw_fn: Callable | None = None, executor=None
     ) -> None:
         self.cost: float = cost
         self.fw_fn: Callable | None = fw_fn
         self.bw_fn: Callable | None = bw_fn
         self.executor = executor
 
-class AutotunerTorchAutogradBenchmarkUtils():
+
+class AutotunerTorchAutogradBenchmarkUtils:
     def __init__(
         self,
-        cost: float = float('inf'),
+        cost: float = float("inf"),
         fw_trace: TraceCtx | None = None,
         bw_trace: TraceCtx | None = None,
         fw_traces: Sequence[TraceCtx] = [],
         bw_traces: Sequence[TraceCtx] = [],
         primal_trace: TraceCtx | None = None,
-        executor = None,
-        selected_executors: Sequence = []
-        ) -> None:
+        executor=None,
+        selected_executors: Sequence = [],
+    ) -> None:
         self.cost: float = cost
         self.fw_trace = fw_trace
         self.bw_trace = bw_trace
@@ -37,7 +39,6 @@ class AutotunerTorchAutogradBenchmarkUtils():
 
 
 def torch_fw_bw_benchmark_nvsight(models: list, labels: list, inputs: list, iters: int) -> None:
-
     for m, input, label in zip(models, inputs, labels):
         # Warm up
         for _ in range(warm_up_iters):
@@ -50,18 +51,18 @@ def torch_fw_bw_benchmark_nvsight(models: list, labels: list, inputs: list, iter
         for i in range(iters):
             torch.cuda.empty_cache()
             torch.cuda.nvtx.range_push(f"torch training {label}, iter {i}")
-            torch.cuda.nvtx.range_push('forward')
+            torch.cuda.nvtx.range_push("forward")
             y = m(input)
             torch.cuda.nvtx.range_pop()
             loss = y.sum()
-            torch.cuda.nvtx.range_push('backward')
+            torch.cuda.nvtx.range_push("backward")
             loss.backward()
             torch.cuda.nvtx.range_pop()
             torch.cuda.nvtx.range_pop()
         torch.cuda.cudart().cudaProfilerStop()
 
-def torch_fw_bw_benchmark(models: list, labels: list, inputs: list, iters: int) -> None:
 
+def torch_fw_bw_benchmark(models: list, labels: list, inputs: list, iters: int) -> None:
     for m, input, label in zip(models, inputs, labels):
         # Warm up
         for _ in range(warm_up_iters):
@@ -82,16 +83,13 @@ def torch_fw_bw_benchmark(models: list, labels: list, inputs: list, iters: int) 
             y = m(input)
             end_events[i].record(stream)
 
-            max_allocated_bytes = max(
-                max_allocated_bytes, torch.cuda.max_memory_allocated(
-                    torch.cuda.current_device())
-            )
+            max_allocated_bytes = max(max_allocated_bytes, torch.cuda.max_memory_allocated(torch.cuda.current_device()))
 
         torch.cuda.synchronize()
         tot = [s.elapsed_time(e) for s, e in zip(start_events, end_events)]
         tot_time = sum(tot) / iters
-        print(f'{label} tot fw time: {tot_time} ms')
-        print(f'{label} max fw allocated memory: {max_allocated_bytes / (2**30)} GB')
+        print(f"{label} tot fw time: {tot_time} ms")
+        print(f"{label} max fw allocated memory: {max_allocated_bytes / (2**30)} GB")
 
         start_events = [torch.cuda.Event(enable_timing=True) for _ in range(iters)]
         end_events = [torch.cuda.Event(enable_timing=True) for _ in range(iters)]
@@ -109,19 +107,16 @@ def torch_fw_bw_benchmark(models: list, labels: list, inputs: list, iters: int) 
             loss.backward()
             end_events[i].record(stream)
 
-            max_allocated_bytes = max(
-                max_allocated_bytes, torch.cuda.max_memory_allocated(
-                    torch.cuda.current_device())
-            )
+            max_allocated_bytes = max(max_allocated_bytes, torch.cuda.max_memory_allocated(torch.cuda.current_device()))
 
         torch.cuda.synchronize()
         tot = [s.elapsed_time(e) for s, e in zip(start_events, end_events)]
         tot_time = sum(tot) / iters
-        print(f'{label} tot bw time: {tot_time} ms')
-        print(f'{label} max bw allocated memory: {max_allocated_bytes / (2**30)} GB')
+        print(f"{label} tot bw time: {tot_time} ms")
+        print(f"{label} max bw allocated memory: {max_allocated_bytes / (2**30)} GB")
+
 
 def torch_total_benchmark(models: list, labels: list, inputs: list, iters: int) -> None:
-
     for m, input, label in zip(models, inputs, labels):
         # Warm up
         for _ in range(warm_up_iters):
@@ -144,28 +139,44 @@ def torch_total_benchmark(models: list, labels: list, inputs: list, iters: int) 
             loss.backward()
             end_events[i].record(stream)
 
-            max_allocated_bytes = max(
-                max_allocated_bytes, torch.cuda.max_memory_allocated(
-                    torch.cuda.current_device())
-            )
+            max_allocated_bytes = max(max_allocated_bytes, torch.cuda.max_memory_allocated(torch.cuda.current_device()))
 
         torch.cuda.synchronize()
         tot = [s.elapsed_time(e) for s, e in zip(start_events, end_events)]
         tot_time = sum(tot) / iters
-        print(f'{label} tot time: {tot_time} ms')
-        print(f'{label} max allocated memory: {max_allocated_bytes / (2**30)} GB')
+        print(f"{label} tot time: {tot_time} ms")
+        print(f"{label} max allocated memory: {max_allocated_bytes / (2**30)} GB")
 
 
-def thunder_fw_bw_benchmark(fw_traces: list, bw_traces: list, fw_labels: list, bw_labels: list, iters: int, nvsight: bool = False) -> None:
-    assert(len(fw_traces) == len(bw_traces) == len(fw_labels) == len(bw_labels))
+def thunder_fw_bw_benchmark(
+    fw_traces: list, bw_traces: list, fw_labels: list, bw_labels: list, iters: int, nvsight: bool = False
+) -> None:
+    assert len(fw_traces) == len(bw_traces) == len(fw_labels) == len(bw_labels)
     for trc, label in zip(fw_traces, fw_labels):
-        c, m, _ = benchmark_trace(trc, apply_del_last_used=False, snapshot=True, snapshot_name=label, iters=iters, nvsight=nvsight, nvsight_fn_name=label)
+        c, m, _ = benchmark_trace(
+            trc,
+            apply_del_last_used=False,
+            snapshot=True,
+            snapshot_name=label,
+            iters=iters,
+            nvsight=nvsight,
+            nvsight_fn_name=label,
+        )
         if not nvsight:
-            print(f'Executing {label} trace:\n{c} ms, {m / (2**30)} GB')
+            print(f"Executing {label} trace:\n{c} ms, {m / (2**30)} GB")
 
     i = 0
     for trc, label in zip(bw_traces, bw_labels):
-        c, m, _ = benchmark_trace(trc, apply_del_last_used=False, snapshot=True, snapshot_name=label, iters=iters, nvsight=nvsight, nvsight_fn_name=label, fw_trace=fw_traces[i])
+        c, m, _ = benchmark_trace(
+            trc,
+            apply_del_last_used=False,
+            snapshot=True,
+            snapshot_name=label,
+            iters=iters,
+            nvsight=nvsight,
+            nvsight_fn_name=label,
+            fw_trace=fw_traces[i],
+        )
         if not nvsight:
-            print(f'Executing {label} trace:\n{c} ms, {m / (2**30)} GB')
+            print(f"Executing {label} trace:\n{c} ms, {m / (2**30)} GB")
         i += 1

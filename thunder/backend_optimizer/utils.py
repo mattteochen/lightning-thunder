@@ -12,6 +12,7 @@ import thunder.core.transforms as transforms
 from itertools import chain
 import torch
 
+
 # Maybe we can use id(s)
 def sequence_hash(s: Sequence) -> str:
     def rec(s) -> str:
@@ -20,17 +21,18 @@ def sequence_hash(s: Sequence) -> str:
             if e is None:
                 name += "None#"
             elif hasattr(e, "name"):
-                 name += e.name + '#'
+                name += e.name + "#"
             elif isinstance(e, Sequence) and not isinstance(e, str):
                 name += rec(e)
             elif isinstance(e, int):
-                 name += 'int' + str(e) + '#'
+                name += "int" + str(e) + "#"
             else:
                 raise AssertionError(f"Unsupported type = {type(e)}")
-        name += ']'
+        name += "]"
         return name
 
     return rec(s)
+
 
 def can_executor_execute(ex: Executor, bsym: BoundSymbol) -> bool:
     try:
@@ -49,6 +51,7 @@ def get_first_available_operator_executor(
             return ex
     return Executor(name=empty_hash)
 
+
 def flatten_sequence(sequence: Sequence) -> list:
     res = []
     for e in sequence:
@@ -58,6 +61,7 @@ def flatten_sequence(sequence: Sequence) -> list:
         elif e is not None:
             res.append(e)
     return res
+
 
 def get_not_used_intermediate_outsputs(trace_in: TraceCtx) -> list[Proxy]:
     def is_in_sequence(seq: Sequence[Any], t: Proxy):
@@ -72,7 +76,7 @@ def get_not_used_intermediate_outsputs(trace_in: TraceCtx) -> list[Proxy]:
         elif isinstance(out, Sequence):
             return flatten_sequence(out)
         else:
-            raise RuntimeError(f'Unpack operation not defined for {type(out)}')
+            raise RuntimeError(f"Unpack operation not defined for {type(out)}")
 
     ans: list[Proxy] = []
     # Currently this is O(max(len(bsym.output)) * N^2)
@@ -83,17 +87,14 @@ def get_not_used_intermediate_outsputs(trace_in: TraceCtx) -> list[Proxy]:
         for e in unpacked_out:
             # None values are checked inside the unpack_output fn
             for b in trace_in.bound_symbols:
-                if (
-                    b.args is not None
-                    and isinstance(b.args, Sequence)
-                    and is_in_sequence(b.args, e)
-                ):
+                if b.args is not None and isinstance(b.args, Sequence) and is_in_sequence(b.args, e):
                     f = True
                     break
             if not f:
                 ans.append(e)
     from thunder.backend_optimizer.optimizer import log, LogLevel
-    log(f'Returning not used proxies: {[p.name for p in ans]}', level=LogLevel.DEBUG)
+
+    log(f"Returning not used proxies: {[p.name for p in ans]}", level=LogLevel.DEBUG)
     return ans
 
 
@@ -269,6 +270,7 @@ def operation_in_trace(*, trace: TraceCtx, op: str) -> bool:
             return True
     return False
 
+
 def is_te_used(trace: TraceCtx) -> bool:
     from thunder.executors.transformer_engineex import linear_bound_symbol_name_prefix
     from thunder.executors.transformer_engineex import te_functional_linear_backward_name
@@ -281,9 +283,11 @@ def is_te_used(trace: TraceCtx) -> bool:
             return True
     return False
 
+
 def is_backward_trace(trace: TraceCtx) -> bool:
     sig = trace.signature_with_no_ctx()
-    return sig.find('backward') >= 0
+    return sig.find("backward") >= 0
+
 
 def benchmark_trace(
     trace: TraceCtx,
@@ -294,7 +298,7 @@ def benchmark_trace(
     snapshot_name="",
     nvsight: bool = False,
     nvsight_fn_name: str = "",
-    **kwargs
+    **kwargs,
 ) -> tuple[float, float, Any]:
     from thunder.executors.passes import del_last_used
     import inspect
@@ -325,6 +329,7 @@ def benchmark_trace(
             return float("inf"), float("inf"), None
         except Exception as e:
             import inspect
+
             trc = inspect.getsource(fn)
             print(f"#Trace execution failed for nvsight (error: {e}):\n{trc}")
             raise e
@@ -397,17 +402,19 @@ def benchmark_trace(
         return transform_proxy_to_torch(sequence, level=0, **kwargs)
 
     def backward_trace_args_preprocess() -> list:
-        if 'fw_trace' not in kwargs:
-            raise RuntimeError('Set the associated forward trace in order to benchmark backward pass with sdpa executor')
-        fw_trace = kwargs.get('fw_trace', None)
+        if "fw_trace" not in kwargs:
+            raise RuntimeError(
+                "Set the associated forward trace in order to benchmark backward pass with sdpa executor"
+            )
+        fw_trace = kwargs.get("fw_trace", None)
         if not isinstance(fw_trace, TraceCtx):
-            raise AssertionError(f'forward trace is not a TraceCtx. Received: {type(fw_trace)}')
+            raise AssertionError(f"forward trace is not a TraceCtx. Received: {type(fw_trace)}")
         # Run the fw trace and get the outputs
         fw_output = benchmark_trace(fw_trace, apply_del_last_used=False)[2]
 
         # Check if the fw trace is a final trace or an intermediate one (used for single trace region benchmarks)
         sig = fw_trace.signature_with_no_ctx()
-        is_fw_final_trace = sig.startswith('def augmented')
+        is_fw_final_trace = sig.startswith("def augmented")
 
         # Filter the C0 tuple
         # These location might change if the implementation of the automatic
@@ -423,7 +430,7 @@ def benchmark_trace(
         # Now, we expected that if the fw trace is a final trace also the bw trace is a final one. And vice versa
         if is_fw_final_trace:
             # Swap saved_for_backward_traces
-            saved_for_bw = saved_for_bw_C0, fw_output[1][1] # Saved for backward tuple unpacks in (C0, _)
+            saved_for_bw = saved_for_bw_C0, fw_output[1][1]  # Saved for backward tuple unpacks in (C0, _)
             # Subsitute the static inputs for saved_for_backward with the runtime ones
             input_args.pop(0)
             input_args.insert(0, saved_for_bw)
@@ -453,7 +460,9 @@ def benchmark_trace(
             See how the backward trace need t4 as argument recoveered from the static args
             """
             updated_input_args = [t for t in saved_for_bw_C0]
-            updated_input_args.extend(input_args[len(updated_input_args):]) # Should be only one variable but leave this dyanamic
+            updated_input_args.extend(
+                input_args[len(updated_input_args) :]
+            )  # Should be only one variable but leave this dyanamic
             input_args = updated_input_args
 
         return input_args
@@ -471,7 +480,7 @@ def benchmark_trace(
     # that afterwards at least one TE symbol will be included
     # NOTE: compile data could be None if this benchmark util is used outside the compilation process. If this is the case we are benchmarking
     # a whole trace (in theory) and is_te_used API will return the needed result.
-    te_used = (cd.compile_options.get('te_used', False) if cd else False) or is_te_used(trace)
+    te_used = (cd.compile_options.get("te_used", False) if cd else False) or is_te_used(trace)
     if te_used:
         cached_te_fp8_autocast_value = trace._include_te_fp8_autocast
         trace._include_te_fp8_autocast = True
@@ -502,6 +511,7 @@ def benchmark_trace(
             t, m, answer = compute_time_cost_ms(executable, executable_str, iters, *input_args)
     except Exception as e:
         import traceback
+
         ex_str = traceback.format_exc()
         print(ex_str)
         # https://github.com/Lightning-AI/lightning-thunder/issues/664
@@ -574,35 +584,42 @@ def wrap_fn_with_exeuctor_compile_option(option, fn: Callable | None = None, *ar
 
     return out
 
+
 def print_trace_args(trace: TraceCtx):
     print_nested_sequence(trace.args)
 
+
 # Display nest sequence arguments
 def print_nested_sequence(args, show_dicts=False):
-
     def is_tensor(t):
         return isinstance(t, torch.Tensor) or isinstance(t, TensorProxy)
 
     if not isinstance(args, Sequence):
         return
-    print('###################################### Sequence start')
+    print("###################################### Sequence start")
+
     def _print(args, level):
-        tabs = '\t' * level
-        print(f'Level {level} start')
+        tabs = "\t" * level
+        print(f"Level {level} start")
         for arg in args:
             if isinstance(arg, Sequence):
-                _print(arg, level+1)
+                _print(arg, level + 1)
             else:
                 tensor_shape = arg.shape if is_tensor(arg) else None
                 dtype = arg.dtype if is_tensor(arg) else None
                 name = arg.name if isinstance(arg, TensorProxy) else ""
-                print(f'{tabs}{name + ": " if name else ""}{type(arg)}{arg if isinstance(arg, dict) and show_dicts else ""} {tensor_shape if tensor_shape else ""} {dtype if dtype else ""}')
-        print(f'Level {level} end')
+                print(
+                    f'{tabs}{name + ": " if name else ""}{type(arg)}{arg if isinstance(arg, dict) and show_dicts else ""} {tensor_shape if tensor_shape else ""} {dtype if dtype else ""}'
+                )
+        print(f"Level {level} end")
+
     _print(args, 0)
-    print('###################################### Debug args\n')
+    print("###################################### Debug args\n")
+
 
 def update_compile_options_executor_list_after_fw_bw_split() -> None:
     from thunder.backend_optimizer.optimizer import get_fw_bw_split_backends_options
+
     cd = get_compile_data()
     assert cd
 
@@ -617,11 +634,12 @@ def update_compile_options_executor_list_after_fw_bw_split() -> None:
                 executors_list.remove(ex)
 
     # Putting at the front even though order does not matter
-    for ex in cd.compile_options['executors_placed_by_fw_bw_split']:
+    for ex in cd.compile_options["executors_placed_by_fw_bw_split"]:
         executors_list.insert(0, ex)
 
     # Assign new compilation executors options
     cd.executors_list = executors_list
+
 
 def transform_tensor(arg: TensorProxy, **kwargs) -> torch.Tensor:
     from thunder.core.dtypes import is_float_dtype, is_signedinteger_dtype, is_boolean_dtype
@@ -634,16 +652,20 @@ def transform_tensor(arg: TensorProxy, **kwargs) -> torch.Tensor:
     requires_grad = arg.requires_grad
     torch_dtype = to_torch_dtype(dtype)
     if torch_dtype is None:
-        raise AssertionError(f'Unrecognized thunder dtype: {dtype}')
+        raise AssertionError(f"Unrecognized thunder dtype: {dtype}")
     if is_float_dtype(dtype):
         # Use TE Float8 if TE is enabled, it has float32 torch dtype
-        te_used = kwargs.get('te_used', False)
+        te_used = kwargs.get("te_used", False)
         if te_used:
             tensor: torch.Tensor = torch.randn(
-                shape, dtype=torch_dtype if dtype.bytes > 1 else torch.float32, device=device.device_str(), requires_grad=requires_grad
+                shape,
+                dtype=torch_dtype if dtype.bytes > 1 else torch.float32,
+                device=device.device_str(),
+                requires_grad=requires_grad,
             )
             if dtype.bytes == 1:
                 import transformer_engine.pytorch as te
+
                 tensor = te.float8_tensor.Float8Tensor.to_float8(tensor)
         # Support standard float tensors
         else:
@@ -664,8 +686,10 @@ def transform_tensor(arg: TensorProxy, **kwargs) -> torch.Tensor:
 
     return tensor
 
+
 def transform_proxy_to_torch(sequence: Sequence, level=0, **kwargs) -> tuple | list:
     from thunder.executors.transformer_engineex import Context as C
+
     res = []
     for e in sequence:
         if type(e) is tuple:
@@ -693,15 +717,18 @@ def transform_proxy_to_torch(sequence: Sequence, level=0, **kwargs) -> tuple | l
             # If the static input generator will be capable to generate only the cotangents then branch will not be used anymore
             #
             # Currently an option to fill a custom maybe real context is left.
-            elif hasattr(e, 'name') and isinstance(e, AnyProxy) and e.name.startswith('ctx_te'):
-                required_context = kwargs.get('cached_fw_te_ctx_out', None)
+            elif hasattr(e, "name") and isinstance(e, AnyProxy) and e.name.startswith("ctx_te"):
+                required_context = kwargs.get("cached_fw_te_ctx_out", None)
                 res.append(required_context if required_context is not None else C())
             elif e is None:
                 res.append(None)
             else:
-                raise AssertionError(f'Input arg type not recognized: {type(e)} with name: {e.name if hasattr(e, "name") else "unknown"} with value: {e}')
+                raise AssertionError(
+                    f'Input arg type not recognized: {type(e)} with name: {e.name if hasattr(e, "name") else "unknown"} with value: {e}'
+                )
     # Outer container must be a list
     return tuple(res) if level > 0 else res
+
 
 def reorder_executors_list(executors: Sequence):
     from thunder.backend_optimizer.optimizer import get_fw_bw_split_backends_options
@@ -733,7 +760,7 @@ def reorder_executors_list(executors: Sequence):
     for ex in reordered:
         if are_inputs_names and (ex == nvfuser_ex.name or ex == torch_compile_ex.name):
             found = True
-        elif (ex == nvfuser_ex or ex == torch_compile_ex):
+        elif ex == nvfuser_ex or ex == torch_compile_ex:
             found = True
     if not found:
         reordered.insert(0, nvfuser_ex.name if are_inputs_names else nvfuser_ex)

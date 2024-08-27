@@ -1,7 +1,13 @@
 import torch
 import torch.nn as nn
 import thunder
-from thunder.benchmarks.utils import thunder_fw_bw_benchmark, torch_fw_bw_benchmark, torch_fw_bw_benchmark_nvsight, torch_total_benchmark
+from thunder.benchmarks.utils import (
+    thunder_fw_bw_benchmark,
+    torch_fw_bw_benchmark,
+    torch_fw_bw_benchmark_nvsight,
+    torch_total_benchmark,
+)
+
 
 class ModelConfig:
     def __init__(self, n_embd=256, n_head=8, dropout=0.1, block_size=64, bias=True):
@@ -11,12 +17,13 @@ class ModelConfig:
         self.bias = bias
         self.block_size = block_size
 
+
 class MLP(nn.Module):
     def __init__(self, config):
         super().__init__()
-        self.c_fc    = nn.Linear(config.n_embd, 4 * config.n_embd, bias=config.bias)
-        self.gelu    = nn.GELU()
-        self.c_proj  = nn.Linear(4 * config.n_embd, config.n_embd, bias=config.bias)
+        self.c_fc = nn.Linear(config.n_embd, 4 * config.n_embd, bias=config.bias)
+        self.gelu = nn.GELU()
+        self.c_proj = nn.Linear(4 * config.n_embd, config.n_embd, bias=config.bias)
         self.dropout = nn.Dropout(config.dropout)
 
     def forward(self, x):
@@ -26,7 +33,8 @@ class MLP(nn.Module):
         x = self.dropout(x)
         return x
 
-with torch.device('cuda'):
+
+with torch.device("cuda"):
     embeddings = 3072
     config = ModelConfig(n_embd=embeddings, dropout=0.0, bias=False)
     dtype = torch.float32
@@ -36,19 +44,24 @@ with torch.device('cuda'):
 
     jmodel_def = thunder.jit(model)
     # This model fails under some circumstances after passed the placed traced under the rematelizer
-    jmodel_auto = thunder.jit(model, autotune_type='runtime', executors = ['nvfuser', 'torchcompile', 'sdpa', 'torch', 'python'], use_cudagraphs=False)
+    jmodel_auto = thunder.jit(
+        model,
+        autotune_type="runtime",
+        executors=["nvfuser", "torchcompile", "sdpa", "torch", "python"],
+        use_cudagraphs=False,
+    )
 
-    print('deviation def:', (jmodel_def(x) - model(x)).abs().max().item())
-    print('deviation auto:', (jmodel_auto(x) - model(x)).abs().max().item())
+    print("deviation def:", (jmodel_def(x) - model(x)).abs().max().item())
+    print("deviation auto:", (jmodel_auto(x) - model(x)).abs().max().item())
 
     iters = 100
     callables = [jmodel_auto, jmodel_def]
-    labels = ['auto', 'def']
+    labels = ["auto", "def"]
     inputs = [x, x]
-    print('Results with torch total benchmark:')
+    print("Results with torch total benchmark:")
     torch_total_benchmark(callables, labels, inputs, iters)
 
-    print('Results with thunder benchmark:')
+    print("Results with thunder benchmark:")
     fw_traces = [
         thunder.last_traces(jmodel_def)[-1],
         thunder.last_traces(jmodel_auto)[-1],
@@ -64,4 +77,3 @@ with torch.device('cuda'):
     # for t in traces:
     #     print(t)
     #     print('##########################')
-

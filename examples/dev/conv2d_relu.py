@@ -1,6 +1,7 @@
 import torch
 import thunder
 
+
 class Module(torch.nn.Module):
     def __init__(self, in_channels, out_channels, kernel_size, stride=1) -> None:
         super().__init__()
@@ -14,7 +15,8 @@ class Module(torch.nn.Module):
         d = self.relu(b * a)
         return c + d
 
-with torch.device('cuda'):
+
+with torch.device("cuda"):
     model = Module(16, 33, 3, stride=2)
     x = torch.randn(20, 16, 50, 100)
 
@@ -27,4 +29,3 @@ with torch.device('cuda'):
     #     print('##############################################')
     # print('---------------------------------------------- ans')
     # print(ans)
-

@@ -3,8 +3,7 @@ import time
 
 iters = 1000
 
-with torch.device('cuda'):
-
+with torch.device("cuda"):
     tot_time = 0
     for i in range(iters):
         s = time.time_ns()
@@ -16,7 +15,7 @@ with torch.device('cuda'):
         del b
         del c
         torch.cuda.synchronize()
-        tot_time += (time.time_ns() - s)
+        tot_time += time.time_ns() - s
 
     print(f"With del = {(tot_time / iters) / 1000000}")
 
@@ -28,6 +27,6 @@ with torch.device('cuda'):
         c = a + b + a + b
         c = c * c
         torch.cuda.synchronize()
-        tot_time += (time.time_ns() - s)
+        tot_time += time.time_ns() - s
 
     print(f"With no del = {(tot_time / iters) / 1000000}")
