@@ -100,8 +100,8 @@ for test in layers:
             fw_labels = ["fw_def", "fw_auto"]
             bw_labels = ["bw_def", "bw_auto"]
             print(f"Results thunder benchmark ({iters} iters):")
-            thunder_fw_bw_benchmark(fw_traces, bw_traces, fw_labels, bw_labels, iters, nvsight=True)
-            thunder_fw_bw_benchmark(fw_traces, bw_traces, fw_labels, bw_labels, 10, nvsight=True)
+            thunder_fw_bw_benchmark(fw_traces, bw_traces, fw_labels, bw_labels, iters, nvsight=False)
+            # thunder_fw_bw_benchmark(fw_traces, bw_traces, fw_labels, bw_labels, 10, nvsight=True)
 
             print(test.model_name)
             print(f"\n\nResults torch fw bw benchmark ({iters} iters):")
