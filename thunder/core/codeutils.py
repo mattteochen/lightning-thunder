@@ -460,6 +460,7 @@ def get_siginfo(fn: Callable, args, kwargs, *, _make_named_inputs: bool = False)
     si.unwrapped_fn = unwrapped
     return si
 
+
 def get_siginfo_name(trace) -> str:
     try:
         name = ""
@@ -467,8 +468,8 @@ def get_siginfo_name(trace) -> str:
             siginfo: SigInfo = get_siginfo(trace.fn, trace.args, trace.kwargs)
             name = siginfo.name
         else:
-            name = 'unknown'
+            name = "unknown"
 
         return name
     except Exception as e:
-        raise AssertionError(f'Is input trace an instance of TraceCtx?\n{e}')
+        raise AssertionError(f"Is input trace an instance of TraceCtx?\n{e}")

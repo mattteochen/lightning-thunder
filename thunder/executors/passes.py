@@ -71,7 +71,6 @@ def _transform_for_operator_executor_execution(trace: TraceCtx, executors_list: 
 
         ex: Executor
         for ex in executors_list:
-
             # TODO Consider allowing operator executors to claim portions of operations
             # TODO Should FusionExecutors be allowed to claim bsym with bsym.sym.executor?
 
@@ -139,6 +138,7 @@ def _transform_for_operator_executor_execution(trace: TraceCtx, executors_list: 
     )
     return extrace
 
+
 # Autotuned transform_for_execution version
 def autotune_transform_for_execution(
     *, optimizer_context: BackendOptimizer, trace: TraceCtx, trace_type: TraceType
@@ -158,7 +158,7 @@ def autotune_transform_for_execution(
 
     # Attach new trace and set the debug file name
     optimizer_context.attach_trace(trace=trace, trace_type=trace_type)
-    optimizer_context.log_file_name = f'autotune_transform_for_execution_{sig_name}.log'
+    optimizer_context.log_file_name = f"autotune_transform_for_execution_{sig_name}.log"
     # Forward traces are cached inside the context
     optimizer_context.optimize()
     match trace_type:
@@ -188,6 +188,7 @@ def autotune_transform_for_execution(
             )
             return fw_extrace, bw_extrace
 
+
 def transform_for_execution(trace: TraceCtx, executors_list: Sequence[Executor]) -> TraceCtx:
     import torch
 
@@ -206,7 +207,6 @@ def transform_for_execution(trace: TraceCtx, executors_list: Sequence[Executor])
     #
     extrace = _transform_for_operator_executor_execution(trace, executors_list)
     extrace = dce(extrace)
-
 
     #
     # Step 2 Fusion executors can transform the trace
@@ -356,7 +356,7 @@ def del_last_used(trace: TraceCtx, *, clear_mutable_collections=False) -> TraceC
 
     # If dce is disabled, we have to disable this pass also
     cd = get_compile_data()
-    disabled = not(not cd or (cd and not cd.compile_options.get('disable_dce', None)))
+    disabled = not (not cd or (cd and not cd.compile_options.get("disable_dce", None)))
 
     start_time_ns = time.perf_counter_ns()
 
@@ -375,6 +375,10 @@ def del_last_used(trace: TraceCtx, *, clear_mutable_collections=False) -> TraceC
     elapsed_time_ns = end_time_ns - start_time_ns
     elapsed_time_millis = elapsed_time_ns // 1000000
 
-    del_trace.set_provenance(TraceProvenance(f"Delete Last Used{' Skipped Per Compile Options' if disabled else ''} (took {elapsed_time_millis} milliseconds)"))
+    del_trace.set_provenance(
+        TraceProvenance(
+            f"Delete Last Used{' Skipped Per Compile Options' if disabled else ''} (took {elapsed_time_millis} milliseconds)"
+        )
+    )
 
     return del_trace

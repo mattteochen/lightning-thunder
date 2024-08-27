@@ -66,7 +66,9 @@ def make_aug_forward_and_backward(bsym: BoundSymbol) -> tuple[Callable, Callable
             if cached_result is not None and not getattr(joint_forward_backward, "_disable_caching", False):
                 return cached_result
 
-        joint_trace = thunder.trace(inline_trace=False, use_dce=False)(joint_forward_backward, *bsym.args, **bsym.kwargs)
+        joint_trace = thunder.trace(inline_trace=False, use_dce=False)(
+            joint_forward_backward, *bsym.args, **bsym.kwargs
+        )
         consumers = utils.consumers(joint_trace)
 
         def find_backward_input(forward_output):
@@ -115,7 +117,9 @@ def make_aug_forward_and_backward(bsym: BoundSymbol) -> tuple[Callable, Callable
 
         forward_input_proxies = tree_flatten((joint_trace.args, joint_trace.kwargs))[0]
         forward_input_proxies = [arg for arg in forward_input_proxies if isinstance(arg, Proxy)]
-        forward_bsyms = utils.find_producer_symbols(joint_trace, tree_flatten(joint_trace.output)[0], forward_input_proxies)
+        forward_bsyms = utils.find_producer_symbols(
+            joint_trace, tree_flatten(joint_trace.output)[0], forward_input_proxies
+        )
         backward_bsyms = [bsym for bsym in backward_bsyms if bsym not in forward_bsyms]
 
         # Find required info from forward trace for backward trace
@@ -125,7 +129,9 @@ def make_aug_forward_and_backward(bsym: BoundSymbol) -> tuple[Callable, Callable
             for arg in backward_bsym.flat_args:
                 if not isinstance(arg, Proxy):
                     continue
-                if arg not in backward_producers and variableify(arg) not in map(variableify, tree_flatten(bw_inputs)[0]):
+                if arg not in backward_producers and variableify(arg) not in map(
+                    variableify, tree_flatten(bw_inputs)[0]
+                ):
                     saved_for_backward.append(arg)
 
         saved_for_backward = list({variableify(arg): arg for arg in saved_for_backward}.values())
@@ -202,7 +208,7 @@ def make_aug_forward_and_backward(bsym: BoundSymbol) -> tuple[Callable, Callable
 
     cd = get_compile_data()
     # No autotuning
-    if not cd or not cd.compile_options.get('autotune_type', None):
+    if not cd or not cd.compile_options.get("autotune_type", None):
         return _make_aug_forward_and_backward()
 
     # This search will be performed on the requested executors list
@@ -218,7 +224,7 @@ def make_aug_forward_and_backward(bsym: BoundSymbol) -> tuple[Callable, Callable
         from thunder.backend_optimizer.utils import benchmark_trace
 
         # In order define this unique trace region we need an unique id
-        key = (bsym.sym, Executor(f'{id(bsym)}-autotuned'), subkey := _make_cache_key(bsym.args, bsym.kwargs))
+        key = (bsym.sym, Executor(f"{id(bsym)}-autotuned"), subkey := _make_cache_key(bsym.args, bsym.kwargs))
         # We do check the cache here as the key in the inner fn does not know about this special id
         cached_result = _cache.get(key, None) if subkey is not None else None
         # NOTE: cache is always enabled here
@@ -237,15 +243,17 @@ def make_aug_forward_and_backward(bsym: BoundSymbol) -> tuple[Callable, Callable
         requested_executors_list_for_bsym = [ex for ex in cached_executors_list if ex in backends]
         from thunder.benchmarks.utils import SplitFwBwBenchmarkUtils
         from thunder.backend_optimizer.optimizer import OptimizerType
+
         best = SplitFwBwBenchmarkUtils()
 
         # Restrict the search space
         backends = list(requested_executors_list_for_bsym)
 
         from thunder.backend_optimizer.optimizer import log, LogLevel
-        log(f'Search space for {bsym.sym.name}: {backends}', level=LogLevel.INFO)
+
+        log(f"Search space for {bsym.sym.name}: {backends}", level=LogLevel.INFO)
         for b in backends:
-            log(f'Benchmarking executor {b.name} for {bsym.sym.name}', level=LogLevel.INFO)
+            log(f"Benchmarking executor {b.name} for {bsym.sym.name}", level=LogLevel.INFO)
             # Let downstream fn to pick up this
             requested_executors_list_for_bsym.remove(b)
             requested_executors_list_for_bsym.insert(0, b)
@@ -255,18 +263,25 @@ def make_aug_forward_and_backward(bsym: BoundSymbol) -> tuple[Callable, Callable
             # TODO: make benchmark info taken from an autotuner config
             fw_time, fw_mem, _ = benchmark_trace(fw_trace, iters=100, apply_del_last_used=False)
             bw_time, bw_mem, _ = benchmark_trace(bw_trace, iters=100, apply_del_last_used=False, fw_trace=fw_trace)
-            cost = fw_time + bw_time if cd.compile_options['autotune_type'] == OptimizerType.RUNTIME else fw_mem + bw_mem
+            cost = (
+                fw_time + bw_time if cd.compile_options["autotune_type"] == OptimizerType.RUNTIME else fw_mem + bw_mem
+            )
             if cost < best.cost:
-                best = SplitFwBwBenchmarkUtils(cost = cost, fw_fn = fw_fn, bw_fn = bw_fn, executor = b)
+                best = SplitFwBwBenchmarkUtils(cost=cost, fw_fn=fw_fn, bw_fn=bw_fn, executor=b)
 
-        assert best.cost != float('inf')
+        assert best.cost != float("inf")
         from thunder.backend_optimizer.optimizer import log
-        log(f'Best executor for symbol [{bsym.output.name} = {bsym.sym.name}]: {best.executor.name}', level=LogLevel.INFO)
+
+        log(
+            f"Best executor for symbol [{bsym.output.name} = {bsym.sym.name}]: {best.executor.name}",
+            level=LogLevel.INFO,
+        )
 
         # Update the compile options
         cd.compile_options["executors_placed_by_fw_bw_split"].add(best.executor)
         from thunder.executors.transformer_engineex import transformer_engine_ex
-        cd.compile_options |= {'te_used': True if best.executor == transformer_engine_ex else False}
+
+        cd.compile_options |= {"te_used": True if best.executor == transformer_engine_ex else False}
         # Restore executor list for downstream optimizations
         cd.executors_list = cached_executors_list
         # The executors used in this pass will be updated after the termination of the forward_and_backward_from_trace call

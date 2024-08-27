@@ -326,14 +326,14 @@ def jit(
     if transforms is None:
         transforms = []
 
-    required_autotune = compile_options.get('autotune_type', None)
+    required_autotune = compile_options.get("autotune_type", None)
     if required_autotune is not None:
-        if required_autotune not in ['runtime', 'memory']:
-            raise AssertionError(f'Not supported optimization: {required_autotune}')
+        if required_autotune not in ["runtime", "memory"]:
+            raise AssertionError(f"Not supported optimization: {required_autotune}")
 
         compile_options |= {
-            "autotune_type": OptimizerType.RUNTIME if required_autotune == 'runtime' else OptimizerType.MEMORY,
-            "executors_placed_by_fw_bw_split": set()
+            "autotune_type": OptimizerType.RUNTIME if required_autotune == "runtime" else OptimizerType.MEMORY,
+            "executors_placed_by_fw_bw_split": set(),
         }
 
         # Default the executors list to all_executors if no options are given
@@ -341,9 +341,10 @@ def jit(
         if not executors:
             executors = get_all_executors()
             # Remove python and cudagraph
-            executors = [ex for ex in executors if ex.name != 'python' and ex.name != 'cudagraphex']
+            executors = [ex for ex in executors if ex.name != "python" and ex.name != "cudagraphex"]
 
         from thunder.backend_optimizer.utils import reorder_executors_list
+
         executors = reorder_executors_list(executors)
 
     # Resolve names of executors
@@ -792,7 +793,6 @@ def jit(
         cs.last_trace_host_execution_start = time.perf_counter_ns()
 
         if cache_entry.vanilla_tensor_args:
-
             if alias_tensor_indices_str := _alias_tensor_of_args_kwargs(*inps):
                 alias_tensor_indices = alias_tensor_indices_str
                 alias_tensor_indices = {int(i) for i in alias_tensor_indices_str.split(",")}
@@ -1144,4 +1144,3 @@ def grad(fn):
         return original_result, original_trace
 
     return _fn
-

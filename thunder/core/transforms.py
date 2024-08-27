@@ -394,6 +394,7 @@ def visitor_transform_paired(trace_from: Trace, visit: Callable, zipped: zip, *,
     finally:
         reset_tracectx(tracectx_tok)
 
+
 # Creates a new trace from "trace_from" by calling "visit" on its bound symbols ("bsyms").
 #   visit(bsym: BoundSymbolInterface) -> VISIT_TYPE should call operations
 #   as if executing a program, and those operations will be recorded into the
@@ -1488,7 +1489,6 @@ def grad(
     cfn,
 ) -> Callable:
     def grad(func):
-
         @wraps(func)
         def grad_func(*args, **kwargs):
             _, grads = value_and_grad(func)(*args, **kwargs)
@@ -3738,7 +3738,6 @@ def forward_and_backward_from_trace(trace: Trace, torch_autograd=False) -> Forwa
             return type(x.value)(1)
         else:
             return None
-
 
     forward_trace = construct_trace()(augmented_forward_fn, *trace.args, **trace.kwargs)
     # We set forward trace to construct proxies because we need these proxies to

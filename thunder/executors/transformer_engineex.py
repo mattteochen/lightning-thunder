@@ -410,6 +410,7 @@ def _te_functional_linear_backward_meta(
         TensorProxy(like=g, shape=b_shape) if b_shape else None,
     )
 
+
 te_functional_linear_backward_name: str = "te_functional_linear_backward"
 
 te_functional_linear_backward = transformer_engine_ex.register_operator(
@@ -426,6 +427,7 @@ FP8_RECIPE_KEY = "te_fp8_recipe"
 
 
 linear_bound_symbol_name_prefix: str = "te_linear"
+
 
 # Creates a new stateful operator for each invocation of `linear`.
 def _create_fp8_linear_bound_symbol(

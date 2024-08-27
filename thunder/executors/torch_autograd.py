@@ -106,7 +106,8 @@ class ThunderFunction(torch.autograd.Function):
             del grads
             return (None, None, None, None, None, *([None] * n_grads))
 
-def update_bw_from_forward_optimization(*, fw: TraceCtx, bw:TraceCtx) -> TraceCtx:
+
+def update_bw_from_forward_optimization(*, fw: TraceCtx, bw: TraceCtx) -> TraceCtx:
     # Some of the optimization passes change proxies in the trace and
     # any change in the forward trace must be reflected in the backward
     # trace.
@@ -117,8 +118,7 @@ def update_bw_from_forward_optimization(*, fw: TraceCtx, bw:TraceCtx) -> TraceCt
         for x, y in zip(original_bw_saved_tensors_for_backward, new_fw_saved_tensors_for_backward)
         if variableify(x) != variableify(y)
     }
-    new_bsyms = replace_redundant_inputs(
-        swap_map, bw.bound_symbols)
+    new_bsyms = replace_redundant_inputs(swap_map, bw.bound_symbols)
     # replace_redundant_inputs doesn't replace the output of
     # UNPACK_SEQUENCE so we do it manually. Here we have certain
     # assumptions about the structure of the backward trace.
@@ -135,6 +135,7 @@ def update_bw_from_forward_optimization(*, fw: TraceCtx, bw:TraceCtx) -> TraceCt
     bw.bound_symbols = new_bsyms
 
     return bw
+
 
 def split_forward_backward(computation_trc: TraceCtx, compile_data, compile_stats, /, *flat_args):
     from thunder.backend_optimizer.optimizer import TraceType, BackendOptimizer
@@ -154,7 +155,7 @@ def split_forward_backward(computation_trc: TraceCtx, compile_data, compile_stat
     if not any(requires_grad_mask):
         raise RuntimeError("PyTorch's Autograd interface requires at least one tensor input with requires_grad=True")
 
-    autotune_type = compile_data.compile_options.get('autotune_type', None)
+    autotune_type = compile_data.compile_options.get("autotune_type", None)
 
     primal_trace = computation_trc
     primal_trace = sort_data_parallel_syncs(primal_trace)
@@ -213,7 +214,7 @@ def split_forward_backward(computation_trc: TraceCtx, compile_data, compile_stat
             apply_bucketing_bw_trace=do_apply_bucketing_bw_trace,
             produce_log=True,
             optimizer_type=autotune_type,
-            compile_data=compile_data
+            compile_data=compile_data,
         )
     )
 

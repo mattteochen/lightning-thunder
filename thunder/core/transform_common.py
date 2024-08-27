@@ -100,13 +100,15 @@ def dce(trace: Trace, needed_proxies: None | set[Variable] = None) -> Trace:
     start_time_ns = time.perf_counter_ns()
 
     cd = get_compile_data()
-    disabled = not(not cd or (cd and not cd.compile_options.get('disable_dce', None)))
+    disabled = not (not cd or (cd and not cd.compile_options.get("disable_dce", None)))
     if not disabled:
         producer_map: ProxyDict = producers(trace)
 
         flat_trace_outputs, _ = tree_flatten(trace.output)
         if needed_proxies is None:
-            needed_proxies: set[Variable] = set(tuple(variableify(x) for x in flat_trace_outputs if isinstance(x, Proxy)))
+            needed_proxies: set[Variable] = set(
+                tuple(variableify(x) for x in flat_trace_outputs if isinstance(x, Proxy))
+            )
         else:
             needed_proxies.update(tuple(variableify(x) for x in flat_trace_outputs if isinstance(x, Proxy)))
         dced = []
@@ -162,7 +164,11 @@ def dce(trace: Trace, needed_proxies: None | set[Variable] = None) -> Trace:
     end_time_ns = time.perf_counter_ns()
     elapsed_time_ns = end_time_ns - start_time_ns
     elapsed_time_millis = elapsed_time_ns // 1000000
-    dcetrace.set_provenance(TraceProvenance(f"Dead Code Elimination{' Skipped Per Compile Options' if disabled else ''} (took {elapsed_time_millis} milliseconds)"))
+    dcetrace.set_provenance(
+        TraceProvenance(
+            f"Dead Code Elimination{' Skipped Per Compile Options' if disabled else ''} (took {elapsed_time_millis} milliseconds)"
+        )
+    )
 
     return dcetrace
 
