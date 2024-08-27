@@ -10,17 +10,18 @@ from thunder.extend import Executor, FusionExecutor, OperatorExecutor, get_alway
 from typing import Hashable
 from thunder.backend_optimizer.utils import benchmark_trace
 
-# Defining a wrapper fn as the imports will crash in the global scope
+
 def get_fw_bw_split_backends_options(bsym: BoundSymbol | None = None) -> list | dict:
     from thunder.executors.sdpaex import sdpa_ex
     from thunder.executors.cudnnex import cudnn_ex
     from thunder.executors.fa3ex import fa3_ex
     from thunder.executors.transformer_engineex import transformer_engine_ex
-    #Current configuration
+
+    # Current configuration
     options: dict[str, list] = {
         # TODO: filter out TE only if requested
-        'linear': [transformer_engine_ex],
-        'scaled_dot_product_attention': [sdpa_ex, cudnn_ex, fa3_ex],
+        "linear": [transformer_engine_ex],
+        "scaled_dot_product_attention": [sdpa_ex, cudnn_ex, fa3_ex],
     }
 
     return options.get(bsym.sym.name, []) if bsym else options
@@ -41,6 +42,7 @@ class BenchmarkResult:
         self.trace: TraceCtx = trace
         self.label: str | Hashable = label
         self.index: int = index
+
 
 class OptimizerType(Enum):
     MEMORY = 0
@@ -154,6 +156,7 @@ def log(what: str, level: LogLevel = LogLevel.INFO):
     if log_level == LogLevel.DEBUG or log_level == level:
         print(f"================================================================================ Autotune: {what}")
 
+
 class PlacerBase:
     def __init__(
         self,
@@ -164,7 +167,7 @@ class PlacerBase:
         log_file_name: str,
         optimizer_type: OptimizerType = OptimizerType.RUNTIME,
         compile_data,
-        ) -> None:
+    ) -> None:
         self.always_executors: tuple[Executor, ...] = get_always_executors()
         self.empty_executor_hashable_placeholder: str = "empty"
         self.executors: Sequence[Executor] = priority_executors
@@ -206,6 +209,7 @@ class PlacerBase:
     def get_optimal_fw_bw_traces(self) -> tuple[TraceCtx, TraceCtx]:
         return (TraceCtx(), TraceCtx())
 
+
 class FusionPlacer_BeamSearch(PlacerBase):
     def __init__(
         self,
@@ -223,7 +227,7 @@ class FusionPlacer_BeamSearch(PlacerBase):
             apply_bucketing_bw_trace=apply_bucketing_bw_trace,
             log_file_name=log_file_name,
             optimizer_type=optimizer_type,
-            compile_data=compile_data
+            compile_data=compile_data,
         )
 
         # Strat fusion
@@ -232,6 +236,7 @@ class FusionPlacer_BeamSearch(PlacerBase):
 
         from thunder.executors.nvfuserex_impl import linear, _linear_check
         from thunder.executors.nvfuserex_impl import matmul, _matmul_check
+
         self.known_fusion_ex_compile_options: dict[str | Hashable, list[FusionCompileOptionsHelper]] = {
             "nvfuser": [
                 FusionCompileOptionsHelper("nv_enable_linear", "linear", PrimIDs.LINEAR, linear, _linear_check),
@@ -268,6 +273,7 @@ class FusionPlacer_BeamSearch(PlacerBase):
             # We want to verify that it is not set to false
             if self.compile_data.use_cudagraphs is None or self.compile_data.use_cudagraphs == True:
                 from thunder.executors.cudagraphex import cudagraphex
+
                 pair_options.extend(
                     [
                         (cudagraphex.fusion_pass(pair.fw), cudagraphex.fusion_pass(pair.bw)),
@@ -343,7 +349,9 @@ class FusionPlacer_BeamSearch(PlacerBase):
                 for t, o in zip([trc_time, trc_mem], [compile_opt_time, compile_opt_mem]):
                     log(f'Caching fw candidate [compile option: {o.fusion_tag if o else "None"}]')
                     self.cached_fw_traces.append(
-                        TraceCandidate(trace=t, compile_opt=o, label=label + '_enabled_' + o.fusion_tag if o is not None else label)
+                        TraceCandidate(
+                            trace=t, compile_opt=o, label=label + "_enabled_" + o.fusion_tag if o is not None else label
+                        )
                     )
 
         def bw_benchmark():
@@ -355,7 +363,9 @@ class FusionPlacer_BeamSearch(PlacerBase):
                 # Unpack the dict
                 label = list(pair.keys())[0]
                 trace = list(pair.values())[0]
-                trace_time, trace_mem, res = benchmark_trace(trace, self.benchmark_iters, fw_trace=self.active_fw_trace_ctx[0])
+                trace_time, trace_mem, res = benchmark_trace(
+                    trace, self.benchmark_iters, fw_trace=self.active_fw_trace_ctx[0]
+                )
                 self.debug_msg += f"Trace name = [{label}] - Target: TIME - Time = {trace_time} ms - Mem = {trace_mem / (2**30)} GB\n{trace}\n\n"
                 # log(
                 #     f'Benchmark trace (target TIME) "{label}" (time = {trace_time} ms, mem = {trace_mem / (2**30)} GB:\n{trace}',
@@ -370,7 +380,9 @@ class FusionPlacer_BeamSearch(PlacerBase):
                 label = list(pair.keys())[0]
                 trace = list(pair.values())[0]
 
-                trace_time, trace_mem, res = benchmark_trace(trace, self.benchmark_iters, fw_trace=self.active_fw_trace_ctx[0])
+                trace_time, trace_mem, res = benchmark_trace(
+                    trace, self.benchmark_iters, fw_trace=self.active_fw_trace_ctx[0]
+                )
                 del res
                 self.debug_msg += f"Trace name = [{label}] - Target: MEM - Mem = {trace_mem / (2**30)} GB - Time = {trace_time} ms\n{trace}\n\n"
                 # log(
@@ -489,6 +501,7 @@ class FusionPlacer_BeamSearch(PlacerBase):
             """
             Fusable fn definition for nvFuser
             """
+
             # Each executor has a custom should fuse function, but the current impl need to access local executor object
             def _should_fuse_nvfuser(a: Node, b: Node):
                 def _can_fuse_node(n: Node):
@@ -505,6 +518,7 @@ class FusionPlacer_BeamSearch(PlacerBase):
             """
             Fusable fn definition for torch.compile
             """
+
             def _should_fuse_torchcompile(a: Node, b: Node):
                 def _can_fuse_node(n: Node):
                     if len(n.group_bsyms) > 1:
@@ -531,13 +545,11 @@ class FusionPlacer_BeamSearch(PlacerBase):
 
             merge_fn: Callable
             match ex.name:
-                case 'nvfuser':
+                case "nvfuser":
                     merge_fn = _should_fuse_nvfuser
-                case 'torchcompile':
+                case "torchcompile":
                     merge_fn = _should_fuse_torchcompile
-            bound_symbol_groups = fuse_bound_symbols(
-                self.trace, merge_fn
-            )
+            bound_symbol_groups = fuse_bound_symbols(self.trace, merge_fn)
             log(f"Number of Fusion groups = {len(bound_symbol_groups)}", level=LogLevel.DEBUG)
 
             # Print fusion groups if requested
@@ -553,8 +565,14 @@ class FusionPlacer_BeamSearch(PlacerBase):
             increasing_symbols = []
             for group_id, group in enumerate(bound_symbol_groups):
                 log(f"Fusion group id: {group_id}", level=LogLevel.DEBUG)
-                log(f"Fusion group start = [{group[0].output.name if hasattr(group[0].output, 'name') else 'unknown'} = {group[0].sym.name}]", level=LogLevel.DEBUG)
-                log(f"Fusion group end   = [{group[-1].output.name if hasattr(group[-1].output, 'name') else 'unknown'} = {group[-1].sym.name}]", level=LogLevel.DEBUG)
+                log(
+                    f"Fusion group start = [{group[0].output.name if hasattr(group[0].output, 'name') else 'unknown'} = {group[0].sym.name}]",
+                    level=LogLevel.DEBUG,
+                )
+                log(
+                    f"Fusion group end   = [{group[-1].output.name if hasattr(group[-1].output, 'name') else 'unknown'} = {group[-1].sym.name}]",
+                    level=LogLevel.DEBUG,
+                )
 
                 if group[0].sym.name != "return":
                     increasing_symbols += group
@@ -562,7 +580,10 @@ class FusionPlacer_BeamSearch(PlacerBase):
                 # We assign to a Fusion executor only region with at least 2 elements. Otherwise let the best OperatorExecutor pick the symbol up
                 if len(group) < 2:
                     current_bsym = group[0]
-                    log(f"--> Single group: [{current_bsym.output.name if hasattr(current_bsym.output, 'name') else 'unknown'} = {current_bsym.sym.name}]", level=LogLevel.DEBUG)
+                    log(
+                        f"--> Single group: [{current_bsym.output.name if hasattr(current_bsym.output, 'name') else 'unknown'} = {current_bsym.sym.name}]",
+                        level=LogLevel.DEBUG,
+                    )
                     # Filter out all possible candidates for the current symbol
                     candidate_executors = [
                         ex
@@ -603,12 +624,17 @@ class FusionPlacer_BeamSearch(PlacerBase):
                         # TODO: enable requests for no remat becnhmarks
                         # TODO: we should consider also FusionExecutor that can execute this single bsym in this beam search
                         for i, candidate in enumerate(candidate_executors):
-
                             from thunder.common import transform_for_execution
+
                             subtrace_placed = transform_for_execution(subtrace, executors_list=[candidate])[-1]
                             log(f"Subtrace to benchmark single symbol:\n{subtrace_placed}", level=LogLevel.DEBUG)
-                            t, m, _ = benchmark_trace(subtrace_placed, self.benchmark_iters, fw_trace=self.active_fw_trace_ctx[0])
-                            log(f'Operator excutor [{candidate.name}] candidate perf: {t} ms {m/(2**30)} GB', level=LogLevel.DEBUG)
+                            t, m, _ = benchmark_trace(
+                                subtrace_placed, self.benchmark_iters, fw_trace=self.active_fw_trace_ctx[0]
+                            )
+                            log(
+                                f"Operator excutor [{candidate.name}] candidate perf: {t} ms {m/(2**30)} GB",
+                                level=LogLevel.DEBUG,
+                            )
                             # Update results
                             if t < candidate_best_time.runtime:
                                 candidate_best_time = BenchmarkResult(time=t, index=i)
@@ -687,7 +713,7 @@ class FusionPlacer_BeamSearch(PlacerBase):
 
                 n_missing_bsyms = len(group) - start_idx
                 # TODO (matteochen): consider to add the iteration with no fusion regions
-                for i in range(0, n_missing_bsyms, n_missing_bsyms-1 if self.trace_type == TraceType.BW else 1):
+                for i in range(0, n_missing_bsyms, n_missing_bsyms - 1 if self.trace_type == TraceType.BW else 1):
                     # for i in range(0, n_missing_bsyms):
                     # From top to bottom (this will include the whole region)
                     # -> First iteration is the one with fusion region with single element
@@ -844,7 +870,7 @@ class FusionPlacer_BeamSearch(PlacerBase):
             # Currently we are enabling one compile option at the time as testing all the permutations might need too much time.
             # TODO: Consider implementing patterns based on the executor under investingation
             if ex_compile_opts:
-                log(f'{ex.name} compile options: {[option.fusion_tag for option in ex_compile_opts]}')
+                log(f"{ex.name} compile options: {[option.fusion_tag for option in ex_compile_opts]}")
                 for opt in ex_compile_opts:
                     # Search only if we have an instruction related to the compile option
                     op_in_trace: bool = operation_in_trace(trace=self.trace, op=opt.symbol_tag)
@@ -968,7 +994,7 @@ class FusionPlacer_BeamSearch(PlacerBase):
                     # Set the current active cached forward trace context
                     log(
                         f'Current fw cached ctx:\n{fw_trace_candidate.trace}\nOptions: {fw_trace_candidate.compile_opt.fusion_tag if fw_trace_candidate.compile_opt is not None else "None"}',
-                        level=LogLevel.DEBUG
+                        level=LogLevel.DEBUG,
                     )
                     self.active_fw_trace_ctx = fw_trace_candidate.trace, fw_trace_candidate.compile_opt
 
@@ -1008,16 +1034,14 @@ class BackendOptimizer:
         compile_data,
     ) -> None:
         if optimizer_algorithm != OptimizationAlgorithm.BEST_FUSER:
-            raise AssertionError(f'Optimization {optimizer_algorithm} not implemented')
-        self.optimizer: PlacerBase = (
-            FusionPlacer_BeamSearch(
-                priority_executors=priority_executors,
-                produce_log=produce_log,
-                apply_bucketing_bw_trace=apply_bucketing_bw_trace,
-                log_file_name=log_file_name,
-                optimizer_type=optimizer_type,
-                compile_data=compile_data,
-            )
+            raise AssertionError(f"Optimization {optimizer_algorithm} not implemented")
+        self.optimizer: PlacerBase = FusionPlacer_BeamSearch(
+            priority_executors=priority_executors,
+            produce_log=produce_log,
+            apply_bucketing_bw_trace=apply_bucketing_bw_trace,
+            log_file_name=log_file_name,
+            optimizer_type=optimizer_type,
+            compile_data=compile_data,
         )
 
         log("Executors:", level=LogLevel.INFO)
@@ -1038,4 +1062,3 @@ class BackendOptimizer:
 
     def get_optimal_fw_bw_traces(self) -> tuple[TraceCtx, TraceCtx]:
         return self.optimizer.get_optimal_fw_bw_traces()
-
