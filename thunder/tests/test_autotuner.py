@@ -387,5 +387,7 @@ def test_transform_proxy_to_torch_TE():
         (["transformer_engine", "nvfuser", "sdpa"], ["transformer_engine", "sdpa", "nvfuser"]),
     ],
 )
+# We might not have nvfuser in non cuda envs
+@requiresCUDA
 def test_reorder_executors_list(executors, expected):
     assert aut_utils.reorder_executors_list(executors) == expected
