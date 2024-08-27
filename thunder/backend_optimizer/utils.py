@@ -738,6 +738,6 @@ def reorder_executors_list(executors: Sequence):
         elif (ex == nvfuser_ex or ex == torch_compile_ex):
             found = True
     if not found:
-        reordered.append(nvfuser_ex)
+        reordered.insert(0, nvfuser_ex.name if are_inputs_names else nvfuser_ex)
 
     return reordered
