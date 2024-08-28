@@ -94,7 +94,7 @@ def get_not_used_intermediate_outsputs(trace_in: TraceCtx) -> list[Proxy]:
                 ans.append(e)
     from thunder.backend_optimizer.optimizer import log, LogLevel
 
-    log(f"Returning not used proxies: {[p.name for p in ans]}", level=LogLevel.DEBUG)
+    log(f"Returning not used proxies: {[p.name if hasattr(p, 'name') else p for p in ans ]}", level=LogLevel.DEBUG)
     return ans
 
 
