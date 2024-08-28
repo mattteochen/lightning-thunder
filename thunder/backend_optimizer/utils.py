@@ -305,6 +305,24 @@ def benchmark_trace(
 
     torch.compiler.reset()
 
+    # TODO: If TE is used inside the trace we have to clone the input arguments as
+    # we are currently seeing benchmarking issues at the iteration i > 0
+    def clone_args_if_needed(args):
+        te_used = is_te_used(trace)
+        if not te_used:
+            return args
+        res = []
+        # Detatching the tensors as for standalone trace benchmarks we are not interested in the gradients
+        for arg in args:
+            if isinstance(arg, Sequence):
+                res.append(clone_args_if_needed(arg))
+            else:
+                if isinstance(arg, torch.Tensor):
+                    res.append(arg.clone().detach())
+                else:
+                    res.append(arg)
+        return tuple(res)
+
     def compute_time_cost_nvsight(fn: Callable, iters: int, *args) -> tuple[float, float, Any]:
         try:
             warm_up_iters = 50
@@ -312,20 +330,18 @@ def benchmark_trace(
             torch.cuda.synchronize()
             # Warm up cycles
             for _ in range(warm_up_iters):
-                # cloned_args = clone_args(args)
+                args = clone_args_if_needed(args)
                 fn(*args)
-                # del cloned_args
             # Benchmark
             torch.cuda.empty_cache()
             torch.cuda.synchronize()
             torch.cuda.cudart().cudaProfilerStart()
             for i in range(iters):
-                # cloned_args = clone_args(args)
+                args = clone_args_if_needed(args)
                 torch.cuda.empty_cache()
                 torch.cuda.nvtx.range_push(f"thunder benchmark fn:{nvsight_fn_name}, iter{i}")
                 fn(*args)
                 torch.cuda.nvtx.range_pop()
-                # del cloned_args
             torch.cuda.cudart().cudaProfilerStop()
 
             return float("inf"), float("inf"), None
@@ -336,41 +352,25 @@ def benchmark_trace(
             print(f"#Trace execution failed for nvsight (error: {e}):\n{trc}")
             raise e
 
-    def clone_args(args):
-        res = []
-        for arg in args:
-            if isinstance(arg, Sequence):
-                res.append(clone_args(arg))
-            else:
-                if isinstance(arg, torch.Tensor):
-                    res.append(arg.clone().detach())
-                else:
-                    res.append(arg)
-        return tuple(res)
-
     def compute_time_cost_ms(fn: Callable, repr: str, iters: int, *args) -> tuple[float, float, Any]:
         try:
             current_iter = 0
             warm_up_iters = 50
             out = None
 
-            # print_args(args)
-
             # Warm up cycles
             for _ in range(warm_up_iters):
-                # cloned_args = clone_args(args)
+                args = clone_args_if_needed(args)
                 out = fn(*args)
-                # del cloned_args
             # Snapshot request
             if snapshot:
-                # cloned_args = clone_args(args)
+                args = clone_args_if_needed(args)
                 torch.cuda.empty_cache()
                 torch.cuda.synchronize()
                 torch.cuda.memory._record_memory_history()
                 fn(*args)
                 torch.cuda.memory._dump_snapshot(snapshot_name + "_benchmark.pickle")
                 torch.cuda.memory._record_memory_history(enabled=None)
-                # del cloned_args
             # Benchmark
             stream = torch.cuda.current_stream()
             max_allocated_bytes = 0
@@ -379,7 +379,7 @@ def benchmark_trace(
             torch.cuda.synchronize()
             for i in range(iters):
                 current_iter = i
-                # cloned_args = clone_args(args)
+                args = clone_args_if_needed(args)
                 torch.cuda.reset_peak_memory_stats(torch.cuda.current_device())
                 torch.cuda.empty_cache()
                 torch.cuda._sleep(1_000_000)
@@ -389,11 +389,9 @@ def benchmark_trace(
                 max_allocated_bytes = max(
                     max_allocated_bytes, torch.cuda.max_memory_allocated(torch.cuda.current_device())
                 )
-                # del cloned_args
 
             torch.cuda.synchronize()
             times = [s.elapsed_time(e) for s, e in zip(start_events, end_events)]
-            # print(f"times: {times}")
             tot_time = sum(times) / iters
             return tot_time, max_allocated_bytes, out
         except Exception as e:
