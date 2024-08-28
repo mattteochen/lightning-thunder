@@ -212,7 +212,7 @@ def split_forward_backward(computation_trc: TraceCtx, compile_data, compile_stat
         else BackendOptimizer(
             priority_executors=compile_data.executors_list,
             apply_bucketing_bw_trace=do_apply_bucketing_bw_trace,
-            produce_log=True,
+            produce_log=False,
             optimizer_type=autotune_type,
             compile_data=compile_data,
         )

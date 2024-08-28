@@ -1,18 +1,24 @@
-from typing import Callable, Sequence
-import thunder.backend_optimizer.utils as aut_utils
-import pytest
-import torch
-import thunder
+from thunder.backend_optimizer.optimizer import get_fw_bw_split_backends_options
 from thunder.core.dtypes import to_torch_dtype
 from thunder.core.prims import PrimIDs
 from thunder.core.proxies import FloatProxy, IntegerProxy, TensorProxy
-from thunder.core.symbol import BoundSymbol
+from thunder.core.symbol import BoundSymbol, Symbol
 from thunder.core.trace import TraceCtx
-from thunder.extend import Executor, get_always_executors
-from thunder.executors.torchex import ex as torchex
-from thunder.executors.torch_compile import torch_compile_ex
+from thunder.executors.cudnnex import cudnn_ex
+from thunder.executors.fa3ex import fa3_ex
 from thunder.executors.nvfuserex import nvfuserex
+from thunder.executors.pythonex import ex as pythonex
+from thunder.executors.sdpaex import sdpa_ex
+from thunder.executors.torch_compile import torch_compile_ex
+from thunder.executors.torchex import ex as torchex
+from thunder.executors.transformer_engineex import transformer_engine_ex
+from thunder.extend import Executor, get_always_executors
 from thunder.tests.framework import requiresCUDA
+from typing import Callable, Sequence
+import pytest
+import thunder
+import thunder.backend_optimizer.utils as aut_utils
+import torch
 
 
 class DummyProxy:
@@ -451,3 +457,114 @@ def test_transform_proxy_to_torch_TE():
 @requiresCUDA
 def test_reorder_executors_list(executors, expected):
     assert aut_utils.reorder_executors_list(executors) == expected
+
+@pytest.mark.parametrize(
+    "name, expected",
+    [
+        ('linear', [transformer_engine_ex]),
+        ('scaled_dot_product_attention', [sdpa_ex, cudnn_ex, fa3_ex])
+    ],
+)
+def test_get_fw_bw_split_backends_options(name: str, expected):
+    symbol = Symbol(name=name)
+    bsym = BoundSymbol(symbol, (), {}, None)
+    options = get_fw_bw_split_backends_options(bsym)
+    assert all(map(lambda v: v in options, expected))
+
+class Model_1(torch.nn.Module):
+    def __init__(self, in_f, out_f) -> None:
+        super().__init__()
+        self.linear = torch.nn.Linear(in_f, out_f)
+
+    def forward(self, x):
+        t0 = self.linear(x)
+        return torch.nn.functional.silu(t0)
+
+class Model_2(torch.nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+        self.n_head = 12
+        self.n_embd = 3072
+        self.c_attn = torch.nn.Linear(self.n_embd, 3 * self.n_embd, bias=False)
+
+    def forward(self, x):
+        B, T, C = x.size()
+        q, k, v  = self.c_attn(x).split(self.n_embd, dim=2)
+        k = k.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
+        q = q.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
+        v = v.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
+        return torch.nn.functional.scaled_dot_product_attention(q, k, v)
+
+@pytest.mark.parametrize(
+    "model, tensor_shape, dtype, autotune_type, executors, expected_executors, use_cudagraphs",
+    [
+        (Model_1(32, 32), (32, 32), torch.float32, "runtime", [nvfuserex], [[nvfuserex, torchex, pythonex]], True),
+        (
+            Model_1(32, 32),
+            (32, 32),
+            torch.float32,
+            "memory",
+            [torch_compile_ex],
+            [[torch_compile_ex, torchex, pythonex]],
+            True,
+        ),
+        (
+            Model_1(4096, 4096),
+            (128, 4096),
+            torch.float32,
+            "runtime",
+            [transformer_engine_ex],
+            [[transformer_engine_ex, nvfuserex, torchex, pythonex]],
+            False,
+        ),
+        (
+            Model_2(),
+            (16, 1024, 3072),
+            torch.float16,
+            "runtime",
+            [sdpa_ex, cudnn_ex],
+            [[sdpa_ex, nvfuserex, torchex, pythonex], [cudnn_ex, nvfuserex, torchex, pythonex]],
+            False,
+        ),
+        (
+            Model_2(),
+            (16, 1024, 3072),
+            torch.float32,
+            "runtime",
+            [sdpa_ex, transformer_engine_ex],
+            [[sdpa_ex, transformer_engine_ex, nvfuserex, torchex, pythonex]],
+            False,
+        ),
+    ],
+)
+@requiresCUDA
+def test_autotuner(
+    model: torch.nn.Module,
+    tensor_shape: tuple,
+    dtype: torch.dtype,
+    autotune_type: str,
+    executors: list,
+    expected_executors: list[list],
+    use_cudagraphs: bool,
+):
+    def _run():
+        model.to('cuda')
+        x = torch.randn(tensor_shape, dtype=dtype, device='cuda')
+        jitted_def = thunder.jit(model, executors=executors)
+        jitted_auto = thunder.jit(model, autotune_type=autotune_type, executors=executors, use_cudagraphs=use_cudagraphs)
+        y_def = jitted_def(x)
+        y_auto = jitted_auto(x)
+
+        te_used = aut_utils.is_te_used(thunder.last_traces(jitted_auto)[-1])
+        got = thunder.executors_applied(jitted_auto)
+        assert any([t == got for t in expected_executors])
+        # With TE enabled deviation ((y_def - y_auto).abs().max().item()) is between tensors are ~0.2
+        # For the else branch: https://pytorch.org/docs/stable/testing.html
+        torch.testing.assert_close(y_def, y_auto, atol=2 * 1e-1 if te_used else 1e-5, rtol=1e-1 if te_used else 1.3e-6)
+
+    if dtype != torch.get_default_dtype():
+        with torch.autocast(device_type="cuda"):
+            _run()
+    else:
+        _run()
+
