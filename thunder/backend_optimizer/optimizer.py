@@ -162,7 +162,7 @@ class PlacerBase:
         self,
         *,
         priority_executors: Sequence[Executor],
-        produce_log: bool = True,
+        produce_log: bool = False,
         apply_bucketing_bw_trace: bool,
         log_file_name: str,
         optimizer_type: OptimizerType = OptimizerType.RUNTIME,
@@ -215,7 +215,7 @@ class FusionPlacer_BeamSearch(PlacerBase):
         self,
         *,
         priority_executors: Sequence[Executor],
-        produce_log: bool = True,
+        produce_log: bool = False,
         apply_bucketing_bw_trace: bool,
         log_file_name: str,
         optimizer_type: OptimizerType = OptimizerType.RUNTIME,
@@ -288,22 +288,22 @@ class FusionPlacer_BeamSearch(PlacerBase):
                 pair_cost_time = 0
                 pair_cost_mem = 0
                 t, m, _ = benchmark_trace(fw, iters=self.benchmark_iters)
-                # log(f"Pair fw time: {t} ms, mem: {m/(2**30)} GB", level=LogLevel.INFO)
+                log(f"Pair fw time: {t} ms, mem: {m/(2**30)} GB", level=LogLevel.DEBUG)
                 pair_cost_time = pair_cost_time + t
                 pair_cost_mem = pair_cost_mem + m
                 t, m, _ = benchmark_trace(bw, iters=self.benchmark_iters, fw_trace=fw)
-                # log(f"Pair bw time: {t} ms, mem: {m/(2**30)} GB", level=LogLevel.INFO)
+                log(f"Pair bw time: {t} ms, mem: {m/(2**30)} GB", level=LogLevel.DEBUG)
                 pair_cost_time = pair_cost_time + t
                 pair_cost_mem = pair_cost_mem + m
 
                 if pair_cost_time < min_value_time:
                     best_pair_runtime = OutputCandidate(fw=fw, bw=bw, cost=pair_cost_time)
-                    # log(f"New best runtime pair (no remat):\n{best_pair_runtime}", level=LogLevel.INFO)
+                    log(f"New best runtime pair (no remat):\n{best_pair_runtime}", level=LogLevel.DEBUG)
                     min_value_time = pair_cost_time
 
                 if pair_cost_mem < min_value_mem:
                     best_pair_memory = OutputCandidate(fw=fw, bw=bw, cost=pair_cost_mem)
-                    # log(f"New best memory pair (no remat):\n{best_pair_memory}", level=LogLevel.INFO)
+                    log(f"New best memory pair (no remat):\n{best_pair_memory}", level=LogLevel.DEBUG)
                     min_value_mem = pair_cost_mem
 
         return best_pair_runtime, best_pair_memory
@@ -325,27 +325,14 @@ class FusionPlacer_BeamSearch(PlacerBase):
                 label = list(pair_time.keys())[0]
                 # TODO (matteochen): remove the benchmark here as will done later on the bw pass
                 c, m, _ = benchmark_trace(trc_time, self.benchmark_iters)
-                # log(
-                #     f'Benchmark fw end: Trace = [{label}] (time = {c} ms, mem = {m / (2**30)} GB)":\n{trc_time}',
-                #     level=LogLevel.INFO,
-                # )
                 self.debug_msg += (
                     f"Trace name = [{label}] - Target: TIME - Time = {c} ms - Mem = {m / (2**30)} GB\n{trc_time}\n\n"
                 )
                 c, m, _ = benchmark_trace(trc_mem, self.benchmark_iters)
-                # log(
-                #     f'Benchmark fw end: Trace = [{label}] (time = {c} ms, mem = {m / (2**30)} GB)":\n{trc_mem}',
-                #     level=LogLevel.INFO,
-                # )
                 self.debug_msg += (
                     f"Trace name = [{label}] - Target: MEM - Mem = {m / (2**30)} GB - Time = {c} ms\n{trc_mem}\n\n"
                 )
                 # For forward trace we cache the best placement for both runtime and memory for the current Fusion executor (represented by label)
-                # if compile_opt_time is not None:
-                #     print(f"Caching fw with compile options time: {compile_opt_time.fusion_tag}")
-                # if compile_opt_mem is not None:
-                #     print(f"Caching fw with compile options mem: {compile_opt_mem.fusion_tag}")
-
                 for t, o in zip([trc_time, trc_mem], [compile_opt_time, compile_opt_mem]):
                     log(f'Caching fw candidate [compile option: {o.fusion_tag if o else "None"}]')
                     self.cached_fw_traces.append(
@@ -367,10 +354,6 @@ class FusionPlacer_BeamSearch(PlacerBase):
                     trace, self.benchmark_iters, fw_trace=self.active_fw_trace_ctx[0]
                 )
                 self.debug_msg += f"Trace name = [{label}] - Target: TIME - Time = {trace_time} ms - Mem = {trace_mem / (2**30)} GB\n{trace}\n\n"
-                # log(
-                #     f'Benchmark trace (target TIME) "{label}" (time = {trace_time} ms, mem = {trace_mem / (2**30)} GB:\n{trace}',
-                #     level=LogLevel.INFO,
-                # )
                 if trace_time < time_result.runtime:
                     time_result = BenchmarkResult(time=trace_time, memory=trace_mem, trace=trace, label=label, index=i)
 
@@ -383,25 +366,11 @@ class FusionPlacer_BeamSearch(PlacerBase):
                 trace_time, trace_mem, res = benchmark_trace(
                     trace, self.benchmark_iters, fw_trace=self.active_fw_trace_ctx[0]
                 )
-                del res
                 self.debug_msg += f"Trace name = [{label}] - Target: MEM - Mem = {trace_mem / (2**30)} GB - Time = {trace_time} ms\n{trace}\n\n"
-                # log(
-                #     f'Benchmark trace (target MEM) "{label}" (time = {trace_time} ms, mem = {trace_mem / (2**30)} GB:\n{trace}',
-                #     level=LogLevel.INFO,
-                # )
                 if trace_mem < memory_result.memory:
                     memory_result = BenchmarkResult(
                         time=trace_time, memory=trace_mem, trace=trace, label=label, index=i
                     )
-
-            # log(
-            #     f'Benchmark end: Best trace time "{time_result.label} (time = {time_result.runtime} ms)":\n{time_result.trace}',
-            #     level=LogLevel.INFO,
-            # )
-            # log(
-            #     f'Benchmark end: Best trace mem "{memory_result.label} (mem = {memory_result.memory / (2 ** 30)} GB)":\n{memory_result.trace}',
-            #     level=LogLevel.INFO,
-            # )
 
             # Here we have to recover the traces without the pass through remat in order to be compliant
             # with thunder flow as we might have request for no remat
@@ -436,7 +405,6 @@ class FusionPlacer_BeamSearch(PlacerBase):
 
     def _search_candidates(self, increment_factor: int = 1):
         from thunder.executors.data_dependent_partition import Node, fuse_bound_symbols
-        from thunder.core.rematerialization import rematerialize_forward_and_backward
         from thunder.backend_optimizer.utils import (
             get_not_used_intermediate_outsputs,
             sequence_hash,
@@ -449,7 +417,7 @@ class FusionPlacer_BeamSearch(PlacerBase):
             trc = from_trace(self.trace)
             trc.bound_symbols = list(bound_symbols_in)
 
-            # For this partial trace we have to return all not used tensors otherwise the dce will cut them out
+            # For this partial trace we have to return all not used tensors otherwise the dce remove them
             tensors = get_not_used_intermediate_outsputs(trc)
 
             forced_return_bsym = self.trace.bound_symbols[-1].from_bsym(args=tensors)
@@ -460,8 +428,6 @@ class FusionPlacer_BeamSearch(PlacerBase):
             for bsym in trc.bound_symbols:
                 if bsym.sym.name == "return":
                     raise AssertionError("Return statement should not be here")
-                    # executor_configuration.append(empty_executor)
-                    # keys.append('return')
                 elif isinstance(bsym.output, Sequence):
                     seq_hash = sequence_hash(bsym.output)
                     executor_configuration.append(mapping.get(seq_hash, empty_executor))
@@ -678,8 +644,6 @@ class FusionPlacer_BeamSearch(PlacerBase):
                     nonlocal best_placement_mem
                     nonlocal best_keys_mem
                     trc, keys, placements = get_placed_trace(dict_time_strat, increasing_symbols)
-                    # if self.trace_type == TraceType.BW and self.active_fw_trace_ctx[0] is not None:
-                    #     _, trc = rematerialize_forward_and_backward(self.active_fw_trace_ctx[0], trc)
                     cost, mem, _ = benchmark_trace(trc, self.benchmark_iters, fw_trace=self.active_fw_trace_ctx[0])
                     log(f"Placed trace (cost = {cost} ms, mem = {mem/(2**30)} GB)\n{trc}", level=LogLevel.DEBUG)
                     if cost < best_res_time.runtime or (cost == best_res_time.runtime and mem < best_res_time.memory):
@@ -738,26 +702,6 @@ class FusionPlacer_BeamSearch(PlacerBase):
                     # Benchmark
                     measure_and_update_result()
 
-                    # TODO (matteochen): consider if this can increase placement
-                    # From bottom to up (this will exclude the full region as being handled in the for cycle above)
-                    # -> First iteration is the one with len(fusion_region) - 1
-                    # -> Last iteration gives no fusion regions
-                    # for j in range(start_idx, start_idx + i + 1, increment_factor):
-                    #     match_bsym_output(
-                    #         group[j],
-                    #         [dict_time_strat, dict_mem_strat],
-                    #         get_first_available_operator_executor(
-                    #             bsym=group[j],
-                    #             executors=self.executors,
-                    #             empty_hash=self.empty_executor_hashable_placeholder,
-                    #         ),
-                    #     )
-                    # for k in range(start_idx + i + 1, len(group), increment_factor):
-                    #     match_bsym_output(group[k], [dict_time_strat, dict_mem_strat], ex)
-
-                    # # Benchmark this placement
-                    # measure_and_update_result()
-
                 if best_placement_time is None or best_keys_time is None:
                     raise AssertionError("Failed to get best time placement")
                 if best_placement_mem is None or best_keys_mem is None:
@@ -812,7 +756,7 @@ class FusionPlacer_BeamSearch(PlacerBase):
                     raise AssertionError(f"Type not handled: {type(bsym.output)}")
 
             # For the forward trace we benchmark (memory) the mocked return statement as we don't know which
-            # tensor will be returned after the rematerialize_forward_and_backward() call in order to do not underestimate the memory consumption
+            # tensor will be returned after the rematerialize_forward_and_backward call in order to do not underestimate the memory consumption
             trace = self.trace
             if self.trace_type == TraceType.FW:
                 trace = from_trace(self.trace)
@@ -835,10 +779,6 @@ class FusionPlacer_BeamSearch(PlacerBase):
                     always_executors=self.always_executors,
                     empty_str=self.empty_executor_hashable_placeholder,
                 )
-                # print(f"Assigned trace:\n{trc}")
-                # if self.trace_type == TraceType.BW:
-                #     # pass
-                #     _, trc = rematerialize_forward_and_backward(self.active_fw_trace_ctx[0], trc)
                 container.append({ex.name: trc})
 
             # Save executors in order to generate real fw and bw trace with correct output with the placer
@@ -1030,7 +970,7 @@ class BackendOptimizer:
         self,
         *,
         priority_executors: Sequence[Executor],
-        produce_log=True,
+        produce_log=False,
         apply_bucketing_bw_trace: bool,
         log_file_name="autotune_debug.log",
         optimizer_type: OptimizerType = OptimizerType.RUNTIME,
