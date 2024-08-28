@@ -1,9 +1,10 @@
 from collections.abc import Callable, Hashable, Sequence
 from typing import Any
+from thunder.core import symbol
 from thunder.core.compile_data import get_compile_data
 from thunder.core.dtypes import to_torch_dtype
 from thunder.core.prims import PrimIDs
-from thunder.core.proxies import AnyProxy, FloatProxy, IntegerProxy, Proxy, TensorProxy, Variable, variableify
+from thunder.core.proxies import AnyProxy, FloatProxy, IntegerProxy, NumberProxy, Proxy, TensorProxy, Variable, variableify
 from thunder.core.symbol import BoundSymbol, Symbol
 from thunder.core.trace import TraceCtx, get_tracectx, reset_tracectx, set_tracectx
 from thunder.extend import Executor, FusionExecutor, OperatorExecutor
@@ -766,3 +767,175 @@ def reorder_executors_list(executors: Sequence):
         reordered.insert(0, nvfuser_ex.name if are_inputs_names else nvfuser_ex)
 
     return reordered
+
+def symbol_hash(bsym: BoundSymbol):
+    def _tensor_hash(t: TensorProxy) -> str:
+        assert t.dtype
+        shapes = [str(s) for s in t.shape]
+        return '{' + '-'.join(shapes) + '/' + str(t.device) + t.dtype.full_name + str(t.requires_grad) + '}'
+
+    def _number_hash(t: NumberProxy) -> str:
+        return '{' + str(t.value) + '}'
+
+    def _sequence_hash(s: Sequence | None) -> str:
+        if s is None:
+            return "None"
+
+        ret = '['
+        for e in s:
+            if e is None:
+                ret += '{None}'
+            elif isinstance(e, TensorProxy):
+                ret += _tensor_hash(e) + ','
+            elif isinstance(e, NumberProxy):
+                ret += _number_hash(e) + ','
+            elif isinstance(e, Sequence):
+                ret += _sequence_hash(e) + ','
+            elif isinstance(e, int) or isinstance(e, float) or isinstance(e, bool):
+                ret += f'{(type(e))}'
+            else:
+                raise RuntimeError(f'Not implemented {type(e)}')
+        return ret + ']'
+
+    def _hash(bsym: BoundSymbol) -> str:
+        h = bsym.sym.name
+        # Handle tensor as output or sequences
+        if not isinstance(bsym.output, TensorProxy) and not isinstance(bsym.output, Sequence):
+            raise RuntimeError(f'type {type(bsym.output)} not implemented')
+        h += (
+            "#out:"
+            + (_tensor_hash(bsym.output) if isinstance(bsym.output, TensorProxy) else _sequence_hash(bsym.output))
+            + "#in:"
+            # Args is always a tuple
+            + _sequence_hash(bsym.args)
+        )
+        return h
+
+    return _hash(bsym)
+
+def repetead_transformer_blocks(
+    *, trace: TraceCtx, min_block_size=1, known_points: tuple[BoundSymbol, BoundSymbol] | None = None
+) -> list[tuple]:
+    symbols = [
+        s
+        for s in trace.bound_symbols
+        if not s.sym.name.startswith("python_del") and not s.sym.name.startswith("unpack")
+    ]
+
+    def _tuple_name(tup: Sequence):
+        ret = '('
+        for e in tup:
+            if e is None:
+                ret += 'None, '
+            elif hasattr(e, 'name'):
+                ret += e.name + ', '
+            elif isinstance(e, Sequence):
+                ret += _tuple_name(e) + ', '
+            elif isinstance(e, int) or isinstance(e, float) or isinstance(e, bool):
+                ret += str(e) + ', '
+            else:
+                raise RuntimeError(f'Not implemented {type(e)}')
+        return ret + ')'
+
+    # Only bsym that have inputs and outputs
+    original_map_indexes = {
+        str(bsym.output.name) if isinstance(bsym.output, TensorProxy) else _tuple_name(bsym.output): i
+        for i, bsym in enumerate(trace.bound_symbols)
+        if not (bsym.output is None or not bsym.args) and bsym.sym.id != PrimIDs.RETURN
+    }
+
+    def _lcs(start_indexes) -> int:
+        max_last_len = len(symbols)-1
+        max_first_len = start_indexes[1]
+        print(max_first_len, max_last_len)
+
+        lcs = 0
+        while (start_indexes[0] < max_first_len and start_indexes[-1] < max_last_len):
+            # Get all the hashes
+            hashes = [symbol_hash(symbols[i]) for i in start_indexes]
+            # Advance if all the hashes coincides
+            uniques = set(hashes)
+            # print(f'unique: {len(uniques)}')
+            if len(uniques) == 1:
+                start_indexes = [i+1 for i in start_indexes]
+                lcs += 1
+            else:
+                return lcs
+        return max(lcs, 1)
+
+    def _skip(bsym: BoundSymbol) -> bool:
+        return bsym.output is None or not bsym.args
+
+    bsym_indexes: dict[str, list[int]] = {}
+    for i, bsym in enumerate(symbols):
+        if i == len(symbols)-1:
+            break
+        # Skip None outputs (unpacks, returns, del)
+        if _skip(bsym):
+            continue
+        # print(f'hashing {bsym.sym.name} at index {i}')
+        h = symbol_hash(bsym)
+        if h in bsym_indexes:
+            bsym_indexes[h].append(i)
+        else:
+            bsym_indexes[h] = [i]
+
+    def _range_seen(index: int, s: set):
+        for r in s:
+            if index >= r[0] and index <= r[1]:
+                return True
+        return False
+
+    seen_hashes = set()
+    seen_ranges = set()
+    max_lcs = 0
+    res = []
+    for i, bsym in enumerate(symbols):
+        if i == len(symbols)-1:
+            break
+        # Skip None outputs (unpacks, returns, del)
+        if _skip(bsym):
+            continue
+
+        h = symbol_hash(bsym)
+        # Could not generate hash for this bsym
+        # Normally, bsym are expected to output a TensorProxy
+        if not isinstance(bsym.output, Proxy) or h in seen_hashes or _range_seen(i, seen_ranges):
+            continue
+        # else:
+        #     print(f'checking lcs for {bsym.sym.name}')
+
+        indexes = bsym_indexes.get(h, [])
+        print([f'index {i}, out_name: {symbols[i].output.name}' for i in indexes])
+        seen_hashes.add(h)
+        if len(indexes) < 2:
+            continue
+
+        # Now we can find the longest common sequence between all the occurences
+        lcs = _lcs(indexes)
+        print('\n####################')
+        for index in indexes:
+            print(f'For index {index} lcs: {lcs}')
+            print(f'Starting bsym: {symbols[index]}')
+            print(f'Ending bsym: {symbols[index + lcs - 1]}')
+        print('\n####################')
+        if lcs > 1:
+            # Push every seen ranges to ignore all the subranges
+            for i in indexes:
+                seen_ranges.add((i, i+lcs-1))
+
+            # Set result
+            if lcs > max_lcs:
+                max_lcs = lcs
+                res = [(i, i+lcs-1) for i in indexes]
+
+    print(f'\n\nMax lcs {max_lcs}')
+    print(res)
+    for r in res:
+        print(symbols[r[0]].output.name, symbols[r[1]].output.name)
+    return [
+        (original_map_indexes[symbols[t[0]].output.name], original_map_indexes[symbols[t[1]].output.name]) for t in res
+    ]
+
+
+

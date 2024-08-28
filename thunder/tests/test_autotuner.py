@@ -568,3 +568,40 @@ def test_autotuner(
     else:
         _run()
 
+
+def test_repetead_transformer_blocks():
+    device = 'cuda'
+    # def _fn(x: torch.Tensor, y: torch.Tensor):
+    #     a = x + x
+    #     b = y * y
+    #     c = x @ y
+    #     aa = a + a
+    #     bb = b * b
+    #     return c, aa, bb
+
+    # a = torch.randn(2,2, device = device)
+    # b = torch.randn(2,2, device = device)
+
+    # jitted = thunder.jit(_fn)
+    # jitted(a, b)
+
+    # trace = thunder.last_traces(jitted)[-1]
+    # aut_utils.repetead_transformer_blocks(trace=trace)
+
+    from thunder.tests.litgpt_model import Config
+    from litgpt import GPT
+    cfg = Config.from_name('Llama-3-8B')
+    cfg.n_layer = 2
+
+    model = GPT(cfg)
+    model.to(device)
+    x = torch.randint(1, model.config.vocab_size, (1, cfg.block_size), device=device, )
+    jitted = thunder.jit(model, executors=['sdpa'])
+    jitted(x)
+
+    # trace = thunder.last_traces(jitted)[-1]
+    # ret = aut_utils.repetead_transformer_blocks(trace=trace)
+    # print(ret)
+
+
+
