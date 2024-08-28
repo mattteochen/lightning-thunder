@@ -39,6 +39,7 @@ layers = [
         executors=[
             "cudnn",
             "sdpa",
+            "fa3",
             "nvfuser",
             "torchcompile",
         ],
@@ -50,6 +51,7 @@ layers = [
         executors=[
             "cudnn",
             "sdpa",
+            "fa3",
             "nvfuser",
             "torchcompile",
         ],
@@ -58,14 +60,14 @@ layers = [
         1,
         "runtime",
         1,
-        executors=["cudnn", "sdpa", "nvfuser", "torchcompile"],
+        executors=["cudnn", "sdpa", "fa3", "nvfuser", "torchcompile"],
         model_name="stablecode-completion-alpha-3b",
     ),
     Test(
         1,
         "memory",
         1,
-        executors=["cudnn", "sdpa", "nvfuser", "torchcompile"],
+        executors=["cudnn", "sdpa", "fa3", "nvfuser", "torchcompile"],
         model_name="stablecode-completion-alpha-3b",
     ),
 ]
