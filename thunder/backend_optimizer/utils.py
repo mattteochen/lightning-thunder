@@ -330,17 +330,17 @@ def benchmark_trace(
             torch.cuda.synchronize()
             # Warm up cycles
             for _ in range(warm_up_iters):
-                args = clone_args_if_needed(args)
-                fn(*args)
+                new_args = clone_args_if_needed(args)
+                fn(*new_args)
             # Benchmark
             torch.cuda.empty_cache()
             torch.cuda.synchronize()
             torch.cuda.cudart().cudaProfilerStart()
             for i in range(iters):
-                args = clone_args_if_needed(args)
+                new_args = clone_args_if_needed(args)
                 torch.cuda.empty_cache()
                 torch.cuda.nvtx.range_push(f"thunder benchmark fn:{nvsight_fn_name}, iter{i}")
-                fn(*args)
+                fn(*new_args)
                 torch.cuda.nvtx.range_pop()
             torch.cuda.cudart().cudaProfilerStop()
 
@@ -360,15 +360,15 @@ def benchmark_trace(
 
             # Warm up cycles
             for _ in range(warm_up_iters):
-                args = clone_args_if_needed(args)
-                out = fn(*args)
+                new_args = clone_args_if_needed(args)
+                out = fn(*new_args)
             # Snapshot request
             if snapshot:
-                args = clone_args_if_needed(args)
+                new_args = clone_args_if_needed(args)
                 torch.cuda.empty_cache()
                 torch.cuda.synchronize()
                 torch.cuda.memory._record_memory_history()
-                fn(*args)
+                fn(*new_args)
                 torch.cuda.memory._dump_snapshot(snapshot_name + "_benchmark.pickle")
                 torch.cuda.memory._record_memory_history(enabled=None)
             # Benchmark
@@ -379,12 +379,12 @@ def benchmark_trace(
             torch.cuda.synchronize()
             for i in range(iters):
                 current_iter = i
-                args = clone_args_if_needed(args)
+                new_args = clone_args_if_needed(args)
                 torch.cuda.reset_peak_memory_stats(torch.cuda.current_device())
                 torch.cuda.empty_cache()
                 torch.cuda._sleep(1_000_000)
                 start_events[i].record(stream)
-                fn(*args)
+                fn(*new_args)
                 end_events[i].record(stream)
                 max_allocated_bytes = max(
                     max_allocated_bytes, torch.cuda.max_memory_allocated(torch.cuda.current_device())
