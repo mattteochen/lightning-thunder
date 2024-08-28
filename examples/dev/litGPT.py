@@ -8,7 +8,6 @@ from thunder.benchmarks.utils import (
 from thunder.tests.litgpt_model import Config
 import thunder
 import torch
-from thunder.executors.nvmathex import nvmath_ex
 
 torch.backends.cuda.matmul.allow_tf32 = True  # allow tf32 on matmul
 torch.backends.cudnn.allow_tf32 = True  # allow tf32 on cudnn
@@ -40,14 +39,13 @@ layers = [
         executors=[
             "cudnn",
             "sdpa",
-            "fa3",
             "nvfuser",
             "torchcompile",
         ],
     ),
     Test(
         1,
-        "runtime",
+        "memory",
         1,
         executors=[
             "cudnn",
@@ -60,7 +58,15 @@ layers = [
         1,
         "runtime",
         1,
-        executors=["cudnn", "sdpa", "fa3", "nvfuser", "torchcompile", nvmath_ex],
+        executors=["cudnn", "sdpa", "nvfuser", "torchcompile"],
+        model_name="stablecode-completion-alpha-3b",
+    ),
+    Test(
+        1,
+        "memory",
+        1,
+        executors=["cudnn", "sdpa", "nvfuser", "torchcompile"],
+        model_name="stablecode-completion-alpha-3b",
     ),
 ]
 
@@ -77,6 +83,8 @@ for test in layers:
             x = torch.randint(1, model.config.vocab_size, (test.batch_size, cfg.block_size))
             print(f"Input size: {x.size()}")
 
+            eager = model
+            torch_compile = torch.compile(model)
             jmodel_def = thunder.jit(model)
             jmodel_auto = thunder.jit(
                 model,
@@ -88,7 +96,7 @@ for test in layers:
             print("deviation def:", (jmodel_def(x) - model(x)).abs().max().item())
             print("deviation auto:", (jmodel_auto(x) - model(x)).abs().max().item())
 
-            iters = 100
+            iters = 40
             fw_traces = [
                 thunder.last_traces(jmodel_def)[-1],
                 thunder.last_traces(jmodel_auto)[-1],
@@ -99,15 +107,15 @@ for test in layers:
             ]
             fw_labels = ["fw_def", "fw_auto"]
             bw_labels = ["bw_def", "bw_auto"]
+            print('\n\n####################################################', test.model_name)
             print(f"Results thunder benchmark ({iters} iters):")
             thunder_fw_bw_benchmark(fw_traces, bw_traces, fw_labels, bw_labels, iters, nvsight=False)
             # thunder_fw_bw_benchmark(fw_traces, bw_traces, fw_labels, bw_labels, 10, nvsight=True)
 
-            print(test.model_name)
             print(f"\n\nResults torch fw bw benchmark ({iters} iters):")
-            callables = [jmodel_def, jmodel_auto]
-            labels = ["def", "auto"]
-            inputs = [x, x]
+            callables = [eager, torch_compile, jmodel_def, jmodel_auto]
+            labels = ['eager', 'torch.compile', 'Thunder', 'Thunder Autotuner']
+            inputs = [x, x, x, x]
             torch_fw_bw_benchmark(callables, labels, inputs, iters)
             print(f"\n\nResults torch total benchmark ({iters} iters):")
             torch_total_benchmark(callables, labels, inputs, iters)
