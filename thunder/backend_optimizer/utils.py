@@ -1157,7 +1157,8 @@ def reduce_common_trace_blocks(
     return extrace
 
 
-# NOTE: This implementation currently relies on the fact that transformer blocks are contiguous in trace or they have a common gap region between them (in case for bw trace).
+# NOTE: This implementation currently relies on the fact that transformer blocks are contiguous in trace
+# or they have a common gap region between them (in case for bw trace).
 # TODO: generalize this
 def map_executors_from_reduced_trace_to_complete_trace(
     complete_trace: TraceCtx, common_blocks: list[tuple], ex_mappings: list[Executor]
