@@ -1054,7 +1054,7 @@ def reduce_common_trace_blocks(
     # Make it fast to search in
     index_gaps_to_exclude = set(index_gaps_to_exclude)
 
-    # Create reduce trace regions
+    # Create reduced trace regions
     bound_symbols: list[BoundSymbol] = [
         b for i, b in enumerate(trace.bound_symbols) if not _exclude(common_blocks[1:], i, index_gaps_to_exclude)
     ]
