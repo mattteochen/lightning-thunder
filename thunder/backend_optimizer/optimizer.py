@@ -893,7 +893,7 @@ class FusionPlacer_BeamSearch(PlacerBase):
             )
             # print(common_trace_blocks)
             if len(common_trace_blocks) >= 2 and optimize_common_blocks:
-                log(f"Common blocks found {common_trace_blocks}", level=LogLevel.DEBUG)
+                log(f"Common blocks found {common_trace_blocks}", level=LogLevel.INFO)
                 reduced_trace = reduce_common_trace_blocks(trace=self.trace, common_blocks_in=common_trace_blocks)
                 log(
                     f"Operating on reduced trace (by cutting common transformer blocks):\n{reduced_trace}",
