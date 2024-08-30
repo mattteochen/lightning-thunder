@@ -1,6 +1,11 @@
 from collections.abc import Callable, Sequence
 from enum import Enum
-from thunder.backend_optimizer.utils import operation_in_trace, wrap_fn_with_exeuctor_compile_option
+from thunder.backend_optimizer.utils import (
+    map_executors_from_reduced_trace_to_complete_trace,
+    operation_in_trace,
+    wrap_fn_with_exeuctor_compile_option,
+)
+from thunder.core.compile_data import get_compile_data
 from thunder.core.prims import PrimIDs
 from thunder.core.proxies import CollectionProxy, FloatProxy, IntegerProxy, TensorProxy
 from thunder.core.symbol import BoundSymbol
@@ -239,11 +244,14 @@ class FusionPlacer_BeamSearch(PlacerBase):
 
         self.known_fusion_ex_compile_options: dict[str | Hashable, list[FusionCompileOptionsHelper]] = {
             "nvfuser": [
-                FusionCompileOptionsHelper("nv_enable_linear", "linear", PrimIDs.LINEAR, linear, _linear_check),
+                # FusionCompileOptionsHelper("nv_enable_linear", "linear", PrimIDs.LINEAR, linear, _linear_check),
                 # FusionCompileOptionsHelper("nv_enable_matmul", "matmul", PrimIDs.MATMUL, matmul, _matmul_check),
                 # FusionCompileOptionsHelper("nv_enable_bookend", "bookend"),
             ]
         }
+
+        self.is_reduced: bool = False
+        self.cached_original_trace: TraceCtx | None = None
 
     """
     ################################################## Internal methods ##################################################
@@ -350,7 +358,7 @@ class FusionPlacer_BeamSearch(PlacerBase):
                 # Unpack the dict
                 label = list(pair.keys())[0]
                 trace = list(pair.values())[0]
-                trace_time, trace_mem, res = benchmark_trace(
+                trace_time, trace_mem, _ = benchmark_trace(
                     trace, self.benchmark_iters, fw_trace=self.active_fw_trace_ctx[0]
                 )
                 self.debug_msg += f"Trace name = [{label}] - Target: TIME - Time = {trace_time} ms - Mem = {trace_mem / (2**30)} GB\n{trace}\n\n"
@@ -363,7 +371,7 @@ class FusionPlacer_BeamSearch(PlacerBase):
                 label = list(pair.keys())[0]
                 trace = list(pair.values())[0]
 
-                trace_time, trace_mem, res = benchmark_trace(
+                trace_time, trace_mem, _ = benchmark_trace(
                     trace, self.benchmark_iters, fw_trace=self.active_fw_trace_ctx[0]
                 )
                 self.debug_msg += f"Trace name = [{label}] - Target: MEM - Mem = {trace_mem / (2**30)} GB - Time = {trace_time} ms\n{trace}\n\n"
@@ -519,12 +527,12 @@ class FusionPlacer_BeamSearch(PlacerBase):
             log(f"Number of Fusion groups = {len(bound_symbol_groups)}", level=LogLevel.DEBUG)
 
             # Print fusion groups if requested
-            for id, group in enumerate(bound_symbol_groups):
-                log(f"Group id: {id}", level=LogLevel.DEBUG)
-                for sub in group:
-                    log(f"{sub.sym.name} -> out: {sub.output}", level=LogLevel.DEBUG)
-                if log_level == LogLevel.DEBUG and len(group) > 0:
-                    print("\n")
+            # for id, group in enumerate(bound_symbol_groups):
+            #     log(f"Group id: {id}", level=LogLevel.DEBUG)
+            #     for sub in group:
+            #         log(f"{sub.sym.name} -> out: {sub.output}", level=LogLevel.DEBUG)
+            #     if log_level == LogLevel.DEBUG and len(group) > 0:
+            #         print("\n")
 
             dict_time_strat: dict[str, Executor] = {}
             dict_mem_strat: dict[str, Executor] = {}
@@ -678,8 +686,9 @@ class FusionPlacer_BeamSearch(PlacerBase):
                 n_missing_bsyms = len(group) - start_idx
                 # TODO (matteochen): consider to add the iteration with no fusion regions
                 for i in range(0, n_missing_bsyms, n_missing_bsyms - 1 if self.trace_type == TraceType.BW else 1):
-                    if ex.name == 'torchcompile':
+                    if ex.name == "torchcompile":
                         import torch
+
                         torch.compiler.reset()
 
                     # for i in range(0, n_missing_bsyms):
@@ -863,6 +872,7 @@ class FusionPlacer_BeamSearch(PlacerBase):
         from thunder.core.transform_common import dce
         from thunder.executors.torch_autograd import update_bw_from_forward_optimization
         from thunder.backend_optimizer.utils import assign_executors
+        from thunder.backend_optimizer.utils import repetead_trace_blocks, reduce_common_trace_blocks
 
         def _optimize():
             # Reset fusion helpers
@@ -870,8 +880,38 @@ class FusionPlacer_BeamSearch(PlacerBase):
             # Reset helpers data structures
             self.executor_placement_options = ExecutorPlacementOptions()
 
+            cd = get_compile_data()
+            # Check if common blocks optimization is requested
+            optimize_common_blocks = False if cd is None else cd.compile_options.get("optimize_common_blocks", False)
+            optimize_common_blocks_min_size = (
+                -1 if cd is None else cd.compile_options.get("optimize_common_blocks_min_size", -1)
+            )
+
+            # Cut the compilation time if possible
+            common_trace_blocks = repetead_trace_blocks(
+                trace=self.trace, min_block_size=optimize_common_blocks_min_size if optimize_common_blocks else -1
+            )
+            # print(common_trace_blocks)
+            if len(common_trace_blocks) >= 2 and optimize_common_blocks:
+                log(f"Common blocks found {common_trace_blocks}", level=LogLevel.DEBUG)
+                reduced_trace = reduce_common_trace_blocks(trace=self.trace, common_blocks_in=common_trace_blocks)
+                log(
+                    f"Operating on reduced trace (by cutting common transformer blocks):\n{reduced_trace}",
+                    level=LogLevel.INFO,
+                )
+                self.is_reduced = True
+                self.cached_original_trace = self.trace
+                self.trace = reduced_trace
+            else:
+                log(
+                    "Optimizing the whole trace directly. No common transformer block optimization will be applied.",
+                    level=LogLevel.INFO,
+                )
+
+            # This performs executor search
             self._search_candidates()
 
+            # From now on we have the optimized executors for each trace region. Apply them...
             if len(self.executor_placement_options.placement_options_time) != len(
                 self.fusion_executors_saved_for_later
             ):
@@ -882,6 +922,25 @@ class FusionPlacer_BeamSearch(PlacerBase):
                 raise AssertionError(
                     f"Unexpected mem placement options size: {len(self.executor_placement_options.placement_options_mem)}. Expected: {len(self.fusion_executors_saved_for_later)}"
                 )
+
+            # If we optimized the reduced trace we now can share the placing with other blocks
+            if self.is_reduced and self.cached_original_trace is not None:
+                for placement_ctx in self.executor_placement_options.placement_options_time:
+                    placement = map_executors_from_reduced_trace_to_complete_trace(
+                        self.cached_original_trace, common_trace_blocks, placement_ctx.placement
+                    )
+                    placement_ctx.placement = placement
+
+                for placement_ctx in self.executor_placement_options.placement_options_mem:
+                    placement = map_executors_from_reduced_trace_to_complete_trace(
+                        self.cached_original_trace, common_trace_blocks, placement_ctx.placement
+                    )
+                    placement_ctx.placement = placement
+
+                # Reset original trace
+                self.trace = self.cached_original_trace
+
+            # We will create the best compute time and peak memory consumption placement for each fusion executor
             for placement_ctx, ex in zip(
                 self.executor_placement_options.placement_options_time, self.fusion_executors_saved_for_later
             ):

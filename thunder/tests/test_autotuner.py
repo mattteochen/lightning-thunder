@@ -458,18 +458,17 @@ def test_transform_proxy_to_torch_TE():
 def test_reorder_executors_list(executors, expected):
     assert aut_utils.reorder_executors_list(executors) == expected
 
+
 @pytest.mark.parametrize(
     "name, expected",
-    [
-        ('linear', [transformer_engine_ex]),
-        ('scaled_dot_product_attention', [sdpa_ex, cudnn_ex, fa3_ex])
-    ],
+    [("linear", [transformer_engine_ex]), ("scaled_dot_product_attention", [sdpa_ex, cudnn_ex, fa3_ex])],
 )
 def test_get_fw_bw_split_backends_options(name: str, expected):
     symbol = Symbol(name=name)
     bsym = BoundSymbol(symbol, (), {}, None)
     options = get_fw_bw_split_backends_options(bsym)
     assert all(map(lambda v: v in options, expected))
+
 
 class Model_1(torch.nn.Module):
     def __init__(self, in_f, out_f) -> None:
@@ -480,6 +479,7 @@ class Model_1(torch.nn.Module):
         t0 = self.linear(x)
         return torch.nn.functional.silu(t0)
 
+
 class Model_2(torch.nn.Module):
     def __init__(self) -> None:
         super().__init__()
@@ -489,11 +489,12 @@ class Model_2(torch.nn.Module):
 
     def forward(self, x):
         B, T, C = x.size()
-        q, k, v  = self.c_attn(x).split(self.n_embd, dim=2)
-        k = k.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
-        q = q.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
-        v = v.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
+        q, k, v = self.c_attn(x).split(self.n_embd, dim=2)
+        k = k.view(B, T, self.n_head, C // self.n_head).transpose(1, 2)  # (B, nh, T, hs)
+        q = q.view(B, T, self.n_head, C // self.n_head).transpose(1, 2)  # (B, nh, T, hs)
+        v = v.view(B, T, self.n_head, C // self.n_head).transpose(1, 2)  # (B, nh, T, hs)
         return torch.nn.functional.scaled_dot_product_attention(q, k, v)
+
 
 @pytest.mark.parametrize(
     "model, tensor_shape, dtype, autotune_type, executors, expected_executors, use_cudagraphs",
@@ -532,7 +533,10 @@ class Model_2(torch.nn.Module):
             torch.float32,
             "runtime",
             [sdpa_ex, transformer_engine_ex],
-            [[sdpa_ex, transformer_engine_ex, nvfuserex, torchex, pythonex]],
+            [
+                [sdpa_ex, transformer_engine_ex, nvfuserex, torchex, pythonex],
+                [sdpa_ex, transformer_engine_ex, nvfuserex, torchex, pythonex],
+            ],
             False,
         ),
     ],
@@ -548,15 +552,19 @@ def test_autotuner(
     use_cudagraphs: bool,
 ):
     def _run():
-        model.to('cuda')
-        x = torch.randn(tensor_shape, dtype=dtype, device='cuda')
+        model.to("cuda")
+        x = torch.randn(tensor_shape, dtype=dtype, device="cuda")
         jitted_def = thunder.jit(model, executors=executors)
-        jitted_auto = thunder.jit(model, autotune_type=autotune_type, executors=executors, use_cudagraphs=use_cudagraphs)
+        jitted_auto = thunder.jit(
+            model, autotune_type=autotune_type, executors=executors, use_cudagraphs=use_cudagraphs
+        )
         y_def = jitted_def(x)
         y_auto = jitted_auto(x)
 
         te_used = aut_utils.is_te_used(thunder.last_traces(jitted_auto)[-1])
         got = thunder.executors_applied(jitted_auto)
+        print("got", got)
+        print("expected", expected_executors)
         assert any([t == got for t in expected_executors])
         # With TE enabled deviation ((y_def - y_auto).abs().max().item()) is between tensors are ~0.2
         # For the else branch: https://pytorch.org/docs/stable/testing.html
@@ -569,39 +577,60 @@ def test_autotuner(
         _run()
 
 
+"""
+The longest repeated block is:
+    t2 = x @ y
+    t3 = t0 + t0
+    t4 = t1 * t1
+"""
+
+
+def _test_repetead_transformer_blocks_fn(x: torch.Tensor, y: torch.Tensor):
+    t0 = x + x
+    t1 = y * y
+    t2 = x @ y
+    t3 = t0 + t0
+    t4 = t1 * t1
+    t5 = t2 @ t2
+    t6 = t3 + t3
+    t7 = t4 * t4
+    t8 = t6 - t7
+    return t8, t5
+
+
 def test_repetead_transformer_blocks():
-    device = 'cuda'
-    # def _fn(x: torch.Tensor, y: torch.Tensor):
-    #     a = x + x
-    #     b = y * y
-    #     c = x @ y
-    #     aa = a + a
-    #     bb = b * b
-    #     return c, aa, bb
+    device = "cpu"
 
-    # a = torch.randn(2,2, device = device)
-    # b = torch.randn(2,2, device = device)
+    a = torch.randn(2, 2, device=device)
+    b = torch.randn(2, 2, device=device)
 
-    # jitted = thunder.jit(_fn)
-    # jitted(a, b)
+    jitted = thunder.jit(_test_repetead_transformer_blocks_fn, disable_dce=True)
+    jitted(a, b)
 
-    # trace = thunder.last_traces(jitted)[-1]
-    # aut_utils.repetead_transformer_blocks(trace=trace)
-
-    from thunder.tests.litgpt_model import Config
-    from litgpt import GPT
-    cfg = Config.from_name('Llama-3-8B')
-    cfg.n_layer = 2
-
-    model = GPT(cfg)
-    model.to(device)
-    x = torch.randint(1, model.config.vocab_size, (1, cfg.block_size), device=device, )
-    jitted = thunder.jit(model, executors=['sdpa'])
-    jitted(x)
-
-    # trace = thunder.last_traces(jitted)[-1]
-    # ret = aut_utils.repetead_transformer_blocks(trace=trace)
-    # print(ret)
+    trace = thunder.last_traces(jitted)[-1]
+    print(trace)
+    blocks = aut_utils.repetead_trace_blocks(trace=trace)
+    assert len(blocks) == 2
+    assert blocks[0][1] - blocks[0][0] + 1 == 3
 
 
+def test_reduce_common_trace_blocks():
+    device = "cpu"
 
+    a = torch.randn(2, 2, device=device)
+    b = torch.randn(2, 2, device=device)
+
+    jitted = thunder.jit(_test_repetead_transformer_blocks_fn, disable_dce=True)
+    jitted(a, b)
+
+    trace = thunder.last_traces(jitted)[-1]
+    blocks = aut_utils.repetead_trace_blocks(trace=trace)
+    reduced_trace = aut_utils.reduce_common_trace_blocks(
+        trace=trace, common_blocks_in=blocks, skip_between_blocks=False
+    )
+
+    # We expect that t5, t6, t7 have been removed
+    should_remove = set(["t5", "t6", "t7"])
+    for b in reduced_trace.bound_symbols:
+        if hasattr(b.output, "name"):
+            assert b.output.name not in should_remove

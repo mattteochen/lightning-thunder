@@ -1,17 +1,27 @@
 from collections.abc import Callable, Hashable, Sequence
 from typing import Any
-from thunder.core import symbol
+
 from thunder.core.compile_data import get_compile_data
 from thunder.core.dtypes import to_torch_dtype
 from thunder.core.prims import PrimIDs
-from thunder.core.proxies import AnyProxy, FloatProxy, IntegerProxy, NumberProxy, Proxy, TensorProxy, Variable, variableify
+from thunder.core.proxies import (
+    AnyProxy,
+    FloatProxy,
+    IntegerProxy,
+    NumberProxy,
+    Proxy,
+    TensorProxy,
+    Variable,
+    variableify,
+)
 from thunder.core.symbol import BoundSymbol, Symbol
-from thunder.core.trace import TraceCtx, get_tracectx, reset_tracectx, set_tracectx
+from thunder.core.trace import TraceCtx, from_trace, get_tracectx, reset_tracectx, set_tracectx
 from thunder.extend import Executor, FusionExecutor, OperatorExecutor
 from thunder.core.utils import check, safe_map_flat
 import thunder.core.transforms as transforms
 from itertools import chain
 import torch
+from thunder.core.dtypes import dtype
 
 
 # Maybe we can use id(s)
@@ -768,40 +778,49 @@ def reorder_executors_list(executors: Sequence):
 
     return reordered
 
+
 def symbol_hash(bsym: BoundSymbol):
+    # Maintainig essential metadata
     def _tensor_hash(t: TensorProxy) -> str:
         assert t.dtype
         shapes = [str(s) for s in t.shape]
-        return '{' + '-'.join(shapes) + '/' + str(t.device) + t.dtype.full_name + str(t.requires_grad) + '}'
+        return "{" + "-".join(shapes) + "/" + str(t.device) + t.dtype.full_name + str(t.requires_grad) + "}"
 
     def _number_hash(t: NumberProxy) -> str:
-        return '{' + str(t.value) + '}'
+        return "{" + str(t.value) + "}"
+
+    def _any_proxy_hash(p: AnyProxy) -> str:
+        return "{" + p.__repr__() + "}"
 
     def _sequence_hash(s: Sequence | None) -> str:
         if s is None:
             return "None"
 
-        ret = '['
+        ret = "["
         for e in s:
             if e is None:
-                ret += '{None}'
+                ret += "{None}"
             elif isinstance(e, TensorProxy):
-                ret += _tensor_hash(e) + ','
+                ret += _tensor_hash(e) + ","
             elif isinstance(e, NumberProxy):
-                ret += _number_hash(e) + ','
+                ret += _number_hash(e) + ","
             elif isinstance(e, Sequence):
-                ret += _sequence_hash(e) + ','
+                ret += _sequence_hash(e) + ","
+            elif isinstance(e, AnyProxy):
+                ret += _any_proxy_hash(e)
             elif isinstance(e, int) or isinstance(e, float) or isinstance(e, bool):
-                ret += f'{(type(e))}'
+                ret += f"{(type(e))}"
+            elif isinstance(e, dtype):
+                ret += f"{(type(e))}"
             else:
-                raise RuntimeError(f'Not implemented {type(e)}')
-        return ret + ']'
+                raise RuntimeError(f"Not implemented {type(e)}. Failed bsym: {bsym}")
+        return ret + "]"
 
     def _hash(bsym: BoundSymbol) -> str:
         h = bsym.sym.name
         # Handle tensor as output or sequences
         if not isinstance(bsym.output, TensorProxy) and not isinstance(bsym.output, Sequence):
-            raise RuntimeError(f'type {type(bsym.output)} not implemented')
+            raise RuntimeError(f"type {type(bsym.output)} not implemented")
         h += (
             "#out:"
             + (_tensor_hash(bsym.output) if isinstance(bsym.output, TensorProxy) else _sequence_hash(bsym.output))
@@ -813,9 +832,15 @@ def symbol_hash(bsym: BoundSymbol):
 
     return _hash(bsym)
 
-def repetead_transformer_blocks(
+
+# Both lhs and rhs are included in the range
+# TODO: known_points can be used to detect start and end of a block sequence
+def repetead_trace_blocks(
     *, trace: TraceCtx, min_block_size=1, known_points: tuple[BoundSymbol, BoundSymbol] | None = None
 ) -> list[tuple]:
+    if min_block_size < 2:
+        return []
+
     symbols = [
         s
         for s in trace.bound_symbols
@@ -823,19 +848,19 @@ def repetead_transformer_blocks(
     ]
 
     def _tuple_name(tup: Sequence):
-        ret = '('
+        ret = "("
         for e in tup:
             if e is None:
-                ret += 'None, '
-            elif hasattr(e, 'name'):
-                ret += e.name + ', '
+                ret += "None, "
+            elif hasattr(e, "name"):
+                ret += e.name + ", "
             elif isinstance(e, Sequence):
-                ret += _tuple_name(e) + ', '
+                ret += _tuple_name(e) + ", "
             elif isinstance(e, int) or isinstance(e, float) or isinstance(e, bool):
-                ret += str(e) + ', '
+                ret += str(e) + ", "
             else:
-                raise RuntimeError(f'Not implemented {type(e)}')
-        return ret + ')'
+                raise RuntimeError(f"Not implemented {type(e)}")
+        return ret + ")"
 
     # Only bsym that have inputs and outputs
     original_map_indexes = {
@@ -845,19 +870,17 @@ def repetead_transformer_blocks(
     }
 
     def _lcs(start_indexes) -> int:
-        max_last_len = len(symbols)-1
+        max_last_len = len(symbols) - 1
         max_first_len = start_indexes[1]
-        print(max_first_len, max_last_len)
 
         lcs = 0
-        while (start_indexes[0] < max_first_len and start_indexes[-1] < max_last_len):
+        while start_indexes[0] < max_first_len and start_indexes[-1] < max_last_len:
             # Get all the hashes
             hashes = [symbol_hash(symbols[i]) for i in start_indexes]
             # Advance if all the hashes coincides
             uniques = set(hashes)
-            # print(f'unique: {len(uniques)}')
             if len(uniques) == 1:
-                start_indexes = [i+1 for i in start_indexes]
+                start_indexes = [i + 1 for i in start_indexes]
                 lcs += 1
             else:
                 return lcs
@@ -868,12 +891,11 @@ def repetead_transformer_blocks(
 
     bsym_indexes: dict[str, list[int]] = {}
     for i, bsym in enumerate(symbols):
-        if i == len(symbols)-1:
+        if i == len(symbols) - 1:
             break
         # Skip None outputs (unpacks, returns, del)
         if _skip(bsym):
             continue
-        # print(f'hashing {bsym.sym.name} at index {i}')
         h = symbol_hash(bsym)
         if h in bsym_indexes:
             bsym_indexes[h].append(i)
@@ -891,7 +913,7 @@ def repetead_transformer_blocks(
     max_lcs = 0
     res = []
     for i, bsym in enumerate(symbols):
-        if i == len(symbols)-1:
+        if i == len(symbols) - 1:
             break
         # Skip None outputs (unpacks, returns, del)
         if _skip(bsym):
@@ -902,40 +924,288 @@ def repetead_transformer_blocks(
         # Normally, bsym are expected to output a TensorProxy
         if not isinstance(bsym.output, Proxy) or h in seen_hashes or _range_seen(i, seen_ranges):
             continue
-        # else:
-        #     print(f'checking lcs for {bsym.sym.name}')
 
         indexes = bsym_indexes.get(h, [])
-        print([f'index {i}, out_name: {symbols[i].output.name}' for i in indexes])
         seen_hashes.add(h)
         if len(indexes) < 2:
             continue
 
         # Now we can find the longest common sequence between all the occurences
         lcs = _lcs(indexes)
-        print('\n####################')
-        for index in indexes:
-            print(f'For index {index} lcs: {lcs}')
-            print(f'Starting bsym: {symbols[index]}')
-            print(f'Ending bsym: {symbols[index + lcs - 1]}')
-        print('\n####################')
+        # print('\n####################')
+        # for index in indexes:
+        #     print(f'For index {index} lcs: {lcs}')
+        #     print(f'Starting bsym: {symbols[index]}')
+        #     print(f'Ending bsym: {symbols[index + lcs - 1]}')
+        # print('\n####################')
         if lcs > 1:
             # Push every seen ranges to ignore all the subranges
             for i in indexes:
-                seen_ranges.add((i, i+lcs-1))
+                seen_ranges.add((i, i + lcs - 1))
 
             # Set result
             if lcs > max_lcs:
                 max_lcs = lcs
-                res = [(i, i+lcs-1) for i in indexes]
+                res = [(i, i + lcs - 1) for i in indexes]
 
-    print(f'\n\nMax lcs {max_lcs}')
-    print(res)
-    for r in res:
-        print(symbols[r[0]].output.name, symbols[r[1]].output.name)
+    if max_lcs < min_block_size:
+        return []
+
+    # print(f'\n\nMax lcs {max_lcs}')
+    # print(res)
+
+    # for r in res:
+    #     print(symbols[r[0]].output.name, symbols[r[1]].output.name)
     return [
         (original_map_indexes[symbols[t[0]].output.name], original_map_indexes[symbols[t[1]].output.name]) for t in res
     ]
 
 
+# What is regions_between_blocks?
+# They are trace regions between one transformer block and the next one in the backward pass and given that these regions are not present
+# at the end of the last transformer block it means that they are needed in order to prepare shapes or strides
+# for the block at i+1 from the output of block i.
+# For example if common blocks looks like: [(32, 155), (157, 280)]
+# the symbol at index 156 (the gap) looks like: <t939 = ltorch.reshape(t938, -1, 4096)  # t939: "cuda:0 f32[128, 4096]">
+# In the forward trace we have not these gaps (so far).
+def _regions_between_blocks(trace: TraceCtx, common_blocks: list[tuple]) -> int:
+    def _assert_args(seq_a: Sequence, seq_b: Sequence):
+        assert len(seq_a) == len(seq_b)
+        for a, b in zip(seq_a, seq_b):
+            assert type(a) == type(b)
+            if isinstance(a, TensorProxy):
+                assert a.shape == b.shape
+                assert a.dtype == b.dtype
+            elif isinstance(a, Sequence):
+                _assert_args(a, b)
 
+    regions_between_blocks = common_blocks[1][0] - common_blocks[0][1] - 1
+    trace_region_between_common_blocks = trace.bound_symbols[common_blocks[0][1] + 1 : common_blocks[1][0]]
+    for i in range(1, len(common_blocks)):
+        if not common_blocks[i][0] - common_blocks[i - 1][1] - 1 == regions_between_blocks:
+            raise AssertionError(
+                "Trace configuration not supported. All the trace regions between common blocks are expected to have the same number of instructions."
+            )
+
+        # Check that the trace regions are equal
+        test_trace_regions = trace.bound_symbols[common_blocks[i - 1][1] + 1 : common_blocks[i][0]]
+        assert len(test_trace_regions) == len(trace_region_between_common_blocks)
+        for a, b in zip(test_trace_regions, trace_region_between_common_blocks):
+            assert a.sym.name == b.sym.name
+            _assert_args(a.args, b.args)
+
+    return regions_between_blocks
+
+
+def _indices_to_exclude_between_common_blocks(common_blocks: list[tuple]) -> list:
+    if len(common_blocks) < 2:
+        return []
+
+    ret = []
+    for i in range(1, len(common_blocks)):
+        start_gap_index = common_blocks[i - 1][1] + 1
+        end_gap_index = common_blocks[i][0] - 1
+        ret.extend([j for j in range(start_gap_index, end_gap_index + 1)])
+    return ret
+
+
+def reduce_common_trace_blocks(
+    *, trace: TraceCtx, common_blocks_in: list[tuple], skip_between_blocks: bool = True
+) -> TraceCtx:
+    def _exclude(blocks: list[tuple[int, int]], index: int, black_list: set):
+        # Exclude if the index is in a repeated block
+        for block in blocks:
+            if index >= block[0] and index <= block[1]:
+                return True
+
+        # Exclude if it marked as to remove
+        if index in black_list and skip_between_blocks:
+            return True
+        return False
+
+    def _find_bsym_index(out_name: str, space: Sequence[BoundSymbol]) -> int:
+        for i, b in enumerate(space):
+            if b.output is not None and hasattr(b.output, "name") and b.output.name == out_name:
+                return i
+        raise RuntimeError(f"Can not found bsym with output {out_name} in the search space.")
+
+    common_blocks = list(common_blocks_in)
+    if len(common_blocks) < 2:
+        trc = from_trace(trace)
+        trc.bound_symbols = list(trace.bound_symbols)
+        return trc
+
+    # Create a mapping where we can easily find to which block a specific output blongs
+    output_to_block: dict[str, tuple[int, int]] = {}
+    for n_block, block in enumerate(common_blocks):
+        for i in range(block[0], block[1] + 1):
+            bsym = trace.bound_symbols[i]
+            if not hasattr(bsym.output, "name"):
+                continue
+            output_to_block[bsym.output.name] = (n_block, i - block[0])
+
+    # Check that we maintain the pattern
+    regions_between_blocks = _regions_between_blocks(trace, common_blocks)
+
+    # We have to exlude these gaps indices from the reduce trace
+    index_gaps_to_exclude = []
+    if regions_between_blocks:
+        index_gaps_to_exclude = _indices_to_exclude_between_common_blocks(common_blocks)
+    # Make it fast to search in
+    index_gaps_to_exclude = set(index_gaps_to_exclude)
+
+    # Create reduce trace regions
+    bound_symbols: list[BoundSymbol] = [
+        b for i, b in enumerate(trace.bound_symbols) if not _exclude(common_blocks[1:], i, index_gaps_to_exclude)
+    ]
+
+    # Retrive first and last blocks
+    first_block = common_blocks[0]
+    # common_blocks = common_blocks[1:]
+
+    # Now, we have to update the trace region inputs after the last block to accepts the outputs of the first block, if it's not the return statement
+    if trace.bound_symbols[common_blocks[-1][1] + 1].sym.id != PrimIDs.RETURN:
+        # first_block_outputs = trace.bound_symbols[first_block[1]].output
+        # last_block_outputs = trace.bound_symbols[common_blocks[-1][1]].output
+
+        # if not isinstance(first_block_outputs, Sequence):
+        #     first_block_outputs = [first_block_outputs]
+        # if not isinstance(last_block_outputs, Sequence):
+        #     last_block_outputs = [last_block_outputs]
+
+        symbol_to_correct_index = _find_bsym_index(
+            trace.bound_symbols[common_blocks[-1][1] + 1].output.name, bound_symbols
+        )
+        symbol_to_correct = bound_symbols[symbol_to_correct_index]
+
+        def _correct_args(target: BoundSymbol):
+            args = []
+            for arg in target.args:
+                if arg is None:
+                    args.append(None)
+                elif hasattr(arg, "name") and arg.name in output_to_block:
+                    _, index_in_block = output_to_block[arg.name]
+                    # Recover the argument from the first block
+                    args.append(trace.bound_symbols[common_blocks[0][0] + index_in_block].output)
+                elif isinstance(arg, Sequence):
+                    raise RuntimeError("Not implemented")
+                else:
+                    args.append(arg)
+            return args
+
+        def _correct_bsym(bsym: BoundSymbol) -> BoundSymbol:
+            bsym = bsym.from_bsym(args=_correct_args(bsym))
+            return bsym
+
+        new_subsymbols = []
+        for sub in symbol_to_correct.subsymbols:
+            new_sub = _correct_bsym(sub)
+            new_subsymbols.append(new_sub)
+
+        bound_symbols[symbol_to_correct_index] = symbol_to_correct.from_bsym(
+            args=_correct_args(symbol_to_correct), subsymbols=new_subsymbols
+        )
+
+        # print(bound_symbols[symbol_to_correct_index])
+
+    # We need to check also the return statements as we have fewer args now
+    flatten_bsyms = flatten_sequence([b.output for b in bound_symbols])
+    args_remained = set([b.name for b in flatten_bsyms if b is not None and hasattr(b, "name")])
+    # Fw trace
+    if isinstance(bound_symbols[-1].args[0], dict):
+        saved_for_backward = tuple(
+            [e for e in bound_symbols[-1].args[1][0] if hasattr(e, "name") and e.name in args_remained]
+        )
+        if isinstance(bound_symbols[-1].args[0]["output"], Sequence):
+            output = tuple(
+                [o for o in bound_symbols[-1].args[0]["output"] if hasattr(o, "name") and o.name in args_remained]
+            )
+        else:
+            output = bound_symbols[-1].args[0]["output"]
+        flat_output = tuple(
+            [o for o in bound_symbols[-1].args[0]["flat_output"] if hasattr(o, "name") and o.name in args_remained]
+        )
+        new_dict = {"output": output, "flat_output": flat_output, "flat_args": bound_symbols[-1].args[0]["flat_args"]}
+
+        # Create the new args and substitute return symbol
+        bsym = bound_symbols[-1].from_bsym(args=(new_dict, (saved_for_backward, bound_symbols[-1].args[1][1])))
+        bound_symbols[-1] = bsym
+    # Bw trace
+    else:
+
+        def _returned(seq: Sequence) -> tuple:
+            ret = []
+            for e in seq:
+                if e is None:
+                    ret.append(None)
+                elif isinstance(e, Sequence):
+                    ret.append(_returned(e))
+                elif isinstance(e, Proxy) and e.name in args_remained:
+                    ret.append(e)
+                elif not isinstance(e, Proxy):
+                    raise RuntimeError(f"type not recognized: {type(e)}")
+
+            return tuple(ret)
+
+        # Backward output is a tuple, and generally a tuple of tuple (())
+        original_returned = bound_symbols[-1].args
+        returned = _returned(original_returned)
+        bound_symbols[-1] = bound_symbols[-1].from_bsym(args=returned)
+
+    extrace: TraceCtx = from_trace(trace)
+    extrace.bound_symbols = bound_symbols
+    return extrace
+
+
+# NOTE: This implementation currently relies on the fact that transformer blocks are contiguous in trace or they have a common gap region between them (in case for bw trace).
+# TODO: generalize this
+def map_executors_from_reduced_trace_to_complete_trace(
+    complete_trace: TraceCtx, common_blocks: list[tuple], ex_mappings: list[Executor]
+) -> list[Executor]:
+    from thunder.executors.torchex import ex as torch_ex
+
+    if len(common_blocks) < 2:
+        raise AssertionError("No common block found")
+
+    # Check that we maintain the pattern
+    regions_between_blocks = _regions_between_blocks(complete_trace, common_blocks)
+
+    # These are the trace region indices (referred to the complete trace) that we have excluded from the reduced trace optimization.
+    # We have also to integrate their executors.
+    # By default torchex will be used as currently no complex (optimizable) ops are present so far (they are usually reshape ops).
+    indices_excluded: list = _indices_to_exclude_between_common_blocks(common_blocks)
+
+    # Correctness assertion
+    if regions_between_blocks:
+        assert len(indices_excluded) % regions_between_blocks == 0
+        assert len(indices_excluded) // regions_between_blocks == len(common_blocks) - 1
+
+    # Solution starting point: copy up to the end of the first common block
+    complete_trace_executors: list[Executor] = ex_mappings[: common_blocks[0][1] + 1]
+    # Get the executors sequence to share from the first block to all the other equal blocks.
+    to_share: list[Executor] = []
+    for i in range(len(common_blocks) - 1):
+        # First region bewteen block, adding here as this was not present in the reduce trace (not found in the ex_mappings structure)
+        if i == 0:
+            to_share.extend([torch_ex] * regions_between_blocks)
+
+        to_share.extend(ex_mappings[common_blocks[0][0] : common_blocks[0][1] + 1])
+
+        # We have to add back the excluded regions (see comment 15 lines above).
+        if i < len(common_blocks) - 2:
+            to_share.extend([torch_ex] * regions_between_blocks)
+
+    # Extend by sharing mappings of transformer blocks
+    complete_trace_executors.extend(to_share)
+    # Extend with the remained bsyms
+    complete_trace_executors.extend(ex_mappings[common_blocks[0][1] + 1 :])
+
+    # Check that we have all the executors needed
+    len_got = len(complete_trace_executors)
+    len_expected = len(complete_trace.bound_symbols)
+    if len_got != len_expected:
+        raise AssertionError(
+            f"Trace regions size is different from the obtained executors lenght: {len_expected} - {len_got}"
+        )
+
+    return complete_trace_executors
