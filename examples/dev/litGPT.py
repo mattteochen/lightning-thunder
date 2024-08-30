@@ -32,7 +32,7 @@ class Test:
         self.seq_len = seq_len
         self.model_name = model_name
         self.executors = executors
-        self.optimize_transformer_blocks = (optimize_transformer_blocks,)
+        self.optimize_transformer_blocks = optimize_transformer_blocks
         self.optimize_transformer_min_block_size = optimize_transformer_min_block_size
 
 
@@ -44,7 +44,7 @@ layers = [
         executors=[
             "cudnn",
             "sdpa",
-            "fa3",
+            # "fa3",
             "nvfuser",
             "torchcompile",
         ],
@@ -56,50 +56,11 @@ layers = [
         executors=[
             "cudnn",
             "sdpa",
-            "fa3",
+            # "fa3",
             "nvfuser",
             "torchcompile",
         ],
     ),
-    # Test(
-    #     3,
-    #     "runtime",
-    #     1,
-    #     executors=[
-    #         "cudnn",
-    #         "sdpa",
-    #         # "fa3",
-    #         "nvfuser",
-    #         "torchcompile",
-    #     ],
-    #     seq_len=128
-    # ),
-    # Test(
-    #     1,
-    #     "memory",
-    #     1,
-    #     executors=[
-    #         "cudnn",
-    #         "sdpa",
-    #         "fa3",
-    #         "nvfuser",
-    #         "torchcompile",
-    #     ],
-    # ),
-    # Test(
-    #     1,
-    #     "runtime",
-    #     1,
-    #     executors=["cudnn", "sdpa", "fa3", "nvfuser", "torchcompile"],
-    #     model_name="stablecode-completion-alpha-3b",
-    # ),
-    # Test(
-    #     1,
-    #     "memory",
-    #     1,
-    #     executors=["cudnn", "sdpa", "fa3", "nvfuser", "torchcompile"],
-    #     model_name="stablecode-completion-alpha-3b",
-    # ),
 ]
 
 for test in layers:
@@ -108,7 +69,7 @@ for test in layers:
         cfg.n_layer = test.layers
         if test.seq_len != -1:
             cfg.block_size = test.seq_len
-        torch.set_default_dtype(torch.float32)
+        torch.set_default_dtype(torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16)
         print(cfg)
         with torch.device("cuda"):
             model = GPT(cfg)
@@ -132,7 +93,7 @@ for test in layers:
             e = time.time_ns()
             print("Compilation time:", {(e - s) / 1000000000}, "s")
 
-            iters = 40
+            iters = 100
             fw_traces = [
                 thunder.last_traces(jmodel_def)[-1],
                 thunder.last_traces(jmodel_auto)[-1],
