@@ -1,3 +1,8 @@
+"""
+This benchmark script is intended to demonstrate the optimizer supporting the transformer engine executor.
+
+This option can be enabled inside the autotuner by using the flag `autotune_enable_te=True`.
+"""
 import torch
 import thunder
 from thunder.benchmarks.utils import (
@@ -28,7 +33,7 @@ with torch.device("cuda"):
     model = Module(in_features, out_features)
     x = torch.randn(768, in_features, requires_grad=True)
 
-    jmodel_def = thunder.jit(model, executors=["transformer_engine"], use_cudagraphs=False)
+    jmodel_def = thunder.jit(model)
     jmodel_auto = thunder.jit(
         model,
         autotune_type="runtime",
@@ -36,7 +41,7 @@ with torch.device("cuda"):
             "nvfuser",
             "transformer_engine",
         ],
-        use_cudagraphs=False,
+        autotune_enable_te=True
     )
 
     y = jmodel_def(x)

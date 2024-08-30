@@ -333,19 +333,34 @@ def jit(
 
         compile_options |= {
             "autotune_type": OptimizerType.RUNTIME if required_autotune == "runtime" else OptimizerType.MEMORY,
-            "executors_placed_by_fw_bw_split": set(),
+            "autotune_executors_placed_by_fw_bw_split": set(),
         }
 
         # Default the executors list to all_executors if no options are given
         # Otherwise the user restricted choice will be used
+        from thunder.executors.transformer_engineex import transformer_engine_ex
+        from thunder.executors.cudagraphex import cudagraphex
+        from thunder.executors.pythonex import ex as python_ex
         if not executors:
             executors = get_all_executors()
             # Remove python and cudagraph
-            executors = [ex for ex in executors if ex.name != "python" and ex.name != "cudagraphex"]
+            executors = [ex for ex in executors if ex != python_ex and ex != cudagraphex]
+            # Remove transformer_engine if not requested
+            executors = [
+                ex
+                for ex in executors
+                if ex != transformer_engine_ex
+                or (ex == transformer_engine_ex and compile_options.get("autotune_enable_te", False))
+            ]
+        else:
+            # If TE is in executors list we have to enable the compilation option
+            if transformer_engine_ex in executors:
+                compile_options['autotune_enable_te'] = True
 
         from thunder.backend_optimizer.utils import reorder_executors_list
-
-        executors = reorder_executors_list(executors)
+        executors = reorder_executors_list(
+            executors, autotune_enable_te=compile_options.get("autotune_enable_te", False)
+        )
 
     # Resolve names of executors
     executors = resolve_executors(executors)

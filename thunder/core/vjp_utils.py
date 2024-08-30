@@ -232,7 +232,9 @@ def make_aug_forward_and_backward(bsym: BoundSymbol) -> tuple[Callable, Callable
             return cached_result
 
         # Get the possible backends for the current bsym
-        backends = get_fw_bw_split_backends_options(bsym)
+        backends = get_fw_bw_split_backends_options(
+            bsym, autotune_enable_te=cd.compile_options.get("autotune_enable_te", False)
+        )
         if not backends:
             raise AssertionError(
                 f"No enabled backends found for {bsym.sym.name} but an executor for that symbol it is present in the executors list. Either remove that from the executors list or enable at least one backend for {bsym.sym.name} inside 'get_fw_bw_split_backends_options'."
@@ -278,7 +280,7 @@ def make_aug_forward_and_backward(bsym: BoundSymbol) -> tuple[Callable, Callable
         )
 
         # Update the compile options
-        cd.compile_options["executors_placed_by_fw_bw_split"].add(best.executor)
+        cd.compile_options["autotune_executors_placed_by_fw_bw_split"].add(best.executor)
         from thunder.executors.transformer_engineex import transformer_engine_ex
 
         cd.compile_options |= {"te_used": True if best.executor == transformer_engine_ex else False}

@@ -635,7 +635,7 @@ def update_compile_options_executor_list_after_fw_bw_split() -> None:
     assert cd
 
     # Get all the possible options that the vjp_optimization pass will use
-    options: dict = get_fw_bw_split_backends_options()
+    options: dict = get_fw_bw_split_backends_options(autotune_enable_te=cd.compile_options.get('autotune_enable_te', False))
     executors_list = list(cd.executors_list)
 
     # Remove all the initial options
@@ -645,7 +645,7 @@ def update_compile_options_executor_list_after_fw_bw_split() -> None:
                 executors_list.remove(ex)
 
     # Putting at the front even though order does not matter
-    for ex in cd.compile_options["executors_placed_by_fw_bw_split"]:
+    for ex in cd.compile_options["autotune_executors_placed_by_fw_bw_split"]:
         executors_list.insert(0, ex)
 
     # Assign new compilation executors options
@@ -741,13 +741,13 @@ def transform_proxy_to_torch(sequence: Sequence, level=0, **kwargs) -> tuple | l
     return tuple(res) if level > 0 else res
 
 
-def reorder_executors_list(executors: Sequence):
+def reorder_executors_list(executors: Sequence, **kwargs):
     from thunder.backend_optimizer.optimizer import get_fw_bw_split_backends_options
     from thunder.executors.torch_compile import torch_compile_ex
     from thunder.executors.nvfuserex_impl import ex as nvfuser_ex
 
     reordered = []
-    options = get_fw_bw_split_backends_options()
+    options = get_fw_bw_split_backends_options(**kwargs)
 
     are_inputs_names = isinstance(executors[0], str)
 

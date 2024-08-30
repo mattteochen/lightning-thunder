@@ -1,3 +1,7 @@
+"""
+This benchmark script is intended to demonstrate the optimizer on a generic model.
+No executor are given leaving full responsibility to the engine.
+"""
 import torch
 import thunder
 from thunder.benchmarks.utils import thunder_fw_bw_benchmark, torch_fw_bw_benchmark, torch_total_benchmark
@@ -29,8 +33,7 @@ with torch.device("cuda"):
     jmodel_auto = thunder.jit(
         model,
         autotune_type="runtime",
-        executors=["nvfuser", "torchcompile", "transformer_engine"],
-        use_cudagraphs=False,
+        autotune_enable_te=True
     )
 
     print("deviation def:", (jmodel_def(x) - model(x)).abs().max().item())

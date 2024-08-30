@@ -1,3 +1,7 @@
+"""
+This benchmark script is intended to demonstrate the optimizer on nanoGPT model.
+The script runner is taken from: https://github.com/karpathy/nanoGPT/blob/master/bench.py
+"""
 import torch
 import thunder
 from thunder.benchmarks.utils import thunder_fw_bw_benchmark

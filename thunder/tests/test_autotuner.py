@@ -445,18 +445,18 @@ def test_transform_proxy_to_torch_TE():
 
 
 @pytest.mark.parametrize(
-    "executors, expected",
+    "executors, expected, use_te",
     [
-        (["python"], ["nvfuser", "python"]),
-        (["nvfuser", "cudnn"], ["cudnn", "nvfuser"]),
-        (["torch", "nvfuser", "sdpa"], ["sdpa", "torch", "nvfuser"]),
-        (["transformer_engine", "nvfuser", "sdpa"], ["transformer_engine", "sdpa", "nvfuser"]),
+        (["python"], ["nvfuser", "python"], False),
+        (["nvfuser", "cudnn"], ["cudnn", "nvfuser"], False),
+        (["torch", "nvfuser", "sdpa"], ["sdpa", "torch", "nvfuser"], False),
+        (["transformer_engine", "nvfuser", "sdpa"], ["transformer_engine", "sdpa", "nvfuser"], True),
     ],
 )
 # We might not have nvfuser in non cuda envs
 @requiresCUDA
-def test_reorder_executors_list(executors, expected):
-    assert aut_utils.reorder_executors_list(executors) == expected
+def test_reorder_executors_list(executors, expected, use_te):
+    assert aut_utils.reorder_executors_list(executors, autotune_enable_te=use_te) == expected
 
 
 @pytest.mark.parametrize(
@@ -466,7 +466,7 @@ def test_reorder_executors_list(executors, expected):
 def test_get_fw_bw_split_backends_options(name: str, expected):
     symbol = Symbol(name=name)
     bsym = BoundSymbol(symbol, (), {}, None)
-    options = get_fw_bw_split_backends_options(bsym)
+    options = get_fw_bw_split_backends_options(bsym, autotune_enable_te=True)
     assert all(map(lambda v: v in options, expected))
 
 
@@ -497,9 +497,9 @@ class Model_2(torch.nn.Module):
 
 
 @pytest.mark.parametrize(
-    "model, tensor_shape, dtype, autotune_type, executors, expected_executors, use_cudagraphs",
+    "model, tensor_shape, dtype, autotune_type, executors, expected_executors, use_cudagraphs, use_te",
     [
-        (Model_1(32, 32), (32, 32), torch.float32, "runtime", [nvfuserex], [[nvfuserex, torchex, pythonex]], True),
+        (Model_1(32, 32), (32, 32), torch.float32, "runtime", [nvfuserex], [[nvfuserex, torchex, pythonex]], True, False),
         (
             Model_1(32, 32),
             (32, 32),
@@ -508,6 +508,7 @@ class Model_2(torch.nn.Module):
             [torch_compile_ex],
             [[torch_compile_ex, torchex, pythonex]],
             True,
+            False
         ),
         (
             Model_1(4096, 4096),
@@ -517,6 +518,7 @@ class Model_2(torch.nn.Module):
             [transformer_engine_ex],
             [[transformer_engine_ex, nvfuserex, torchex, pythonex]],
             False,
+            True
         ),
         (
             Model_2(),
@@ -525,6 +527,7 @@ class Model_2(torch.nn.Module):
             "runtime",
             [sdpa_ex, cudnn_ex],
             [[sdpa_ex, nvfuserex, torchex, pythonex], [cudnn_ex, nvfuserex, torchex, pythonex]],
+            False,
             False,
         ),
         (
@@ -535,9 +538,10 @@ class Model_2(torch.nn.Module):
             [sdpa_ex, transformer_engine_ex],
             [
                 [sdpa_ex, transformer_engine_ex, nvfuserex, torchex, pythonex],
-                [sdpa_ex, transformer_engine_ex, nvfuserex, torchex, pythonex],
+                [transformer_engine_ex, sdpa_ex, nvfuserex, torchex, pythonex],
             ],
             False,
+            True
         ),
     ],
 )
@@ -550,13 +554,14 @@ def test_autotuner(
     executors: list,
     expected_executors: list[list],
     use_cudagraphs: bool,
+    use_te: bool
 ):
     def _run():
         model.to("cuda")
         x = torch.randn(tensor_shape, dtype=dtype, device="cuda")
         jitted_def = thunder.jit(model, executors=executors)
         jitted_auto = thunder.jit(
-            model, autotune_type=autotune_type, executors=executors, use_cudagraphs=use_cudagraphs
+            model, autotune_type=autotune_type, executors=executors, use_cudagraphs=use_cudagraphs, autotune_enable_te=use_te
         )
         y_def = jitted_def(x)
         y_auto = jitted_auto(x)

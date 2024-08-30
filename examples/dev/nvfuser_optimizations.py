@@ -1,3 +1,8 @@
+"""
+This benchmark script is intended to demonstrate the optimizer optimizing the nvFuser executor with its compile options.
+
+nvFuser compile options can be autotune with the argument `autotune_enable_nvfuser_all=True`.
+"""
 import torch
 import thunder
 from thunder.benchmarks.utils import (
@@ -34,7 +39,9 @@ with torch.device("cuda"):
     x = torch.randn(1 << 9, in_features, requires_grad=True)
 
     jmodel_def = thunder.jit(model)
-    jmodel_auto = thunder.jit(model, autotune_type="runtime", executors=["nvfuser", "cudnn", "torch", "python"])
+    jmodel_auto = thunder.jit(
+        model, autotune_type="runtime", executors=["nvfuser", "cudnn"], autotune_enable_nvfuser_all=True
+    )
 
     y = jmodel_def(x)
     y = jmodel_auto(x)

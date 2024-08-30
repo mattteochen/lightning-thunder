@@ -1,11 +1,15 @@
+"""
+This benchmark script is intended to demonstrate the optimizer working on
+the single trace region bext executor (when the forward trace symbol will influence the backward trace).
+
+Set the log level at least to INF0 in `thunder/backend_optimizer/optimizer.py`.
+"""
 import torch
 import thunder
 from thunder.benchmarks.utils import thunder_fw_bw_benchmark, torch_total_benchmark
 
 dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
 torch.set_default_dtype(dtype)
-print(f"Script data type: {dtype}\n")
-
 
 class Model(torch.nn.Module):
     def __init__(self) -> None:
@@ -17,13 +21,12 @@ class Model(torch.nn.Module):
         b = torch.nn.functional.scaled_dot_product_attention(query + query, key + key, value + value)
         return a + b
 
-
 with torch.device("cuda"):
     model = Model()
 
     jmodel_def = thunder.jit(model)
     jmodel_auto = thunder.jit(
-        model, autotune_type="runtime", executors=["nvfuser", "cudnn", "sdpa"], use_cudagraphs=False
+        model, autotune_type="runtime", executors=["nvfuser", "cudnn", "sdpa"]
     )
 
     q = torch.rand(32, 8, 128, 64 * 1, requires_grad=True)

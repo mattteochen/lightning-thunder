@@ -1,3 +1,7 @@
+"""
+This script benchmarks litGPT models in a easier wrt to benchmark_litgpt.py way with a fake training loop with no optimizers in order to focus more on
+forward and backward computation time and not others kernel during the loop.
+"""
 from litgpt import GPT
 from thunder.benchmarks.utils import (
     thunder_fw_bw_benchmark,
@@ -83,9 +87,8 @@ for test in layers:
                 model,
                 autotune_type=test.autotune_type,
                 executors=test.executors,
-                use_cudagraphs=False,
-                optimize_common_blocks=test.optimize_transformer_blocks,
-                optimize_common_blocks_min_size=test.optimize_transformer_min_block_size,
+                autotune_optimize_common_blocks=test.optimize_transformer_blocks,
+                autotune_optimize_common_blocks_min_size=test.optimize_transformer_min_block_size,
             )
             print("deviation def:", (jmodel_def(x) - model(x)).abs().max().item())
             s = time.time_ns()

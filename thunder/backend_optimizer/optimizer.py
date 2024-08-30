@@ -16,18 +16,22 @@ from typing import Hashable
 from thunder.backend_optimizer.utils import benchmark_trace
 
 
-def get_fw_bw_split_backends_options(bsym: BoundSymbol | None = None) -> list | dict:
+# This fn is used before compile data being set, rely on kwargs
+def get_fw_bw_split_backends_options(bsym: BoundSymbol | None = None, **kwargs) -> list | dict:
     from thunder.executors.sdpaex import sdpa_ex
     from thunder.executors.cudnnex import cudnn_ex
     from thunder.executors.fa3ex import fa3_ex
     from thunder.executors.transformer_engineex import transformer_engine_ex
 
-    # Current configuration
-    options: dict[str, list] = {
-        # TODO: filter out TE only if requested
-        "linear": [transformer_engine_ex],
-        "scaled_dot_product_attention": [sdpa_ex, cudnn_ex, fa3_ex],
-    }
+    if kwargs is None or not kwargs.get("autotune_enable_te", False):
+        options: dict[str, list] = {
+            "scaled_dot_product_attention": [sdpa_ex, cudnn_ex, fa3_ex],
+        }
+    else:
+        options: dict[str, list] = {
+            "linear": [transformer_engine_ex],
+            "scaled_dot_product_attention": [sdpa_ex, cudnn_ex, fa3_ex],
+        }
 
     return options.get(bsym.sym.name, []) if bsym else options
 
@@ -239,17 +243,25 @@ class FusionPlacer_BeamSearch(PlacerBase):
         self.fusion_strat_helper: FusionStratHelper = FusionStratHelper()
         self.executor_placement_options: ExecutorPlacementOptions = ExecutorPlacementOptions()
 
-        from thunder.executors.nvfuserex_impl import linear, _linear_check
-        from thunder.executors.nvfuserex_impl import matmul, _matmul_check
+        # nvFuser compile options
+        if compile_data.compile_options.get('autotune_enable_nvfuser_all', False):
+            from thunder.executors.nvfuserex_impl import linear, _linear_check
+            from thunder.executors.nvfuserex_impl import matmul, _matmul_check
 
-        self.known_fusion_ex_compile_options: dict[str | Hashable, list[FusionCompileOptionsHelper]] = {
-            "nvfuser": [
-                # FusionCompileOptionsHelper("nv_enable_linear", "linear", PrimIDs.LINEAR, linear, _linear_check),
-                # FusionCompileOptionsHelper("nv_enable_matmul", "matmul", PrimIDs.MATMUL, matmul, _matmul_check),
-                # FusionCompileOptionsHelper("nv_enable_bookend", "bookend"),
-            ]
-        }
+            self.known_fusion_ex_compile_options: dict[str | Hashable, list[FusionCompileOptionsHelper]] = {
+                "nvfuser": [
+                    FusionCompileOptionsHelper("nv_enable_linear", "linear", PrimIDs.LINEAR, linear, _linear_check),
+                    FusionCompileOptionsHelper("nv_enable_matmul", "matmul", PrimIDs.MATMUL, matmul, _matmul_check),
+                ]
+            }
+        else:
+            self.known_fusion_ex_compile_options: dict[str | Hashable, list[FusionCompileOptionsHelper]] = {
+                "nvfuser": [
+                ]
+            }
 
+        # Transformer based models optimization
+        # TODO: explain
         self.is_reduced: bool = False
         self.cached_original_trace: TraceCtx | None = None
 
@@ -278,8 +290,7 @@ class FusionPlacer_BeamSearch(PlacerBase):
                 (pair.fw, pair.bw),
                 (remat_fw, remat_bw),
             ]
-            # We want to verify that it is not set to false
-            if self.compile_data.use_cudagraphs is None or self.compile_data.use_cudagraphs == True:
+            if self.compile_data.use_cudagraphs is not None and self.compile_data.use_cudagraphs:
                 from thunder.executors.cudagraphex import cudagraphex
 
                 pair_options.extend(
@@ -882,9 +893,9 @@ class FusionPlacer_BeamSearch(PlacerBase):
 
             cd = get_compile_data()
             # Check if common blocks optimization is requested
-            optimize_common_blocks = False if cd is None else cd.compile_options.get("optimize_common_blocks", False)
+            optimize_common_blocks = False if cd is None else cd.compile_options.get("autotune_optimize_common_blocks", False)
             optimize_common_blocks_min_size = (
-                -1 if cd is None else cd.compile_options.get("optimize_common_blocks_min_size", -1)
+                -1 if cd is None else cd.compile_options.get("autotune_optimize_common_blocks_min_size", -1)
             )
 
             # Cut the compilation time if possible
