@@ -836,7 +836,7 @@ def symbol_hash(bsym: BoundSymbol):
 # Both lhs and rhs are included in the range
 # TODO: known_points can be used to detect start and end of a block sequence
 def repetead_trace_blocks(
-    *, trace: TraceCtx, min_block_size=1, known_points: tuple[BoundSymbol, BoundSymbol] | None = None
+    *, trace: TraceCtx, min_block_size=2, known_points: tuple[BoundSymbol, BoundSymbol] | None = None
 ) -> list[tuple]:
     if min_block_size < 2:
         return []
