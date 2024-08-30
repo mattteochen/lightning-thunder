@@ -951,11 +951,11 @@ def repetead_trace_blocks(
     if max_lcs < min_block_size:
         return []
 
-    # print(f'\n\nMax lcs {max_lcs}')
+    print(f'\n\nMax lcs {max_lcs}')
     # print(res)
 
-    # for r in res:
-    #     print(symbols[r[0]].output.name, symbols[r[1]].output.name)
+    for r in res:
+        print(symbols[r[0]].output.name, symbols[r[1]].output.name)
     return [
         (original_map_indexes[symbols[t[0]].output.name], original_map_indexes[symbols[t[1]].output.name]) for t in res
     ]
@@ -1035,7 +1035,7 @@ def reduce_common_trace_blocks(
         trc.bound_symbols = list(trace.bound_symbols)
         return trc
 
-    # Create a mapping where we can easily find to which block a specific output blongs
+    # Create a mapping where we can easily find to which block a specific output belongs
     output_to_block: dict[str, tuple[int, int]] = {}
     for n_block, block in enumerate(common_blocks):
         for i in range(block[0], block[1] + 1):
