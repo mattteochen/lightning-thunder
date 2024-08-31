@@ -336,12 +336,12 @@ def test_update_compile_options_executor_list_after_fw_bw_split(model, q, k, v, 
     assert count == expected
 
 
-def _test_transform_proxy_to_torch_fn_1(a: torch.Tensor, b: torch.Tensor, k: int):
+def _test_transform_proxies_to_real_fn_1(a: torch.Tensor, b: torch.Tensor, k: int):
     t0 = a * b
     return t0 * k
 
 
-def _test_transform_proxy_to_torch_fn_2(
+def _test_transform_proxies_to_real_fn_2(
     a: torch.Tensor, b: torch.Tensor, c: tuple[torch.Tensor, tuple[torch.Tensor, torch.Tensor]]
 ):
     t0 = c[0] + c[1][0]
@@ -349,7 +349,7 @@ def _test_transform_proxy_to_torch_fn_2(
     return t1 - a + b
 
 
-def _test_transform_proxy_to_torch_common(
+def _test_transform_proxies_to_real_common(
     fn: Callable, torch_args: tuple, executors: list, has_backward: bool, **kwargs
 ):
     jitted = thunder.jit(fn, executors=executors)
@@ -358,7 +358,7 @@ def _test_transform_proxy_to_torch_common(
     trace_static_args = thunder.last_traces(jitted)[-1].args
     assert trace_static_args
 
-    transformed_args = aut_utils.transform_proxy_to_torch(trace_static_args, **kwargs)
+    transformed_args = aut_utils.transform_proxies_to_real(trace_static_args, **kwargs)
 
     assert isinstance(transformed_args, list)
 
@@ -389,7 +389,7 @@ def _test_transform_proxy_to_torch_common(
         trace_static_args = thunder.last_backward_traces(jitted)[-1].args
         assert trace_static_args
 
-        transformed_args = aut_utils.transform_proxy_to_torch(trace_static_args, **kwargs)
+        transformed_args = aut_utils.transform_proxies_to_real(trace_static_args, **kwargs)
         print(trace_static_args)
         # print(transformed_args)
 
@@ -399,9 +399,9 @@ def _test_transform_proxy_to_torch_common(
 @pytest.mark.parametrize(
     "fn, torch_args, executors, has_backward",
     [
-        (_test_transform_proxy_to_torch_fn_1, tuple([torch.randn(1, 1), torch.randn(1, 1), 10]), [], False),
+        (_test_transform_proxies_to_real_fn_1, tuple([torch.randn(1, 1), torch.randn(1, 1), 10]), [], False),
         (
-            _test_transform_proxy_to_torch_fn_2,
+            _test_transform_proxies_to_real_fn_2,
             tuple([torch.randn(1, 1), torch.randn(1, 1), (torch.randn(1, 1), (torch.randn(1, 1), torch.rand(1, 1)))]),
             [],
             False,
@@ -418,12 +418,12 @@ def _test_transform_proxy_to_torch_common(
         ),
     ],
 )
-def test_transform_proxy_to_torch(fn: Callable, torch_args: tuple, executors: list, has_backward: bool):
-    _test_transform_proxy_to_torch_common(fn, torch_args, executors, has_backward)
+def test_transform_proxies_to_real(fn: Callable, torch_args: tuple, executors: list, has_backward: bool):
+    _test_transform_proxies_to_real_common(fn, torch_args, executors, has_backward)
 
 
 @requiresCUDA
-def test_transform_proxy_to_torch_TE():
+def test_transform_proxies_to_real_TE():
     class Model(torch.nn.Module):
         def __init__(self, in_features, out_features) -> None:
             super().__init__()
@@ -435,7 +435,7 @@ def test_transform_proxy_to_torch_TE():
     model = Model(4096, 4096)
     model.to("cuda")
 
-    _test_transform_proxy_to_torch_common(
+    _test_transform_proxies_to_real_common(
         model,
         tuple([torch.randn(4096, 4096, requires_grad=True, device="cuda")]),
         ["transformer_engine"],

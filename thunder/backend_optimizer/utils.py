@@ -26,6 +26,13 @@ from thunder.core.dtypes import dtype
 
 # Maybe we can use id(s)
 def sequence_hash(s: Sequence) -> str:
+    """
+    Create a fake hash for a sequence of elements.
+    A fake hash is created because it relies on the elements metadata and not on a specific hash function.
+
+    Args:
+        s: A sequence to hash.
+    """
     def rec(s) -> str:
         name = "["
         for e in s:
@@ -46,6 +53,13 @@ def sequence_hash(s: Sequence) -> str:
 
 
 def can_executor_execute(ex: Executor, bsym: BoundSymbol) -> bool:
+    """
+    Wrap the `can_execute` call of the `Executor`.
+
+    Args:
+        ex: The executor to test.
+        bsym: The bound symbol to test.
+    """
     try:
         return ex.can_execute(bsym)
     except Exception:
@@ -55,6 +69,14 @@ def can_executor_execute(ex: Executor, bsym: BoundSymbol) -> bool:
 def get_first_available_operator_executor(
     *, bsym: BoundSymbol, executors: Sequence[Executor], empty_hash: str = "empty"
 ):
+    """
+    Returns the first available executor which can execute the given bound symbol.
+
+    Args:
+        bsym: The bound symbol to execute.
+        executors: A list of possible executors.
+        empty_hash: A label representing an empty executor if none will be found.
+    """
     for ex in executors:
         if isinstance(ex, FusionExecutor):
             continue
@@ -64,6 +86,13 @@ def get_first_available_operator_executor(
 
 
 def flatten_sequence(sequence: Sequence) -> list:
+    """
+    Flat a sequence containing sub sequences with a dfs search.
+    By default None elements will be skipped.
+
+    Args:
+        sequence: The sequence to flatten.
+    """
     res = []
     for e in sequence:
         if isinstance(e, Sequence):
@@ -75,6 +104,13 @@ def flatten_sequence(sequence: Sequence) -> list:
 
 
 def get_not_used_intermediate_outsputs(trace_in: TraceCtx) -> list[Proxy]:
+    """
+    Returns all the intermediate outputs that are not used or returned in the input trace.
+    This can be usefull if we want to force a specific TensorProxy to be returned in a modfied trace to avoid the dce.
+
+    Args:
+        in_trace: A generic trace.
+    """
     def is_in_sequence(seq: Sequence[Any], t: Proxy):
         for e in seq:
             if hasattr(e, "name") and hasattr(t, "name") and e.name == t.name:
@@ -90,8 +126,6 @@ def get_not_used_intermediate_outsputs(trace_in: TraceCtx) -> list[Proxy]:
             raise RuntimeError(f"Unpack operation not defined for {type(out)}")
 
     ans: list[Proxy] = []
-    # Currently this is O(max(len(bsym.output)) * N^2)
-    # Can we check only bsym after the one in the outer loop in the inner loop (over trace.bound_symbols) ?
     for a in trace_in.bound_symbols:
         f = False
         unpacked_out = unpack_output(a.output)
@@ -119,6 +153,18 @@ def assign_executors(
     compile_data=None,
     fusion_executor_compile_options_to_activate: Any | None = None,
 ) -> TraceCtx:
+    """
+    Given a not optimized trace (original computation trace) generate a transformed trace with the requested executors.
+
+    Args:
+        in_trace: The computation trace.
+        executors_list: A list of executors, one for each trace region. The size of this list is expected to be equal to the number of bound symbols inside the trace.
+        always_executors: A list of always executors to pick up symbols not picked up by any specific executor.
+        empty_str: A label representing an empty executor in the executors_list.
+        compile_data: A reference to the current compilation data.
+        fusion_executor_compile_options_to_activate: Any fusion exeuctor compilation options that can be enabled during the trace generation (for example nvFuser).
+    """
+
     from thunder.executors.passes import _transform_for_operator_executor_execution
 
     def _assign_executors():
@@ -234,7 +280,6 @@ def assign_executors(
                 if t_name not in executor_mapping:
                     # Symbol added by the visitor
                     continue
-                    # raise AssertionError('Failed to retrive key in mapping')
                 saved_ex = executor_mapping[t_name]
                 if isinstance(saved_ex, OperatorExecutor):
                     cached_subsymbols[t_name] = list(bsym.subsymbols)
@@ -270,32 +315,57 @@ def assign_executors(
     return _assign_executors()
 
 
-def operation_in_trace(*, trace: TraceCtx, op: str) -> bool:
-    # Some optimizations are not available as symbols
+def operation_in_trace(*, trace: TraceCtx, op: str, prefix: bool = False) -> bool:
+    """
+    Test if an operation is being used inside a trace.
+
+    Args:
+        trace: A computation trace.
+        op: The operation name to be tested.
+        prefix: Test only the prefix label.
+    """
+
+    # This is to query nv_enable_bookend (https://github.com/Lightning-AI/lightning-thunder/blob/339a782e3d75061a065a3d2e47b5206f23aea7c3/thunder/executors/nvfuserex_impl.py#L807)
+    # as there won't be any references about this in a trace.
     always_true = set(["bookend"])
 
     if op in always_true:
         return True
     for b in trace.bound_symbols:
-        if b.sym.name == op:
-            return True
+        if prefix:
+            if b.sym.name.startswith(op):
+                return True
+        else:
+            if b.sym.name == op:
+                return True
     return False
 
 
 def is_te_used(trace: TraceCtx) -> bool:
+    """
+    Test if transformer engine is being used inside a trace.
+
+    Args:
+        trace: A computation trace.
+    """
     from thunder.executors.transformer_engineex import linear_bound_symbol_name_prefix
     from thunder.executors.transformer_engineex import te_functional_linear_backward_name
 
-    for bsym in trace.bound_symbols:
-        if (
-            bsym.sym.name.startswith(linear_bound_symbol_name_prefix)
-            or bsym.sym.name == te_functional_linear_backward_name
-        ):
-            return True
+    if operation_in_trace(trace=trace, op=te_functional_linear_backward_name) or operation_in_trace(
+        trace=trace, op=linear_bound_symbol_name_prefix, prefix=True
+    ):
+        return True
+
     return False
 
 
 def is_backward_trace(trace: TraceCtx) -> bool:
+    """
+    Test if a trace is a backward trace from its signature.
+
+    Args:
+        trace: A computation trace.
+    """
     sig = trace.signature_with_no_ctx()
     return sig.find("backward") >= 0
 
@@ -307,10 +377,27 @@ def benchmark_trace(
     apply_del_last_used=True,
     snapshot=False,
     snapshot_name="",
-    nvsight: bool = False,
-    nvsight_fn_name: str = "",
+    nsight: bool = False,
+    nsight_fn_name: str = "",
     **kwargs,
 ) -> tuple[float, float, Any]:
+    """
+    Benchmark a generic computation trace compute time and peak memory usage.
+    nsight profiles can be generated if requested.
+
+    If a backward trace is benchmarked, its paired forward trace is requested (with kwargs) as we don't generate inputs
+    for the backward call from the static args but with the dynamic arguments returned by the forward trace.
+
+    Args:
+        trace: A computation trace.
+        iters: Benchmark iterations.
+        show_func: Print the executed trace if True.
+        apply_del_last_used: A flag to control if the trace should be executed after a deletion of not used vars call.
+        snapshot: A flag controlling if memory usage snapshots should be created (https://pytorch.org/docs/stable/torch_cuda_memory.html).
+        snapshot_name: A label for the generated snapshot.
+        nsight: A flag contolling if nvsigh profiles should be generated or not.
+        nsight_fn_name: A label for the nsight iteration name during benchmark loop.
+    """
     from thunder.executors.passes import del_last_used
     import inspect
 
@@ -334,7 +421,7 @@ def benchmark_trace(
                     res.append(arg)
         return tuple(res)
 
-    def compute_time_cost_nvsight(fn: Callable, iters: int, *args) -> tuple[float, float, Any]:
+    def compute_time_cost_nsight(fn: Callable, iters: int, *args) -> tuple[float, float, Any]:
         try:
             warm_up_iters = 50
             torch.cuda.empty_cache()
@@ -350,7 +437,7 @@ def benchmark_trace(
             for i in range(iters):
                 new_args = clone_args_if_needed(args)
                 torch.cuda.empty_cache()
-                torch.cuda.nvtx.range_push(f"thunder benchmark fn:{nvsight_fn_name}, iter{i}")
+                torch.cuda.nvtx.range_push(f"thunder benchmark fn:{nsight_fn_name}, iter{i}")
                 fn(*new_args)
                 torch.cuda.nvtx.range_pop()
             torch.cuda.cudart().cudaProfilerStop()
@@ -360,7 +447,7 @@ def benchmark_trace(
             import inspect
 
             trc = inspect.getsource(fn)
-            print(f"#Trace execution failed for nvsight (error: {e}):\n{trc}")
+            print(f"#Trace execution failed for nsight (error: {e}):\n{trc}")
             raise e
 
     def compute_time_cost_ms(fn: Callable, repr: str, iters: int, *args) -> tuple[float, float, Any]:
@@ -410,7 +497,7 @@ def benchmark_trace(
             raise e
 
     def build_static_args(sequence: Sequence, **kwargs) -> list:
-        return transform_proxy_to_torch(sequence, level=0, **kwargs)
+        return transform_proxies_to_real(sequence, level=0, **kwargs)
 
     def backward_trace_args_preprocess() -> list:
         if "fw_trace" not in kwargs:
@@ -447,8 +534,8 @@ def benchmark_trace(
             input_args.insert(0, saved_for_bw)
         else:
             # Currently single trace region backward trace receives as input the saved_for_bw tensors plus some others.
-            # They are indexed like [saved_for_bw, others...]
-            # NOTE: This may change in the future
+            # They are indexed like [saved_for_bw, others...].
+            # NOTE: This may change in the future.
             """
             Example:
                 @torch.no_grad()
@@ -468,7 +555,7 @@ def benchmark_trace(
                   (t5, t6, t7) = cudnn_sdpa_bwd(t4, query, key, value, None, dropout_p, is_causal, t0, t1, t2, t3, scale=None, cat_grad_qkv=False)
                   return {'query': t5, 'key': t6, 'value': t7, 'attn_mask': None, 'dropout_p': None, 'is_causal': None, 'scale': None}
 
-            See how the backward trace need t4 as argument recoveered from the static args
+            See how the backward trace needs t4 as argument recoveered from the static args
             """
             updated_input_args = [t for t in saved_for_bw_C0]
             updated_input_args.extend(
@@ -516,29 +603,13 @@ def benchmark_trace(
     m = float("inf")
     answer = None
     try:
-        if nvsight:
-            t, m, answer = compute_time_cost_nvsight(executable, iters, *input_args)
+        if nsight:
+            t, m, answer = compute_time_cost_nsight(executable, iters, *input_args)
         else:
             t, m, answer = compute_time_cost_ms(executable, executable_str, iters, *input_args)
-    except Exception as e:
+    except Exception:
         import traceback
-
-        ex_str = traceback.format_exc()
-        print(ex_str)
-        # https://github.com/Lightning-AI/lightning-thunder/issues/664
-        # Seems that this patch never work ...
-        if (
-            "call_method UserDefinedObjectVariable(set) __contains__ [UserDefinedObjectVariable()] {}" in str(e)
-            and not nvsight
-        ):
-            print(
-                "Executing with torch compile no full graph (this might still fail), see: https://github.com/Lightning-AI/lightning-thunder/issues/664"
-            )
-            torch_compiled = torch.compile(executable, fullgraph=False)
-            try:
-                t, m, answer = compute_time_cost_ms(torch_compiled, executable_str, iters, *input_args)
-            except Exception as e:
-                print(f"Compiled trace execution still failed:\n{e}")
+        traceback.print_exc()
     finally:
         reset_tracectx(trace_tok)
 
@@ -549,14 +620,14 @@ def benchmark_trace(
     return t, m, answer
 
 
-def register_impl_executor(ex: Executor, id: PrimIDs, fn: Callable, checker: Callable) -> None:
+def _register_impl_executor(ex: Executor, id: PrimIDs, fn: Callable, checker: Callable) -> None:
     if ex.name == "nvfuser":
         from thunder.executors.nvfuserex_impl import register_supported
 
         register_supported(id, fn, checker)
 
 
-def recover_ex_from_compile_option(option: str) -> Executor:
+def _recover_ex_from_compile_option(option: str) -> Executor:
     if option.startswith("nv"):
         from thunder.executors.nvfuserex_impl import ex
 
@@ -566,6 +637,16 @@ def recover_ex_from_compile_option(option: str) -> Executor:
 
 
 def wrap_fn_with_exeuctor_compile_option(option, fn: Callable | None = None, *args):
+    """
+    Wraps a function call enabling a compile option for a specific executor.
+    The compile option will be restored after the function completes.
+    This can be usefull if we want to benchmark a specific compile option.
+
+    Args:
+        option: The option to be enabled.
+        fn: A callable function.
+        args: Function arguments.
+    """
     from thunder.core import compile_data
 
     cd = compile_data.get_compile_data()
@@ -573,13 +654,12 @@ def wrap_fn_with_exeuctor_compile_option(option, fn: Callable | None = None, *ar
         # Update compile option context
         if cd is None:
             raise AssertionError("compile_data is None")
-        # TODO: use getattr
         old_opt: bool | None = cd.compile_options.get(option.fusion_tag, None)
         new_opt = True if old_opt is None or old_opt is False else False
         cd.compile_options[option.fusion_tag] = new_opt
         # Register the impl for the executor in order to be able to execute the id
-        register_impl_executor(
-            recover_ex_from_compile_option(option.fusion_tag),
+        _register_impl_executor(
+            _recover_ex_from_compile_option(option.fusion_tag),
             option.id,
             option.impl,
             option.checker,
@@ -597,11 +677,27 @@ def wrap_fn_with_exeuctor_compile_option(option, fn: Callable | None = None, *ar
 
 
 def print_trace_args(trace: TraceCtx):
+    """
+    Utility to display a trace arguments.
+
+    Args:
+        trace: A computation trace.
+    """
     print_nested_sequence(trace.args)
 
 
-# Display nest sequence arguments
 def print_nested_sequence(args, show_dicts=False):
+    """
+    Utility to display a sequence of elements with possible nested sequences.
+    Elements will be retrieved in a dfs manner.
+
+    Args:
+        args: The input sequence.
+        show_dicts: Control if dict types should be printed.
+    """
+
+    import pprint
+
     def is_tensor(t):
         return isinstance(t, torch.Tensor) or isinstance(t, TensorProxy)
 
@@ -620,7 +716,7 @@ def print_nested_sequence(args, show_dicts=False):
                 dtype = arg.dtype if is_tensor(arg) else None
                 name = arg.name if isinstance(arg, TensorProxy) else ""
                 print(
-                    f'{tabs}{name + ": " if name else ""}{type(arg)}{arg if isinstance(arg, dict) and show_dicts else ""} {tensor_shape if tensor_shape else ""} {dtype if dtype else ""}'
+                    f'{tabs}{name + ": " if name else ""}{type(arg)}{pprint.pformat(arg) if isinstance(arg, dict) and show_dicts else ""} {tensor_shape if tensor_shape else ""} {dtype if dtype else ""}'
                 )
         print(f"Level {level} end")
 
@@ -629,6 +725,11 @@ def print_nested_sequence(args, show_dicts=False):
 
 
 def update_compile_options_executor_list_after_fw_bw_split() -> None:
+    """
+    Updates the compile options with the executors that have been placed by the forward-backward split pass.
+    This utility can be used to save all the executors that have been effectively placed in a trace.
+    """
+
     from thunder.backend_optimizer.optimizer import get_fw_bw_split_backends_options
 
     cd = get_compile_data()
@@ -653,10 +754,16 @@ def update_compile_options_executor_list_after_fw_bw_split() -> None:
 
 
 def transform_tensor(arg: TensorProxy, **kwargs) -> torch.Tensor:
+    """
+    Retrive the associated torch.Tensor from a proxy tensor by reading its metadata.
+    This will allocate the real tensor in memory.
+    This utility can read transformer engine compilation requests and generate the associated FP8 tensor if needed.
+
+    Args:
+        arg: The proxy tensor.
+    """
     from thunder.core.dtypes import is_float_dtype, is_signedinteger_dtype, is_boolean_dtype
 
-    # TODO (matteochen): Missing parallel and fsdp handling...
-    # TODO (matteochen): Missing support for meta types ...
     dtype = arg.dtype
     shape = arg.shape
     device = arg.device
@@ -698,13 +805,21 @@ def transform_tensor(arg: TensorProxy, **kwargs) -> torch.Tensor:
     return tensor
 
 
-def transform_proxy_to_torch(sequence: Sequence, level=0, **kwargs) -> tuple | list:
+def transform_proxies_to_real(sequence: Sequence, level=0, **kwargs) -> tuple | list:
+    """
+    Retrieve a sequence of real arguments relative to a sequence of proxy arguments.
+    This supports also nested sequences in a recursive way.
+
+    Args:
+        sequence: The input proxy sequence.
+        level: An utility integer representing the search dept.
+    """
     from thunder.executors.transformer_engineex import Context as C
 
     res = []
     for e in sequence:
         if type(e) is tuple:
-            res.append(transform_proxy_to_torch(e, level + 1, **kwargs))
+            res.append(transform_proxies_to_real(e, level + 1, **kwargs))
         else:
             if isinstance(e, TensorProxy):
                 res.append(transform_tensor(e, **kwargs))
@@ -742,6 +857,16 @@ def transform_proxy_to_torch(sequence: Sequence, level=0, **kwargs) -> tuple | l
 
 
 def reorder_executors_list(executors: Sequence, **kwargs):
+    """
+    Reorders a random executors list to be compatible with the autotuner compilation flow.
+    This will put in the front of the returned list all the executors with a grad fn.
+    All the other executors will be appended afterwards.
+
+    If no fusion executors is present inside the input list, a default one will be added in order to trigger the autotuning process.
+
+    Args:
+        executors: The executors to be reordered.
+    """
     from thunder.backend_optimizer.optimizer import get_fw_bw_split_backends_options
     from thunder.executors.torch_compile import torch_compile_ex
     from thunder.executors.nvfuserex_impl import ex as nvfuser_ex
@@ -780,7 +905,14 @@ def reorder_executors_list(executors: Sequence, **kwargs):
 
 
 def symbol_hash(bsym: BoundSymbol):
-    # Maintainig essential metadata
+    """
+    Hash a bound symbol relying on its metadata (symbol name, bound symbol inputsa and outputs).
+    No hash functions will be applied in order to leave the output readable.
+
+    Args:
+        bsym: A bound symbol.
+    """
+
     def _tensor_hash(t: TensorProxy) -> str:
         assert t.dtype
         shapes = [str(s) for s in t.shape]
@@ -837,9 +969,25 @@ def symbol_hash(bsym: BoundSymbol):
 # TODO: known_points can be used to detect start and end of a block sequence
 def repetead_trace_blocks(
     *, trace: TraceCtx, min_block_size=2, known_points: tuple[BoundSymbol, BoundSymbol] | None = None
-) -> list[tuple]:
+) -> list[tuple[int, int]]:
+    """
+    Detects if are there repeated sections inside a given trace.
+    This utility can be employed on traces referring to transformer based models where the layers are repeated N times.
+
+    The return list will contain a tuple of two elements pointing to the index (in the computation trace) of where a block starts and ends (both included).
+
+    The variable min_block_size can be tuned in order to not allucinate this function by capturing unwanted sections (small sections) if no repeated transformer layers can be found.
+
+    Args:
+        trace: A computation trace.
+        min_block_size: The minimum block lenght, by default 2.
+        known_points: If a practitioner already knows where a transformer layer starts and ends inside a given trace, these points can be supplied in order to speed up the search. Currently not implemented.
+    """
     if min_block_size < 2:
         return []
+
+    if known_points is not None:
+        raise RuntimeError('known_points research is not supported.')
 
     symbols = [
         s
@@ -918,7 +1066,6 @@ def repetead_trace_blocks(
             continue
 
         h = symbol_hash(bsym)
-        # Could not generate hash for this bsym
         # Normally, bsym are expected to output a TensorProxy
         if not isinstance(bsym.output, Proxy) or h in seen_hashes or _range_seen(i, seen_ranges):
             continue
@@ -959,14 +1106,25 @@ def repetead_trace_blocks(
     ]
 
 
-# What is regions_between_blocks?
-# They are trace regions between one transformer block and the next one in the backward pass and given that these regions are not present
-# at the end of the last transformer block it means that they are needed in order to prepare shapes or strides
-# for the block at i+1 from the output of block i.
-# For example if common blocks looks like: [(32, 155), (157, 280)]
-# the symbol at index 156 (the gap) looks like: <t939 = ltorch.reshape(t938, -1, 4096)  # t939: "cuda:0 f32[128, 4096]">
-# In the forward trace we have not these gaps (so far).
 def _regions_between_blocks(trace: TraceCtx, common_blocks: list[tuple]) -> int:
+    """
+    Retrieve the size of a gap region between common blocks.
+
+    What is regions_between_blocks?
+    They are trace regions between one transformer block and the next one (usually found in the backward trace) and given that these regions are not present
+    at the end of the last transformer block it means that they are needed in order to prepare shapes or strides
+    for the block at i+1 from the output of block i.
+    For example if common blocks looks like: [(32, 155), (157, 280)]
+    the symbol at index 156 (the gap) could generally be: <t939 = ltorch.reshape(t938, -1, 4096)  # t939: "cuda:0 f32[128, 4096]"> (for torch.float32 dtype, if another dtype is used the trace may contain other ops in this region leading to a larger gap).
+    In the forward trace we have not these gaps (so far).
+
+    In the example above the returned value will be 1.
+
+    Args:
+        trace: A computation trace.
+        common_blocks: A list containig the common blocks for the given trace.
+
+    """
     def _assert_args(seq_a: Sequence, seq_b: Sequence):
         assert len(seq_a) == len(seq_b)
         for a, b in zip(seq_a, seq_b):
@@ -996,6 +1154,12 @@ def _regions_between_blocks(trace: TraceCtx, common_blocks: list[tuple]) -> int:
 
 
 def _indices_to_exclude_between_common_blocks(common_blocks: list[tuple]) -> list:
+    """
+    Retrive the indicies referring to the gaps between one common block and the next one.
+
+    Args:
+        common_blocks: A computed common block list for a given trace.
+    """
     if len(common_blocks) < 2:
         return []
 
@@ -1010,6 +1174,16 @@ def _indices_to_exclude_between_common_blocks(common_blocks: list[tuple]) -> lis
 def reduce_common_trace_blocks(
     *, trace: TraceCtx, common_blocks_in: list[tuple], skip_between_blocks: bool = True
 ) -> TraceCtx:
+    """
+    Generate a reduced trace (shorter computation nodes) given a common block pattern.
+
+    This can be useful to speed up the executor tuning for models with repeated layers.
+
+    Args:
+        trace: A computation trace.
+        common_blocks_in: A previously computed common block pattern.
+        skip_between_blocks: A flag to control if gaps between common blocks should be included in the output trace or not. See _regions_between_blocks.
+    """
     def _exclude(blocks: list[tuple[int, int]], index: int, black_list: set):
         # Exclude if the index is in a repeated block
         for block in blocks:
@@ -1057,20 +1231,8 @@ def reduce_common_trace_blocks(
         b for i, b in enumerate(trace.bound_symbols) if not _exclude(common_blocks[1:], i, index_gaps_to_exclude)
     ]
 
-    # Retrive first and last blocks
-    first_block = common_blocks[0]
-    # common_blocks = common_blocks[1:]
-
-    # Now, we have to update the trace region inputs after the last block to accepts the outputs of the first block, if it's not the return statement
+    # Now, we have to update the trace region inputs after the last block to accepts the outputs of the first block, if it's not the return statement.
     if trace.bound_symbols[common_blocks[-1][1] + 1].sym.id != PrimIDs.RETURN:
-        # first_block_outputs = trace.bound_symbols[first_block[1]].output
-        # last_block_outputs = trace.bound_symbols[common_blocks[-1][1]].output
-
-        # if not isinstance(first_block_outputs, Sequence):
-        #     first_block_outputs = [first_block_outputs]
-        # if not isinstance(last_block_outputs, Sequence):
-        #     last_block_outputs = [last_block_outputs]
-
         symbol_to_correct_index = _find_bsym_index(
             trace.bound_symbols[common_blocks[-1][1] + 1].output.name, bound_symbols
         )
@@ -1104,8 +1266,6 @@ def reduce_common_trace_blocks(
             args=_correct_args(symbol_to_correct), subsymbols=new_subsymbols
         )
 
-        # print(bound_symbols[symbol_to_correct_index])
-
     # We need to check also the return statements as we have fewer args now
     flatten_bsyms = flatten_sequence([b.output for b in bound_symbols])
     args_remained = set([b.name for b in flatten_bsyms if b is not None and hasattr(b, "name")])
@@ -1130,7 +1290,6 @@ def reduce_common_trace_blocks(
         bound_symbols[-1] = bsym
     # Bw trace
     else:
-
         def _returned(seq: Sequence) -> tuple:
             ret = []
             for e in seq:
@@ -1155,12 +1314,22 @@ def reduce_common_trace_blocks(
     return extrace
 
 
-# NOTE: This implementation currently relies on the fact that transformer blocks are contiguous in trace
-# or they have a common gap region between them (in case for bw trace).
-# TODO: generalize this
 def map_executors_from_reduced_trace_to_complete_trace(
     complete_trace: TraceCtx, common_blocks: list[tuple], ex_mappings: list[Executor]
 ) -> list[Executor]:
+    """
+    Generate executors mappings (trace region -> executor) for the complete trace once the optimization has been performed on a reduced trace.
+
+    This implementation currently relies on the fact that transformer blocks are contiguous in trace
+    or they have a common gap region between them (in case for bw trace).
+
+    The output executor list has size equal to the complete trace regions size.
+
+    Args:
+        complete_trace: A computation trace.
+        common_blocks: A previously computed common block pattern.
+        ex_mappings: The executor mappings for the reduce trace.
+    """
     from thunder.executors.torchex import ex as torch_ex
 
     if len(common_blocks) < 2:
