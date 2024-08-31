@@ -290,15 +290,15 @@ class FusionPlacer_BeamSearch(PlacerBase):
                 (pair.fw, pair.bw),
                 (remat_fw, remat_bw),
             ]
-            if self.compile_data.use_cudagraphs is not None and self.compile_data.use_cudagraphs:
-                from thunder.executors.cudagraphex import cudagraphex
+            # if self.compile_data.use_cudagraphs is not None and self.compile_data.use_cudagraphs:
+            #     from thunder.executors.cudagraphex import cudagraphex
 
-                pair_options.extend(
-                    [
-                        (cudagraphex.fusion_pass(pair.fw), cudagraphex.fusion_pass(pair.bw)),
-                        (cudagraphex.fusion_pass(remat_fw), cudagraphex.fusion_pass(remat_bw)),
-                    ]
-                )
+            #     pair_options.extend(
+            #         [
+            #             (cudagraphex.fusion_pass(pair.fw), cudagraphex.fusion_pass(pair.bw)),
+            #             (cudagraphex.fusion_pass(remat_fw), cudagraphex.fusion_pass(remat_bw)),
+            #         ]
+            #     )
             # Select the best options
             for pair_option in pair_options:
                 fw = pair_option[0]

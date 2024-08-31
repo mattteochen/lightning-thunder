@@ -87,6 +87,7 @@ for test in layers:
                 model,
                 autotune_type=test.autotune_type,
                 executors=test.executors,
+                use_cudagraphs=False,
                 autotune_optimize_common_blocks=test.optimize_transformer_blocks,
                 autotune_optimize_common_blocks_min_size=test.optimize_transformer_min_block_size,
             )
