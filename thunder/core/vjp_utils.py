@@ -3,8 +3,8 @@ from collections.abc import Callable
 from functools import wraps
 from inspect import Parameter, Signature
 from itertools import chain
-from os import execl
 
+from thunder.backend_optimizer.utils import symbol_hash
 from thunder.core import prims, utils
 from thunder.core.compile_data import get_compile_data
 from thunder.core.prims import PrimIDs
@@ -17,6 +17,7 @@ from thunder.extend import Executor
 
 
 _cache = {}
+_autototune_common_bsym_in_blocks_cache = {}
 
 
 def disable_caching_split_forward_and_backward(fn):
@@ -222,6 +223,7 @@ def make_aug_forward_and_backward(bsym: BoundSymbol) -> tuple[Callable, Callable
     else:
         from thunder.backend_optimizer.optimizer import get_fw_bw_split_backends_options
         from thunder.backend_optimizer.utils import benchmark_trace
+        from thunder.backend_optimizer.optimizer import log, LogLevel
 
         # In order define this unique trace region we need an unique id
         key = (bsym.sym, Executor(f"{id(bsym)}-autotuned"), subkey := _make_cache_key(bsym.args, bsym.kwargs))
@@ -248,36 +250,47 @@ def make_aug_forward_and_backward(bsym: BoundSymbol) -> tuple[Callable, Callable
 
         best = SplitFwBwBenchmarkUtils()
 
-        # Restrict the search space
-        backends = list(requested_executors_list_for_bsym)
+        # Do we have a common transformer block optimization enabled?
+        # If yes we have to restrict the same executor on every bsym
+        # in the transformer block (e.g. every scaled_dot_product in every transformer block will have the same executor
+        # as they are expected to work on same input size and shapes).
+        optmimizer_common_transformer_block = cd.compile_options.get('autotune_optimize_common_blocks', False)
+        # The generated hash will rely on the operation, input args metadata and output metadata
+        h = symbol_hash(bsym)
+        if h in _autototune_common_bsym_in_blocks_cache and optmimizer_common_transformer_block:
+            best = _autototune_common_bsym_in_blocks_cache[h]
+        else:
+            # Restrict the search space
+            backends = list(requested_executors_list_for_bsym)
 
-        from thunder.backend_optimizer.optimizer import log, LogLevel
-
-        log(f"Search space for {bsym.sym.name}: {backends}", level=LogLevel.INFO)
-        for b in backends:
-            log(f"Benchmarking executor {b.name} for {bsym.sym.name}", level=LogLevel.INFO)
-            # Let downstream fn to pick up this
-            requested_executors_list_for_bsym.remove(b)
-            requested_executors_list_for_bsym.insert(0, b)
-            cd.executors_list = requested_executors_list_for_bsym
-            fw_fn, bw_fn, fw_trace, bw_trace = _make_aug_forward_and_backward(return_traces=True, update_cache=False)
-            # What should be the optimal iter?
-            # TODO: make benchmark info taken from an autotuner config
-            fw_time, fw_mem, _ = benchmark_trace(fw_trace, iters=100, apply_del_last_used=False)
-            bw_time, bw_mem, _ = benchmark_trace(bw_trace, iters=100, apply_del_last_used=False, fw_trace=fw_trace)
-            cost = (
-                fw_time + bw_time if cd.compile_options["autotune_type"] == OptimizerType.RUNTIME else fw_mem + bw_mem
-            )
-            if cost < best.cost:
-                best = SplitFwBwBenchmarkUtils(cost=cost, fw_fn=fw_fn, bw_fn=bw_fn, executor=b)
+            log(f"Search space for {bsym.sym.name}: {backends}", level=LogLevel.INFO)
+            for b in backends:
+                log(f"Benchmarking executor {b.name} for {bsym.sym.name}", level=LogLevel.INFO)
+                # Let downstream fn to pick up this
+                requested_executors_list_for_bsym.remove(b)
+                requested_executors_list_for_bsym.insert(0, b)
+                cd.executors_list = requested_executors_list_for_bsym
+                fw_fn, bw_fn, fw_trace, bw_trace = _make_aug_forward_and_backward(return_traces=True, update_cache=False)
+                # What should be the optimal iter?
+                # TODO: make benchmark info taken from an autotuner config
+                fw_time, fw_mem, _ = benchmark_trace(fw_trace, iters=100, apply_del_last_used=False)
+                bw_time, bw_mem, _ = benchmark_trace(bw_trace, iters=100, apply_del_last_used=False, fw_trace=fw_trace)
+                cost = (
+                    fw_time + bw_time if cd.compile_options["autotune_type"] == OptimizerType.RUNTIME else fw_mem + bw_mem
+                )
+                if cost < best.cost:
+                    best = SplitFwBwBenchmarkUtils(cost=cost, fw_fn=fw_fn, bw_fn=bw_fn, executor=b)
 
         assert best.cost != float("inf")
-        from thunder.backend_optimizer.optimizer import log
 
         log(
             f"Best executor for symbol [{bsym.output.name} = {bsym.sym.name}]: {best.executor.name}",
             level=LogLevel.INFO,
         )
+
+        # Cache the bsym result for common trace's common block reductions
+        if bsym.sym.name in ['linear', 'scaled_dot_product_attention'] and optmimizer_common_transformer_block:
+            _autototune_common_bsym_in_blocks_cache[h] = best
 
         # Update the compile options
         cd.compile_options["autotune_executors_placed_by_fw_bw_split"].add(best.executor)

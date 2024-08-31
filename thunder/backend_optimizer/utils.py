@@ -893,7 +893,6 @@ def repetead_trace_blocks(
     for i, bsym in enumerate(symbols):
         if i == len(symbols) - 1:
             break
-        # Skip None outputs (unpacks, returns, del)
         if _skip(bsym):
             continue
         h = symbol_hash(bsym)
@@ -915,7 +914,6 @@ def repetead_trace_blocks(
     for i, bsym in enumerate(symbols):
         if i == len(symbols) - 1:
             break
-        # Skip None outputs (unpacks, returns, del)
         if _skip(bsym):
             continue
 
