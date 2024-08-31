@@ -1,12 +1,20 @@
-from collections.abc import Callable, Sequence
+from collections.abc import Callable
 import torch
 from thunder.backend_optimizer.utils import benchmark_trace
-from thunder.core.trace import TraceCtx
 
 warm_up_iters = 50
 
-
 class SplitFwBwBenchmarkUtils:
+    """
+    Represents a benchmark result container.
+    It should be used when a single trace region is benchmarked as it can store an optimal executor (referred to the bsym under investigation).
+
+    Attributes:
+        cost: The benchmark result. Can be compute time or peak memory usage.
+        fw_fn: Storage for a forward trace.
+        bw_fn: Storage for a backward trace.
+        executor: An OperatorExecutor.
+    """
     def __init__(
         self, *, cost: float = float("inf"), fw_fn: Callable | None = None, bw_fn: Callable | None = None, executor=None
     ) -> None:
@@ -16,29 +24,18 @@ class SplitFwBwBenchmarkUtils:
         self.executor = executor
 
 
-class AutotunerTorchAutogradBenchmarkUtils:
-    def __init__(
-        self,
-        cost: float = float("inf"),
-        fw_trace: TraceCtx | None = None,
-        bw_trace: TraceCtx | None = None,
-        fw_traces: Sequence[TraceCtx] = [],
-        bw_traces: Sequence[TraceCtx] = [],
-        primal_trace: TraceCtx | None = None,
-        executor=None,
-        selected_executors: Sequence = [],
-    ) -> None:
-        self.cost: float = cost
-        self.fw_trace = fw_trace
-        self.bw_trace = bw_trace
-        self.fw_traces = fw_traces
-        self.bw_traces = bw_traces
-        self.primal_trace = primal_trace
-        self.executor = executor
-        self.selected_executors = selected_executors
-
-
 def torch_fw_bw_benchmark_nvsight(models: list, labels: list, inputs: list, iters: int) -> None:
+    """
+    Benchmark a mock trainig loop of the given models. The loss function is defined as a naive torch.sum().
+    This util will generate nvsight system profiles.
+
+    Args:
+        models: a list of Callable models to benchmark.
+        labels: a list of labels (names) referring to the models.
+        inputs: a list of inputs to give to models' forward pass.
+        iters: benchmark iterations.
+    """
+
     for m, input, label in zip(models, inputs, labels):
         # Warm up
         for _ in range(warm_up_iters):
@@ -63,6 +60,16 @@ def torch_fw_bw_benchmark_nvsight(models: list, labels: list, inputs: list, iter
 
 
 def torch_fw_bw_benchmark(models: list, labels: list, inputs: list, iters: int) -> None:
+    """
+    Benchmark a mock trainig loop of the given models. The loss function is defined as a naive torch.sum().
+    Forward and backward pass will be both recorded.
+
+    Args:
+        models: a list of Callable models to benchmark.
+        labels: a list of labels (names) referring to the models.
+        inputs: a list of inputs to give to models' forward pass.
+        iters: benchmark iterations.
+    """
     for m, input, label in zip(models, inputs, labels):
         # Warm up
         for _ in range(warm_up_iters):
@@ -117,6 +124,16 @@ def torch_fw_bw_benchmark(models: list, labels: list, inputs: list, iters: int) 
 
 
 def torch_total_benchmark(models: list, labels: list, inputs: list, iters: int) -> None:
+    """
+    Benchmark a mock trainig loop of the given models. The loss function is defined as a naive torch.sum().
+    The complete time will be recorded with no split between forward pass and backward pass.
+
+    Args:
+        models: a list of Callable models to benchmark.
+        labels: a list of labels (names) referring to the models.
+        inputs: a list of inputs to give to models' forward pass.
+        iters: benchmark iterations.
+    """
     for m, input, label in zip(models, inputs, labels):
         # Warm up
         for _ in range(warm_up_iters):
@@ -151,6 +168,19 @@ def torch_total_benchmark(models: list, labels: list, inputs: list, iters: int) 
 def thunder_fw_bw_benchmark(
     fw_traces: list, bw_traces: list, fw_labels: list, bw_labels: list, iters: int, nvsight: bool = False
 ) -> None:
+    """
+    Benchmark a foward and backward trace pair.
+    The requested inputs are TraceCtx objects.
+    A nvsight profile can be generate if requested.
+
+    Args:
+        fw_traces: a list of TraceCtx.
+        bw_traces: a list of TraceCtx.
+        fw_labels: a list of labels (names) referring to the forward traces.
+        bw_labels: a list of labels (names) referring to the backward traces.
+        iters: benchmark iterations.
+        nvsight: flag to control nvsight profile generation.
+    """
     assert len(fw_traces) == len(bw_traces) == len(fw_labels) == len(bw_labels)
     for trc, label in zip(fw_traces, fw_labels):
         c, m, _ = benchmark_trace(
