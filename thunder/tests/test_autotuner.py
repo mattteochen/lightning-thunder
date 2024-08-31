@@ -1,4 +1,4 @@
-from thunder.backend_optimizer.optimizer import get_fw_bw_split_backends_options
+from thunder.backend_optimizer.utils import get_fw_bw_split_backends_options
 from thunder.core.dtypes import to_torch_dtype
 from thunder.core.prims import PrimIDs
 from thunder.core.proxies import FloatProxy, IntegerProxy, TensorProxy

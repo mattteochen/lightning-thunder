@@ -13,61 +13,27 @@ from thunder.core.trace import from_trace, TraceCtx
 from thunder.core.transforms import construct_trace
 from thunder.extend import Executor, FusionExecutor, OperatorExecutor, get_always_executors
 from typing import Hashable
-from thunder.backend_optimizer.utils import benchmark_trace
-
-
-# This fn is used before compile data being set, rely on kwargs
-def get_fw_bw_split_backends_options(bsym: BoundSymbol | None = None, **kwargs) -> list | dict:
-    from thunder.executors.sdpaex import sdpa_ex
-    from thunder.executors.cudnnex import cudnn_ex
-    from thunder.executors.fa3ex import fa3_ex
-    from thunder.executors.transformer_engineex import transformer_engine_ex
-
-    if kwargs is None or not kwargs.get("autotune_enable_te", False):
-        options: dict[str, list] = {
-            "scaled_dot_product_attention": [sdpa_ex, cudnn_ex, fa3_ex],
-        }
-    else:
-        options: dict[str, list] = {
-            "linear": [transformer_engine_ex],
-            "scaled_dot_product_attention": [sdpa_ex, cudnn_ex, fa3_ex],
-        }
-
-    return options.get(bsym.sym.name, []) if bsym else options
-
-
-class BenchmarkResult:
-    def __init__(
-        self,
-        *,
-        time: float = float("inf"),
-        memory: float = float("inf"),
-        trace: TraceCtx = TraceCtx(),
-        label: str | Hashable = "",
-        index: int = -1,
-    ) -> None:
-        self.runtime: float = time
-        self.memory: float = memory
-        self.trace: TraceCtx = trace
-        self.label: str | Hashable = label
-        self.index: int = index
-
-
-class OptimizerType(Enum):
-    MEMORY = 0
-    RUNTIME = 1
-
-
-class TraceType(Enum):
-    FW = 0
-    BW = 1
+from thunder.backend_optimizer.utils import benchmark_trace, BenchmarkResult, OptimizerType, TraceType, LogLevel, log
 
 
 class OptimizationAlgorithm(Enum):
+    """
+    Represents the optimization technique used by the autotuner.
+    """
     BEST_FUSER = 0
 
 
 class FusionCompileOptionsHelper:
+    """
+    Represents compile options for a fusion executor.
+
+    Attributes:
+        fusion_tag: A label representing the fusion ops regarding a compile option (e.g. nv_linear).
+        symbol_tag: The symbol name
+        id: The symbol id.
+        impl: A callable implementation.
+        checker: A callable checker.
+    """
     def __init__(self, fusion_tag: str, symbol_tag: str, id: PrimIDs, impl: Callable, checker: Callable) -> None:
         self.fusion_tag = fusion_tag
         self.symbol_tag = symbol_tag
@@ -77,6 +43,18 @@ class FusionCompileOptionsHelper:
 
 
 class TraceCandidate:
+    """
+    Represents an optimal trace candidate.
+
+    Attributes:
+        trace: The candidate trace.
+        compile_opt: Any compile options used for the current candidate.
+        label: A generic label.
+        symbol_tag: The symbol name
+        id: The symbol id.
+        impl: A callable implementation.
+        checker: A callable checker.
+    """
     def __init__(self, *, trace: TraceCtx, compile_opt: FusionCompileOptionsHelper | None = None, label: str) -> None:
         self.trace: TraceCtx = trace
         self.compile_opt: FusionCompileOptionsHelper | None = compile_opt
@@ -84,6 +62,15 @@ class TraceCandidate:
 
 
 class TraceCandidates:
+    """
+    Represents an optimal pair of trace candidates (compute time and memory consumption).
+
+    Attributes:
+        best_time: The trace with the optimal runtime.
+        best_mem: The trace with the optimal peak memory consumption.
+        compile_opt_time: Any compile options used for a fusion executor regarding the first trace.
+        compile_opt_mem: Any compile options used for a fusion executor regarding the second trace.
+    """
     def __init__(
         self,
         best_time: TraceCtx | None = None,
@@ -97,25 +84,52 @@ class TraceCandidates:
         self.compile_opt_mem: FusionCompileOptionsHelper | None = compile_opt_mem
 
     def __repr__(self) -> str:
+        """
+        Give a representation for the current object.
+        """
         return f"\nBest runtime candidate:\n{self.best_time}\nBest memory candidate:\n{self.best_mem}"
 
     def is_set(self) -> bool:
+        """
+        Check that the optimal trace pair has been set.
+        """
         return False if self.best_time is None or self.best_mem is None else True
 
     def attach_best_time_candidate(self, trace: TraceCtx):
+        """
+        Attach a new best time trace result.
+        """
         self.best_time = trace
 
     def attach_best_mem_candidate(self, trace: TraceCtx):
+        """
+        Attach a new best memory trace result.
+        """
         self.best_mem = trace
 
     def iterable(self) -> tuple[TraceCtx | None, TraceCtx | None]:
+        """
+        Returns an iterable object over the traces contained in the current object.
+        """
         return self.best_time, self.best_mem
 
     def compile_opt_iterables(self) -> tuple[FusionCompileOptionsHelper | None, FusionCompileOptionsHelper | None]:
+        """
+        Returns an iterable object over the compile options used in the traces contained in the current object.
+        """
         return self.compile_opt_time, self.compile_opt_mem
 
 
 class OutputCandidate:
+    """
+    Represents a final output candidate: forward and backward trace pair.
+
+    Attributes:
+        fw: The forward trace.
+        bw: The backward trace.
+        compile_opt: Any compile options being used for a fusion executor.
+        tot_cost: The total cost to execute the pair (ms for a time strategy and GB for a memory strategy).
+    """
     def __init__(
         self, *, fw: TraceCtx, bw: TraceCtx, compile_opt: FusionCompileOptionsHelper | None = None, cost: float = 0.0
     ) -> None:
@@ -125,14 +139,23 @@ class OutputCandidate:
         self.tot_cost: float = cost
 
     def __repr__(self) -> str:
+        """
+        Give a representation of the current object.
+        """
         return f"Final output candidate: forward trace:\n{self.fw.__repr__()}\nFinal output candidate: backward trace:\n{self.bw.__repr__()}"
 
 
-# Benchmark only traces will contain traces after the rematerialization call with fw and bw calls, reproducing what will be the real traces after the autotune pass
-# Non benchmark traces will contain traces after the placement (default) with no call to remat
-# We have duplciated those in order to maintain thunder compilation flow as the output from the autotuner will be the traces with no pass through rematerialization
-# TODO: torchcompile_cat currently is not supported as the autotuner search space in the FusionExecutor section is limited to 1
 class FusionStratHelper:
+    """
+    Represents a helper structure for the fusion strategy.
+
+    Attributes:
+        supported_executors: A list of supported fusion executors.
+        optimized_traces_mem: a list of dictionaries containing informations regarding the optimized traces for peak memory consumption.
+        optimized_traces_mem_benchmark_only: a list of dictionaries containing informations regarding the optimized traces for peak memory consumption (used only for internal benchmarking).
+        optimized_traces_time: a list of dictionaries containing informations regarding the optimized traces for total compute time.
+        optimized_traces_time_benchmark_only: a list of dictionaries containing informations regarding the optimized traces for total compute time (used only for internal benchmarking).
+    """
     def __init__(self) -> None:
         self.supported_executors: set = set(["nvfuser", "torchcompile"])
         self.optimized_traces_mem: list[dict[str | Hashable, tuple[TraceCtx, FusionCompileOptionsHelper | None]]] = []
@@ -142,31 +165,54 @@ class FusionStratHelper:
 
 
 class FusionExecutorsPlacementCtx:
+    """
+    Represents a executor placement context.
+
+    Attributes:
+        placement: A list of executors.
+        compile_options: Any compile options being used for the fusion executor contained in the placement.
+    """
     def __init__(self, *, placement: list, compile_options: FusionCompileOptionsHelper | None = None) -> None:
         self.placement: list = placement
         self.compile_options: FusionCompileOptionsHelper | None = compile_options
 
 
 class ExecutorPlacementOptions:
+    """
+    Represents an aggregate placement options for executors combining those that targets peak memory consumption and those for total compute time.
+
+    Attributes:
+        placement_options_mem: A list of placement contexts.
+        placement_options_time: A list of placement contexts.
+    """
     def __init__(self) -> None:
         self.placement_options_mem: list[FusionExecutorsPlacementCtx] = []
         self.placement_options_time: list[FusionExecutorsPlacementCtx] = []
 
 
-class LogLevel(Enum):
-    DEBUG = 0
-    INFO = 1
-
-
-log_level: LogLevel = LogLevel.INFO
-
-
-def log(what: str, level: LogLevel = LogLevel.INFO):
-    if log_level == LogLevel.DEBUG or log_level == level:
-        print(f"================================================================================ Autotune: {what}")
-
-
 class PlacerBase:
+    """
+    Represents a base (interface) class for a placement class.
+
+    Attributes:
+        always_executors: A list of always present executors.
+        empty_executor_hashable_placeholder: A label representing en empty executor.
+        executors: A list of executors to use.
+        fusion_executors: A list of fusion executors to use.
+        fusion_executors_saved_for_later: A helper list containing maybe repeated fusion executors.
+        debug_msg: A dynamic filled log message.
+        log_file_name: The output log file name if generated.
+        produce_log: A tuning parameter to control log file generation.
+        optimizer_type: The optimization target.
+        active_fw_trace_ctx: An active set forward trace (in the object scope).
+        cached_fw_traces: Cached forward traces.
+        bw_trace_candidates: An instance of trace candidates.
+        best_pair_runtime: A final traace pair targetting the compute time.
+        best_pair_memory: A final traace pair targetting the peak memory consumption.
+        apply_bucketing_bw_trace: A distributed flag.
+        benchmark_iters: Benchmark iteration steps.
+        compile_data: Thunder compilation data.
+    """
     def __init__(
         self,
         *,
@@ -187,7 +233,6 @@ class PlacerBase:
         self.fusion_executors_saved_for_later: Sequence[FusionExecutor] = []
 
         self.debug_msg: str = ""
-        self.partial_costs: dict[TraceCtx, float] = {}
         self.log_file_name: str = log_file_name
         self.produce_log: bool = produce_log
 
@@ -207,19 +252,44 @@ class PlacerBase:
         self.compile_data = compile_data
 
     def optimize(self):
+        """
+        Optimize the executor placement for the current trace.
+        """
         pass
 
     def attach_trace(self, *, trace: TraceCtx, trace_type: TraceType):
+        """
+        Attach a new trace for executors optimization.
+
+        Args:
+            trace: The trace to attach.
+            trace_type: Forward or backward trace refrence.
+        """
         pass
 
     def get_optimal_fw_traces(self) -> Sequence[TraceCtx]:
+        """
+        Retrive the optimal forward traces that the object has tuned.
+        """
         return []
 
     def get_optimal_fw_bw_traces(self) -> tuple[TraceCtx, TraceCtx]:
+        """
+        Retrive the optimal forward and backward trace pair.
+        """
         return (TraceCtx(), TraceCtx())
 
 
 class FusionPlacer_BeamSearch(PlacerBase):
+    """
+    Represents a placer targetting the fusion regions.
+
+    Attributes:
+        fusion_strat_helper: A helper structures to save intermediate values.
+        executor_placement_options: A helper structures to save different intemediate executor placement.
+        is_reduced: A flag indicating if the current trace under optimization is a reduced version of a bigger trace (by common blocks reduction).
+        cached_original_trace: A reference to the original trace if the optmization is performed on a reduced version.
+    """
     def __init__(
         self,
         *,
@@ -261,7 +331,8 @@ class FusionPlacer_BeamSearch(PlacerBase):
             }
 
         # Transformer based models optimization
-        # TODO: explain
+        # For models based on layers of transformer blocks we can optimize the tuning by researching the best placement
+        # on the model with a single layer and then mirror the configuration to the other layers.
         self.is_reduced: bool = False
         self.cached_original_trace: TraceCtx | None = None
 
@@ -270,6 +341,12 @@ class FusionPlacer_BeamSearch(PlacerBase):
     """
 
     def _best_runtime_and_memory_candidates(self, candidates):
+        """
+        Retrive the best compute time and peak memory consumption trace pairs.
+
+        Args:
+            candidates: A sequence of possible candidates.
+        """
         from thunder.core.rematerialization import rematerialize_forward_and_backward
         from thunder.backend_optimizer.utils import benchmark_trace
 
@@ -328,12 +405,17 @@ class FusionPlacer_BeamSearch(PlacerBase):
         return best_pair_runtime, best_pair_memory
 
     def _filter_candidates(self):
+        """
+        Reduce the solutions count by comparing different options across different fusion executors.
+
+        For forward traces all the options are cached.
+        """
         self.debug_msg += "Traces benchmarks:\n\n"
 
         # We cache every optimized fw traces as they might impact differently on the bw trace
         # Number of fw traces to cached are: #fusion_executors * 2
         def fw_benchmark():
-            # The optimizator builds the results in order following the self.fusion_executors list order
+            # The optimizer builds the results in order following the self.fusion_executors list order
             pair_time: dict
             pair_mem: dict
             for pair_time, pair_mem in zip(
@@ -392,15 +474,14 @@ class FusionPlacer_BeamSearch(PlacerBase):
                     )
 
             # Here we have to recover the traces without the pass through remat in order to be compliant
-            # with thunder flow as we might have request for no remat
-            # Unpack dict
+            # with thunder flow as we might have request for no remat.
             trc = list(self.fusion_strat_helper.optimized_traces_time[time_result.index].values())[0][0]
             self.bw_trace_candidates.attach_best_time_candidate(trc)
             trc = list(self.fusion_strat_helper.optimized_traces_mem[memory_result.index].values())[0][0]
             self.bw_trace_candidates.attach_best_mem_candidate(trc)
 
             # Now, finally build the pair fw and bw traces
-            # The current fw trace is set by the caller and we take it as is. All current bw traces optimizations are made with the fw trace set by the caller
+            # The current fw trace is set by the caller and we take it as is. All current bw traces optimizations are made with the fw trace set by the caller.
             for bw in self.bw_trace_candidates.iterable():
                 self.out_traces_candidates.append(
                     OutputCandidate(fw=self.active_fw_trace_ctx[0], bw=bw, compile_opt=self.active_fw_trace_ctx[1])
@@ -423,6 +504,15 @@ class FusionPlacer_BeamSearch(PlacerBase):
             self.debug_msg = ""
 
     def _search_candidates(self, increment_factor: int = 1):
+        """
+        For the current trace generate all the placement candidates.
+
+        For each fusion executor the time-memory pair candidates will be generated and cached.
+        If any compile options for an executor is available, it will be take under consideration.
+
+        Args:
+            increment_factor: An integer controlling the increment step during the fusion exclusion to speed up the compilation.
+        """
         from thunder.executors.data_dependent_partition import Node, fuse_bound_symbols
         from thunder.backend_optimizer.utils import (
             get_not_used_intermediate_outsputs,
@@ -433,6 +523,13 @@ class FusionPlacer_BeamSearch(PlacerBase):
         )
 
         def get_placed_trace(mapping: dict[str, Executor], bound_symbols_in: Sequence[BoundSymbol]):
+            """
+            Generates a trace with the requested executors.
+
+            Args:
+                mapping: a dictionary pointing to the assigned executor for a trace region.
+                bound_symbols_in: Input trace regions.
+            """
             trc = from_trace(self.trace)
             trc.bound_symbols = list(bound_symbols_in)
 
@@ -484,11 +581,20 @@ class FusionPlacer_BeamSearch(PlacerBase):
 
         def _search(ex: FusionExecutor, executor_compile_option: FusionCompileOptionsHelper | None = None):
             """
-            Fusable fn definition for nvFuser
-            """
+            For the given executor search and cached the best placements.
 
-            # Each executor has a custom should fuse function, but the current impl need to access local executor object
+            Args:
+                ex: A fusion executor.
+                executor_placement_options: Any compile option this executor might activate.
+            """
             def _should_fuse_nvfuser(a: Node, b: Node):
+                """
+                Fusable fn definition for nvFuser.
+
+                Args:
+                    a: First node.
+                    b: Second node.
+                """
                 def _can_fuse_node(n: Node):
                     # if already merged, then node can be fused
                     if len(n.group_bsyms) > 1:
@@ -500,11 +606,15 @@ class FusionPlacer_BeamSearch(PlacerBase):
 
                 return _can_fuse_node(a) and _can_fuse_node(b)
 
-            """
-            Fusable fn definition for torch.compile
-            """
 
             def _should_fuse_torchcompile(a: Node, b: Node):
+                """
+                Fusable fn definition for torch.compile.
+
+                Args:
+                    a: First node.
+                    b: Second node.
+                """
                 def _can_fuse_node(n: Node):
                     if len(n.group_bsyms) > 1:
                         return True
@@ -513,7 +623,15 @@ class FusionPlacer_BeamSearch(PlacerBase):
 
                 return _can_fuse_node(a) and _can_fuse_node(b)
 
-            def match_bsym_output(bsym_in: BoundSymbol, dicts: list[dict], ex_in: Executor):
+            def match_bsym_executor(bsym_in: BoundSymbol, dicts: list[dict], ex_in: Executor):
+                """
+                Match a bound symbol to its executor.
+
+                Args:
+                    bsym_in: The bound symbol to match.
+                    dicts: The matrching destination.
+                    ex_in: The executor to assign.
+                """
                 if isinstance(bsym_in.output, Sequence):
                     for d in dicts:
                         d[sequence_hash(bsym_in.output)] = ex_in
@@ -548,6 +666,7 @@ class FusionPlacer_BeamSearch(PlacerBase):
             dict_time_strat: dict[str, Executor] = {}
             dict_mem_strat: dict[str, Executor] = {}
             increasing_symbols = []
+            # Tuning starting point: iterate over all the groups.
             for group_id, group in enumerate(bound_symbol_groups):
                 log(f"Fusion group id: {group_id}", level=LogLevel.DEBUG)
                 log(
@@ -584,7 +703,7 @@ class FusionPlacer_BeamSearch(PlacerBase):
 
                     # Not executors available
                     if not candidate_executors:
-                        match_bsym_output(
+                        match_bsym_executor(
                             current_bsym,
                             [dict_time_strat, dict_mem_strat],
                             Executor(name=self.empty_executor_hashable_placeholder),
@@ -605,9 +724,7 @@ class FusionPlacer_BeamSearch(PlacerBase):
                         candidate_best_time = BenchmarkResult(index=0)
                         candidate_best_mem = BenchmarkResult(index=0)
                     else:
-                        # Search for best candidate, by default remat will be called to find the optimal choice
-                        # TODO: enable requests for no remat becnhmarks
-                        # TODO: we should consider also FusionExecutor that can execute this single bsym in this beam search
+                        # Search for best candidate
                         for i, candidate in enumerate(candidate_executors):
                             from thunder.common import transform_for_execution
 
@@ -640,8 +757,8 @@ class FusionPlacer_BeamSearch(PlacerBase):
                         level=LogLevel.DEBUG,
                     )
 
-                    match_bsym_output(current_bsym, [dict_time_strat], candidate_executors[candidate_best_time.index])
-                    match_bsym_output(current_bsym, [dict_mem_strat], candidate_executors[candidate_best_mem.index])
+                    match_bsym_executor(current_bsym, [dict_time_strat], candidate_executors[candidate_best_time.index])
+                    match_bsym_executor(current_bsym, [dict_mem_strat], candidate_executors[candidate_best_mem.index])
                     # Go to next bsym group
                     continue
 
@@ -686,7 +803,7 @@ class FusionPlacer_BeamSearch(PlacerBase):
                     if last_embedding_idx != -1:
                         # Until last_embedding_idx (included) assigned to current fusion ex
                         for i in range(0, last_embedding_idx + 1, 1):
-                            match_bsym_output(group[i], [dict_time_strat, dict_mem_strat], ex)
+                            match_bsym_executor(group[i], [dict_time_strat, dict_mem_strat], ex)
 
                         if last_embedding_idx == len(group) - 1:
                             # Benchmark
@@ -695,7 +812,7 @@ class FusionPlacer_BeamSearch(PlacerBase):
                         start_idx = last_embedding_idx + 1
 
                 n_missing_bsyms = len(group) - start_idx
-                # TODO (matteochen): consider to add the iteration with no fusion regions
+                # Tune a single fusion group.
                 for i in range(0, n_missing_bsyms, n_missing_bsyms - 1 if self.trace_type == TraceType.BW else 1):
                     if ex.name == "torchcompile":
                         import torch
@@ -707,9 +824,9 @@ class FusionPlacer_BeamSearch(PlacerBase):
                     # -> First iteration is the one with fusion region with single element
                     # -> Last iteration gives the complete fusion region
                     for j in range(start_idx, start_idx + i + 1, increment_factor):
-                        match_bsym_output(group[j], [dict_time_strat, dict_mem_strat], ex)
+                        match_bsym_executor(group[j], [dict_time_strat, dict_mem_strat], ex)
                     for k in range(start_idx + i + 1, len(group), increment_factor):
-                        match_bsym_output(
+                        match_bsym_executor(
                             group[k],
                             [dict_time_strat, dict_mem_strat],
                             # In order to benchmark the fusion placecement, we can use any executor for the excluded bsym from the fusion region
@@ -776,7 +893,7 @@ class FusionPlacer_BeamSearch(PlacerBase):
                     raise AssertionError(f"Type not handled: {type(bsym.output)}")
 
             # For the forward trace we benchmark (memory) the mocked return statement as we don't know which
-            # tensor will be returned after the rematerialize_forward_and_backward call in order to do not underestimate the memory consumption
+            # tensor will be returned after the rematerialize_forward_and_backward call in order to do not under/over-estimate the memory consumption
             trace = self.trace
             if self.trace_type == TraceType.FW:
                 trace = from_trace(self.trace)
@@ -801,7 +918,6 @@ class FusionPlacer_BeamSearch(PlacerBase):
                 )
                 container.append({ex.name: trc})
 
-            # Save executors in order to generate real fw and bw trace with correct output with the placer
             # We add any provided compile option reference
             self.executor_placement_options.placement_options_time.append(
                 FusionExecutorsPlacementCtx(placement=executors_time, compile_options=executor_compile_option)
@@ -810,8 +926,7 @@ class FusionPlacer_BeamSearch(PlacerBase):
                 FusionExecutorsPlacementCtx(placement=executors_mem, compile_options=executor_compile_option)
             )
 
-        # If executor specific compile option is activated we need to know where a specific
-        # trace does come from and the zip logic afterward can not be employed with self.fusion_executors list
+        # If any compile options will be used we will need to have duplicated executors inside the executors list to maintain the matching.
         self.fusion_executors_saved_for_later = []
         ex: FusionExecutor
         for ex in self.fusion_executors:
@@ -919,7 +1034,7 @@ class FusionPlacer_BeamSearch(PlacerBase):
                     level=LogLevel.INFO,
                 )
 
-            # This performs executor search
+            # This performs executor tuning
             self._search_candidates()
 
             # From now on we have the optimized executors for each trace region. Apply them...
@@ -950,7 +1065,6 @@ class FusionPlacer_BeamSearch(PlacerBase):
 
                 # Reset original trace
                 self.trace = self.cached_original_trace
-
             # We will create the best compute time and peak memory consumption placement for each fusion executor
             for placement_ctx, ex in zip(
                 self.executor_placement_options.placement_options_time, self.fusion_executors_saved_for_later
@@ -989,13 +1103,13 @@ class FusionPlacer_BeamSearch(PlacerBase):
                 # Clear any previous results
                 self.cached_fw_traces = []
                 _optimize()
-            # We have multiple cached optimized fw traces, find the best backward
-            # TODO: make this prettier with a machine state for example
+            # We have multiple cached optimized fw traces, this iteration will create a fw-bw pair for
+            # every cached forward trace. At the end the best one will be picked up.
             case TraceType.BW:
                 # Clear any previous results
                 self.out_traces_candidates = []
 
-                # Cached the bw trace as we need to modify the input trace during the loop
+                # Cached the bw trace as we need to modify the self.trace during the loop
                 cached_self_trace = from_trace(self.trace)
                 cached_self_trace.bound_symbols = list(self.trace.bound_symbols)
 
@@ -1016,6 +1130,7 @@ class FusionPlacer_BeamSearch(PlacerBase):
 
                     self.trace = update_bw_from_forward_optimization(fw=fw_trace_candidate.trace, bw=self.trace)
 
+                    # Taken from: https://github.com/Lightning-AI/lightning-thunder/blob/339a782e3d75061a065a3d2e47b5206f23aea7c3/thunder/executors/torch_autograd.py#L222
                     if self.apply_bucketing_bw_trace:
                         from thunder.distributed.transforms import FSDPCommBucketing
 
@@ -1030,12 +1145,19 @@ class FusionPlacer_BeamSearch(PlacerBase):
                     else:
                         _optimize()
 
+                # For every pair being generated filter out the best choice.
                 self.best_pair_runtime, self.best_pair_memory = self._best_runtime_and_memory_candidates(
                     self.out_traces_candidates
                 )
 
 
 class BackendOptimizer:
+    """
+    Represents a generic backend optimizer.
+
+    Attributes:
+        optimizer: An optimizer instance based on the configurations.
+    """
     def __init__(
         self,
         *,
@@ -1066,13 +1188,29 @@ class BackendOptimizer:
             )
 
     def optimize(self):
+        """
+        Optimize the executor placement for the current trace.
+        """
         self.optimizer.optimize()
 
     def attach_trace(self, *, trace: TraceCtx, trace_type: TraceType):
+        """
+        Attach a new trace for executors optimization.
+
+        Args:
+            trace: The trace to attach.
+            trace_type: Forward or backward trace refrence.
+        """
         self.optimizer.attach_trace(trace=trace, trace_type=trace_type)
 
     def get_optimal_fw_traces(self) -> Sequence[TraceCtx]:
+        """
+        Retrive the optimal forward traces that the object has tuned.
+        """
         return self.optimizer.get_optimal_fw_traces()
 
     def get_optimal_fw_bw_traces(self) -> tuple[TraceCtx, TraceCtx]:
+        """
+        Retrive the optimal forward and backward trace pair.
+        """
         return self.optimizer.get_optimal_fw_bw_traces()

@@ -221,9 +221,9 @@ def make_aug_forward_and_backward(bsym: BoundSymbol) -> tuple[Callable, Callable
         return fw_fn, bw_fn
     # We have a backend
     else:
-        from thunder.backend_optimizer.optimizer import get_fw_bw_split_backends_options
+        from thunder.backend_optimizer.utils import get_fw_bw_split_backends_options
         from thunder.backend_optimizer.utils import benchmark_trace
-        from thunder.backend_optimizer.optimizer import log, LogLevel
+        from thunder.backend_optimizer.utils import log, LogLevel
 
         # In order define this unique trace region we need an unique id
         key = (bsym.sym, Executor(f"{id(bsym)}-autotuned"), subkey := _make_cache_key(bsym.args, bsym.kwargs))

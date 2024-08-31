@@ -22,6 +22,72 @@ import thunder.core.transforms as transforms
 from itertools import chain
 import torch
 from thunder.core.dtypes import dtype
+from enum import Enum
+
+
+class LogLevel(Enum):
+    """
+    Represents a log level.
+    """
+    DEBUG = 0
+    INFO = 1
+
+
+log_level: LogLevel = LogLevel.INFO
+
+
+def log(what: str, level: LogLevel = LogLevel.INFO):
+    """
+    Conditionally print to stdout.
+
+    Args:
+        what: The content to print.
+        level: Tuning parameter to print the content only if allowed by the configuration.
+    """
+    if log_level == LogLevel.DEBUG or log_level == level:
+        print(f"================================================================================ Autotune: {what}")
+
+class TraceType(Enum):
+    """
+    Represents the nature of a trace, if forward (computational) or backward.
+    """
+    FW = 0
+    BW = 1
+
+
+class BenchmarkResult:
+    """
+    Represents a trace benchmark result information.
+
+    Attributes:
+        time: Benchmark computation time.
+        memory: Benchmark peak memory usage.
+        trace: Computaiton trace.
+        label: A generic label.
+        index: A generic index in a sequence.
+    """
+    def __init__(
+        self,
+        *,
+        time: float = float("inf"),
+        memory: float = float("inf"),
+        trace: TraceCtx = TraceCtx(),
+        label: str | Hashable = "",
+        index: int = -1,
+    ) -> None:
+        self.runtime: float = time
+        self.memory: float = memory
+        self.trace: TraceCtx = trace
+        self.label: str | Hashable = label
+        self.index: int = index
+
+
+class OptimizerType(Enum):
+    """
+    Represents the autotuner target.
+    """
+    MEMORY = 0
+    RUNTIME = 1
 
 
 # Maybe we can use id(s)
@@ -137,7 +203,6 @@ def get_not_used_intermediate_outsputs(trace_in: TraceCtx) -> list[Proxy]:
                     break
             if not f:
                 ans.append(e)
-    from thunder.backend_optimizer.optimizer import log, LogLevel
 
     log(f"Returning not used proxies: {[p.name if hasattr(p, 'name') else p for p in ans ]}", level=LogLevel.DEBUG)
     return ans
@@ -730,8 +795,6 @@ def update_compile_options_executor_list_after_fw_bw_split() -> None:
     This utility can be used to save all the executors that have been effectively placed in a trace.
     """
 
-    from thunder.backend_optimizer.optimizer import get_fw_bw_split_backends_options
-
     cd = get_compile_data()
     assert cd
 
@@ -867,7 +930,6 @@ def reorder_executors_list(executors: Sequence, **kwargs):
     Args:
         executors: The executors to be reordered.
     """
-    from thunder.backend_optimizer.optimizer import get_fw_bw_split_backends_options
     from thunder.executors.torch_compile import torch_compile_ex
     from thunder.executors.nvfuserex_impl import ex as nvfuser_ex
 
@@ -1377,3 +1439,34 @@ def map_executors_from_reduced_trace_to_complete_trace(
         )
 
     return complete_trace_executors
+
+# This fn is used before compile data being set, rely on kwargs
+def get_fw_bw_split_backends_options(bsym: BoundSymbol | None = None, **kwargs) -> list | dict:
+    """
+    Retrieves the executors tuning options for the vector jacobian product pass.
+    These executors must be tuned at the vjp stage as we have to choose the correspective backward grad function.
+
+    For new executors support the followig lists can be expanded.
+
+    A guard is put for the transformer_engine_ex as its usage should not be tuned if not requested in a explicit way.
+
+    Args:
+        bsym: The query bound symbol.
+    """
+    from thunder.executors.sdpaex import sdpa_ex
+    from thunder.executors.cudnnex import cudnn_ex
+    from thunder.executors.fa3ex import fa3_ex
+    from thunder.executors.transformer_engineex import transformer_engine_ex
+
+    if kwargs is None or not kwargs.get("autotune_enable_te", False):
+        options: dict[str, list] = {
+            "scaled_dot_product_attention": [sdpa_ex, cudnn_ex, fa3_ex],
+        }
+    else:
+        options: dict[str, list] = {
+            "linear": [transformer_engine_ex],
+            "scaled_dot_product_attention": [sdpa_ex, cudnn_ex, fa3_ex],
+        }
+
+    return options.get(bsym.sym.name, []) if bsym else options
+
