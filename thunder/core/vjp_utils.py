@@ -17,7 +17,6 @@ from thunder.extend import Executor
 
 
 _cache = {}
-_autototune_common_bsym_in_blocks_cache = {}
 
 
 def disable_caching_split_forward_and_backward(fn):
@@ -253,17 +252,21 @@ def make_aug_forward_and_backward(bsym: BoundSymbol) -> tuple[Callable, Callable
         # Do we have a common transformer block optimization enabled?
         # If yes we have to restrict the same executor on every bsym
         # in the transformer block (e.g. every scaled_dot_product in every transformer block will have the same executor
-        # as they are expected to work on same input size and shapes).
+        # as they are expected to work on same input size, shape and dtype).
         optmimizer_common_transformer_block = cd.compile_options.get('autotune_optimize_common_blocks', False)
         # The generated hash will rely on the operation, input args metadata and output metadata
         h = symbol_hash(bsym)
-        if h in _autototune_common_bsym_in_blocks_cache and optmimizer_common_transformer_block:
-            best = _autototune_common_bsym_in_blocks_cache[h]
+        # Recover the cache stored in the compile data
+        autotuner_bsym_with_gradfn_executor_cache = cd.autotuner_bsym_with_gradfn_executor_cache
+
+        # Run the search only if not already visited before
+        if h in autotuner_bsym_with_gradfn_executor_cache and optmimizer_common_transformer_block:
+            best = autotuner_bsym_with_gradfn_executor_cache[h]
         else:
             # Restrict the search space
             backends = list(requested_executors_list_for_bsym)
 
-            logger.info(f"Search space for {bsym.sym.name}: {backends}")
+            logger.info(f"Search space for bsym {bsym.sym.name}: {backends}")
             for b in backends:
                 logger.info(f"Benchmarking executor {b.name} for {bsym.sym.name}")
                 # Let downstream fn to pick up this
@@ -286,8 +289,9 @@ def make_aug_forward_and_backward(bsym: BoundSymbol) -> tuple[Callable, Callable
         logger.info(f"Best executor for symbol [{bsym.output.name} = {bsym.sym.name}]: {best.executor.name}")
 
         # Cache the bsym result for common trace's common block reductions
-        if bsym.sym.name in ['linear', 'scaled_dot_product_attention'] and optmimizer_common_transformer_block:
-            _autototune_common_bsym_in_blocks_cache[h] = best
+        # At this stage we are tuning trace regions for these symbols name: linear and scaled_dot_product_attention
+        if bsym.sym.name in get_fw_bw_split_backends_options().keys() and optmimizer_common_transformer_block:
+            autotuner_bsym_with_gradfn_executor_cache[h] = best
 
         # Update the compile options
         cd.compile_options["autotune_executors_placed_by_fw_bw_split"].add(best.executor)

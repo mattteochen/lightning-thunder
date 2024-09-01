@@ -280,6 +280,8 @@ class CompileData:
         self.additional_return_names = None
         self.num_constant_args = 0
 
+        self.autotuner_bsym_with_gradfn_executor_cache: dict = {}
+
         assert disable_preprocessing, "please use thunder.compile if you need preprocessing"
 
 

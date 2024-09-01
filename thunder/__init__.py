@@ -699,6 +699,9 @@ def jit(
                     # Note computation_trc and backward_trc have been appended to cs.last_(backward_)traces
                     # by split_forward_backward
 
+                    # Reset the cache for the next compilation
+                    cd.autotuner_bsym_with_gradfn_executor_cache = {}
+
             if backward_trc is None:
                 ## EPILOGUE and TRANSFORMS should not mix...
                 # applies transforms
