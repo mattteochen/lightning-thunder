@@ -2,6 +2,7 @@
 This benchmark script is intended to demonstrate the optimizer on a generic model.
 No executor are given leaving full responsibility to the engine.
 """
+
 import torch
 import thunder
 from thunder.benchmarks.utils import thunder_fw_bw_benchmark, torch_fw_bw_benchmark, torch_total_benchmark
@@ -30,11 +31,7 @@ with torch.device("cuda"):
     model = LLaMAMLP(a, b)
 
     jmodel_def = thunder.jit(model)
-    jmodel_auto = thunder.jit(
-        model,
-        autotune_type="runtime",
-        autotune_enable_te=True
-    )
+    jmodel_auto = thunder.jit(model, autotune_type="runtime", autotune_enable_te=True)
 
     print("deviation def:", (jmodel_def(x) - model(x)).abs().max().item())
     print("deviation auto:", (jmodel_auto(x) - model(x)).abs().max().item())

@@ -3,6 +3,7 @@ This benchmark script is intended to demonstrate the optimizer optimizing the nv
 
 nvFuser compile options can be autotune with the argument `autotune_enable_nvfuser_all=True`.
 """
+
 import torch
 import thunder
 from thunder.benchmarks.utils import (

@@ -4,6 +4,7 @@ from thunder.backend_optimizer.utils import benchmark_trace
 
 warm_up_iters = 50
 
+
 class SplitFwBwBenchmarkUtils:
     """
     Represents a benchmark result container.
@@ -15,6 +16,7 @@ class SplitFwBwBenchmarkUtils:
         bw_fn: Storage for a backward trace.
         executor: An OperatorExecutor.
     """
+
     def __init__(
         self, *, cost: float = float("inf"), fw_fn: Callable | None = None, bw_fn: Callable | None = None, executor=None
     ) -> None:

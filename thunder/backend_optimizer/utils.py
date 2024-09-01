@@ -25,32 +25,11 @@ from thunder.core.dtypes import dtype
 from enum import Enum
 
 
-class LogLevel(Enum):
-    """
-    Represents a log level.
-    """
-    DEBUG = 0
-    INFO = 1
-
-
-log_level: LogLevel = LogLevel.INFO
-
-
-def log(what: str, level: LogLevel = LogLevel.INFO):
-    """
-    Conditionally print to stdout.
-
-    Args:
-        what: The content to print.
-        level: Tuning parameter to print the content only if allowed by the configuration.
-    """
-    if log_level == LogLevel.DEBUG or log_level == level:
-        print(f"================================================================================ Autotune: {what}")
-
 class TraceType(Enum):
     """
     Represents the nature of a trace, if forward (computational) or backward.
     """
+
     FW = 0
     BW = 1
 
@@ -66,6 +45,7 @@ class BenchmarkResult:
         label: A generic label.
         index: A generic index in a sequence.
     """
+
     def __init__(
         self,
         *,
@@ -86,6 +66,7 @@ class OptimizerType(Enum):
     """
     Represents the autotuner target.
     """
+
     MEMORY = 0
     RUNTIME = 1
 
@@ -99,6 +80,7 @@ def sequence_hash(s: Sequence) -> str:
     Args:
         s: A sequence to hash.
     """
+
     def rec(s) -> str:
         name = "["
         for e in s:
@@ -177,6 +159,7 @@ def get_not_used_intermediate_outsputs(trace_in: TraceCtx) -> list[Proxy]:
     Args:
         in_trace: A generic trace.
     """
+
     def is_in_sequence(seq: Sequence[Any], t: Proxy):
         for e in seq:
             if hasattr(e, "name") and hasattr(t, "name") and e.name == t.name:
@@ -203,8 +186,9 @@ def get_not_used_intermediate_outsputs(trace_in: TraceCtx) -> list[Proxy]:
                     break
             if not f:
                 ans.append(e)
+    from thunder.backend_optimizer.optimizer import logger
 
-    log(f"Returning not used proxies: {[p.name if hasattr(p, 'name') else p for p in ans ]}", level=LogLevel.DEBUG)
+    logger.debug(f"Returning not used proxies: {[p.name if hasattr(p, 'name') else p for p in ans ]}")
     return ans
 
 
@@ -674,6 +658,7 @@ def benchmark_trace(
             t, m, answer = compute_time_cost_ms(executable, executable_str, iters, *input_args)
     except Exception:
         import traceback
+
         traceback.print_exc()
     finally:
         reset_tracectx(trace_tok)
@@ -799,7 +784,9 @@ def update_compile_options_executor_list_after_fw_bw_split() -> None:
     assert cd
 
     # Get all the possible options that the vjp_optimization pass will use
-    options: dict = get_fw_bw_split_backends_options(autotune_enable_te=cd.compile_options.get('autotune_enable_te', False))
+    options: dict = get_fw_bw_split_backends_options(
+        autotune_enable_te=cd.compile_options.get("autotune_enable_te", False)
+    )
     executors_list = list(cd.executors_list)
 
     # Remove all the initial options
@@ -1049,7 +1036,7 @@ def repetead_trace_blocks(
         return []
 
     if known_points is not None:
-        raise RuntimeError('known_points research is not supported.')
+        raise RuntimeError("known_points research is not supported.")
 
     symbols = [
         s
@@ -1158,7 +1145,7 @@ def repetead_trace_blocks(
     if max_lcs < min_block_size:
         return []
 
-    print(f'\n\nMax lcs {max_lcs}')
+    print(f"\n\nMax lcs {max_lcs}")
     # print(res)
 
     for r in res:
@@ -1187,6 +1174,7 @@ def _regions_between_blocks(trace: TraceCtx, common_blocks: list[tuple]) -> int:
         common_blocks: A list containig the common blocks for the given trace.
 
     """
+
     def _assert_args(seq_a: Sequence, seq_b: Sequence):
         assert len(seq_a) == len(seq_b)
         for a, b in zip(seq_a, seq_b):
@@ -1246,6 +1234,7 @@ def reduce_common_trace_blocks(
         common_blocks_in: A previously computed common block pattern.
         skip_between_blocks: A flag to control if gaps between common blocks should be included in the output trace or not. See _regions_between_blocks.
     """
+
     def _exclude(blocks: list[tuple[int, int]], index: int, black_list: set):
         # Exclude if the index is in a repeated block
         for block in blocks:
@@ -1352,6 +1341,7 @@ def reduce_common_trace_blocks(
         bound_symbols[-1] = bsym
     # Bw trace
     else:
+
         def _returned(seq: Sequence) -> tuple:
             ret = []
             for e in seq:
@@ -1440,6 +1430,7 @@ def map_executors_from_reduced_trace_to_complete_trace(
 
     return complete_trace_executors
 
+
 # This fn is used before compile data being set, rely on kwargs
 def get_fw_bw_split_backends_options(bsym: BoundSymbol | None = None, **kwargs) -> list | dict:
     """
@@ -1469,4 +1460,3 @@ def get_fw_bw_split_backends_options(bsym: BoundSymbol | None = None, **kwargs) 
         }
 
     return options.get(bsym.sym.name, []) if bsym else options
-

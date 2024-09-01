@@ -221,9 +221,11 @@ def make_aug_forward_and_backward(bsym: BoundSymbol) -> tuple[Callable, Callable
         return fw_fn, bw_fn
     # We have a backend
     else:
-        from thunder.backend_optimizer.utils import get_fw_bw_split_backends_options
+        from thunder.backend_optimizer.optimizer import OptimizerType
+        from thunder.backend_optimizer.optimizer import logger
         from thunder.backend_optimizer.utils import benchmark_trace
-        from thunder.backend_optimizer.utils import log, LogLevel
+        from thunder.backend_optimizer.utils import get_fw_bw_split_backends_options
+        from thunder.benchmarks.utils import SplitFwBwBenchmarkUtils
 
         # In order define this unique trace region we need an unique id
         key = (bsym.sym, Executor(f"{id(bsym)}-autotuned"), subkey := _make_cache_key(bsym.args, bsym.kwargs))
@@ -245,8 +247,6 @@ def make_aug_forward_and_backward(bsym: BoundSymbol) -> tuple[Callable, Callable
         cached_executors_list = list(cd.executors_list)
         # Retrieve all the executors which are requested to be used
         requested_executors_list_for_bsym = [ex for ex in cached_executors_list if ex in backends]
-        from thunder.benchmarks.utils import SplitFwBwBenchmarkUtils
-        from thunder.backend_optimizer.optimizer import OptimizerType
 
         best = SplitFwBwBenchmarkUtils()
 
@@ -263,9 +263,9 @@ def make_aug_forward_and_backward(bsym: BoundSymbol) -> tuple[Callable, Callable
             # Restrict the search space
             backends = list(requested_executors_list_for_bsym)
 
-            log(f"Search space for {bsym.sym.name}: {backends}", level=LogLevel.INFO)
+            logger.info(f"Search space for {bsym.sym.name}: {backends}")
             for b in backends:
-                log(f"Benchmarking executor {b.name} for {bsym.sym.name}", level=LogLevel.INFO)
+                logger.info(f"Benchmarking executor {b.name} for {bsym.sym.name}")
                 # Let downstream fn to pick up this
                 requested_executors_list_for_bsym.remove(b)
                 requested_executors_list_for_bsym.insert(0, b)
@@ -283,10 +283,7 @@ def make_aug_forward_and_backward(bsym: BoundSymbol) -> tuple[Callable, Callable
 
         assert best.cost != float("inf")
 
-        log(
-            f"Best executor for symbol [{bsym.output.name} = {bsym.sym.name}]: {best.executor.name}",
-            level=LogLevel.INFO,
-        )
+        logger.info(f"Best executor for symbol [{bsym.output.name} = {bsym.sym.name}]: {best.executor.name}")
 
         # Cache the bsym result for common trace's common block reductions
         if bsym.sym.name in ['linear', 'scaled_dot_product_attention'] and optmimizer_common_transformer_block:

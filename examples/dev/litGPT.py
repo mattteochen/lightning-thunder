@@ -2,6 +2,7 @@
 This script benchmarks litGPT models in a easier wrt to benchmark_litgpt.py way with a fake training loop with no optimizers in order to focus more on
 forward and backward computation time and not others kernel during the loop.
 """
+
 from litgpt import GPT
 from thunder.benchmarks.utils import (
     thunder_fw_bw_benchmark,

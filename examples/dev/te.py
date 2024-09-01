@@ -3,6 +3,7 @@ This benchmark script is intended to demonstrate the optimizer supporting the tr
 
 This option can be enabled inside the autotuner by using the flag `autotune_enable_te=True`.
 """
+
 import torch
 import thunder
 from thunder.benchmarks.utils import (
@@ -41,7 +42,7 @@ with torch.device("cuda"):
             "nvfuser",
             "transformer_engine",
         ],
-        autotune_enable_te=True
+        autotune_enable_te=True,
     )
 
     y = jmodel_def(x)
