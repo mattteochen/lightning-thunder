@@ -47,6 +47,19 @@ class FusionCompileOptionsHelper:
         self.impl: Callable = impl
         self.checker: Callable = checker
 
+class FusionExecutorsPlacementCtx:
+    """
+    Represents a executor placement context.
+
+    Attributes:
+        placement: A list of executors.
+        compile_options: Any compile options being used for the fusion executor contained in the placement.
+    """
+
+    def __init__(self, *, placement: list, compile_options: FusionCompileOptionsHelper | None = None) -> None:
+        self.placement: list = placement
+        self.compile_options: FusionCompileOptionsHelper | None = compile_options
+
 
 class TraceCandidate:
     """
@@ -54,17 +67,19 @@ class TraceCandidate:
 
     Attributes:
         trace: The candidate trace.
-        compile_opt: Any compile options used for the current candidate.
-        label: A generic label.
-        symbol_tag: The symbol name
-        id: The symbol id.
-        impl: A callable implementation.
-        checker: A callable checker.
+        ctx: Trace's placement context.
+        label: A generic label to identify this candidate.
     """
 
-    def __init__(self, *, trace: TraceCtx, compile_opt: FusionCompileOptionsHelper | None = None, label: str) -> None:
+    def __init__(
+        self,
+        *,
+        trace: TraceCtx,
+        ctx: FusionExecutorsPlacementCtx,
+        label: str,
+    ) -> None:
         self.trace: TraceCtx = trace
-        self.compile_opt: FusionCompileOptionsHelper | None = compile_opt
+        self.ctx: FusionExecutorsPlacementCtx = ctx
         self.label: str = label
 
 
@@ -75,21 +90,21 @@ class TraceCandidates:
     Attributes:
         best_time: The trace with the optimal runtime.
         best_mem: The trace with the optimal peak memory consumption.
-        compile_opt_time: Any compile options used for a fusion executor regarding the first trace.
-        compile_opt_mem: Any compile options used for a fusion executor regarding the second trace.
+        placement_ctx_time: Trace placement context: exeuctors and any applied fusion compile options.
+        placement_ctx_mem: Trace placement context: exeuctors and any applied fusion compile options.
     """
 
     def __init__(
         self,
         best_time: TraceCtx | None = None,
         best_mem: TraceCtx | None = None,
-        compile_opt_time: FusionCompileOptionsHelper | None = None,
-        compile_opt_mem: FusionCompileOptionsHelper | None = None,
+        placement_ctx_time: FusionExecutorsPlacementCtx | None = None,
+        placement_ctx_mem: FusionExecutorsPlacementCtx | None = None,
     ) -> None:
         self.best_time: TraceCtx | None = best_time
         self.best_mem: TraceCtx | None = best_mem
-        self.compile_opt_time: FusionCompileOptionsHelper | None = compile_opt_time
-        self.compile_opt_mem: FusionCompileOptionsHelper | None = compile_opt_mem
+        self.placement_ctx_time: FusionExecutorsPlacementCtx | None = placement_ctx_time
+        self.placement_ctx_mem: FusionExecutorsPlacementCtx | None = placement_ctx_mem
 
     def __repr__(self) -> str:
         """
@@ -103,29 +118,45 @@ class TraceCandidates:
         """
         return False if self.best_time is None or self.best_mem is None else True
 
-    def attach_best_time_candidate(self, trace: TraceCtx):
+    def attach_best_time_candidate(self, trace: TraceCtx, ctx: FusionExecutorsPlacementCtx | None = None):
         """
         Attach a new best time trace result.
+
+        Args:
+            trace: The trace to assign.
+            ctx: The trace placement context.
         """
         self.best_time = trace
+        self.placement_ctx_time = ctx
 
-    def attach_best_mem_candidate(self, trace: TraceCtx):
+    def attach_best_mem_candidate(self, trace: TraceCtx, ctx: FusionExecutorsPlacementCtx | None = None):
         """
         Attach a new best memory trace result.
+
+        Args:
+            trace: The trace to assign.
+            ctx: The trace placement context.
         """
         self.best_mem = trace
+        self.placement_ctx_mem = ctx
 
-    def iterable(self) -> tuple[TraceCtx | None, TraceCtx | None]:
+    def iterable(self) -> tuple[tuple, tuple]:
         """
-        Returns an iterable object over the traces contained in the current object.
+        Returns an iterable object over the traces paired with their contexts.
+        """
+        return (self.best_time, self.placement_ctx_time), (self.best_mem, self.placement_ctx_mem)
+
+    def trace_ctx_iterable(self) -> tuple[TraceCtx | None, TraceCtx | None]:
+        """
+        Returns an iterable object over the traces.
         """
         return self.best_time, self.best_mem
 
-    def compile_opt_iterables(self) -> tuple[FusionCompileOptionsHelper | None, FusionCompileOptionsHelper | None]:
+    def placement_ctx_iterable(self) -> tuple[FusionExecutorsPlacementCtx | None, FusionExecutorsPlacementCtx | None]:
         """
-        Returns an iterable object over the compile options used in the traces contained in the current object.
+        Returns an iterable object over the placement contexts.
         """
-        return self.compile_opt_time, self.compile_opt_mem
+        return self.placement_ctx_time, self.placement_ctx_mem
 
 
 class OutputCandidate:
@@ -135,15 +166,26 @@ class OutputCandidate:
     Attributes:
         fw: The forward trace.
         bw: The backward trace.
-        compile_opt: Any compile options being used for a fusion executor.
+        executors_fw: The forward trace regions' executors
+        executors_bw: The backward trace regions' executors
+        compile_opt: Any compile options being used for a fusion executor in the forward trace.
         tot_cost: The total cost to execute the pair (ms for a time strategy and GB for a memory strategy).
     """
 
     def __init__(
-        self, *, fw: TraceCtx, bw: TraceCtx, compile_opt: FusionCompileOptionsHelper | None = None, cost: float = 0.0
+        self,
+        *,
+        fw: TraceCtx,
+        bw: TraceCtx,
+        executors_fw: list[Executor],
+        executors_bw: list[Executor],
+        compile_opt: FusionCompileOptionsHelper | None = None,
+        cost: float = 0.0,
     ) -> None:
         self.fw: TraceCtx = fw
         self.bw: TraceCtx = bw
+        self.executors_fw: list[Executor] = executors_fw
+        self.executors_bw: list[Executor] = executors_bw
         self.compile_opt: FusionCompileOptionsHelper | None = compile_opt
         self.tot_cost: float = cost
 
@@ -168,25 +210,10 @@ class FusionStratHelper:
 
     def __init__(self) -> None:
         self.supported_executors: set = set(["nvfuser", "torchcompile"])
-        self.optimized_traces_mem: list[dict[str | Hashable, tuple[TraceCtx, FusionCompileOptionsHelper | None]]] = []
+        self.optimized_traces_mem: list[dict[str | Hashable, tuple[TraceCtx, FusionExecutorsPlacementCtx | None]]] = []
         self.optimized_traces_mem_benchmark_only: list[dict[str | Hashable, TraceCtx]] = []
-        self.optimized_traces_time: list[dict[str | Hashable, tuple[TraceCtx, FusionCompileOptionsHelper | None]]] = []
+        self.optimized_traces_time: list[dict[str | Hashable, tuple[TraceCtx, FusionExecutorsPlacementCtx | None]]] = []
         self.optimized_traces_time_benchmark_only: list[dict[str | Hashable, TraceCtx]] = []
-
-
-class FusionExecutorsPlacementCtx:
-    """
-    Represents a executor placement context.
-
-    Attributes:
-        placement: A list of executors.
-        compile_options: Any compile options being used for the fusion executor contained in the placement.
-    """
-
-    def __init__(self, *, placement: list, compile_options: FusionCompileOptionsHelper | None = None) -> None:
-        self.placement: list = placement
-        self.compile_options: FusionCompileOptionsHelper | None = compile_options
-
 
 class ExecutorPlacementOptions:
     """
@@ -251,7 +278,7 @@ class PlacerBase:
 
         self.optimizer_type: OptimizerType = optimizer_type
 
-        self.active_fw_trace_ctx: tuple[TraceCtx | None, FusionCompileOptionsHelper | None] = None, None
+        self.active_fw_trace_ctx: tuple[TraceCtx | None, FusionExecutorsPlacementCtx | None] = None, None
         self.cached_fw_traces: list[TraceCandidate] = []
         self.bw_trace_candidates: TraceCandidates = TraceCandidates()
         self.out_traces_candidates: list[OutputCandidate] = []
@@ -353,7 +380,7 @@ class FusionPlacer_BeamSearch(PlacerBase):
     ################################################## Internal methods ##################################################
     """
 
-    def _best_runtime_and_memory_candidates(self, candidates):
+    def _best_runtime_and_memory_candidates(self, candidates: Sequence[OutputCandidate]):
         """
         Retrive the best compute time and peak memory consumption trace pairs.
 
@@ -434,8 +461,12 @@ class FusionPlacer_BeamSearch(PlacerBase):
             for pair_time, pair_mem in zip(
                 self.fusion_strat_helper.optimized_traces_time, self.fusion_strat_helper.optimized_traces_mem
             ):
-                trc_time, compile_opt_time = list(pair_time.values())[0]
-                trc_mem, compile_opt_mem = list(pair_mem.values())[0]
+                placement_ctx_time: FusionExecutorsPlacementCtx
+                placement_ctx_mem: FusionExecutorsPlacementCtx
+                trc_time: TraceCtx
+                trc_mem: TraceCtx
+                trc_time, placement_ctx_time = list(pair_time.values())[0]
+                trc_mem, placement_ctx_mem = list(pair_mem.values())[0]
                 label = list(pair_time.keys())[0]
                 # TODO (matteochen): remove the benchmark here as will done later on the bw pass
                 c, m, _ = benchmark_trace(trc_time, self.benchmark_iters)
@@ -447,11 +478,15 @@ class FusionPlacer_BeamSearch(PlacerBase):
                     f"Trace name = [{label}] - Target: MEM - Mem = {m / (2**30)} GB - Time = {c} ms\n{trc_mem}\n\n"
                 )
                 # For forward trace we cache the best placement for both runtime and memory for the current Fusion executor (represented by label)
-                for t, o in zip([trc_time, trc_mem], [compile_opt_time, compile_opt_mem]):
-                    logger.info(f"Caching fw candidate [compile option: {o.fusion_tag if o else 'None'}]")
+                for t, ctx in zip([trc_time, trc_mem], [placement_ctx_time, placement_ctx_mem]):
+                    logger.info(
+                        f"Caching fw candidate [compile option: {ctx.compile_options.fusion_tag if ctx.compile_options else 'None'}]"
+                    )
                     self.cached_fw_traces.append(
                         TraceCandidate(
-                            trace=t, compile_opt=o, label=label + "_enabled_" + o.fusion_tag if o is not None else label
+                            trace=t,
+                            ctx=ctx,
+                            label=(label + "_enabled_" + ctx.compile_options.fusion_tag) if ctx.compile_options is not None else label,
                         )
                     )
 
@@ -488,16 +523,25 @@ class FusionPlacer_BeamSearch(PlacerBase):
 
             # Here we have to recover the traces without the pass through remat in order to be compliant
             # with thunder flow as we might have request for no remat.
-            trc = list(self.fusion_strat_helper.optimized_traces_time[time_result.index].values())[0][0]
-            self.bw_trace_candidates.attach_best_time_candidate(trc)
-            trc = list(self.fusion_strat_helper.optimized_traces_mem[memory_result.index].values())[0][0]
-            self.bw_trace_candidates.attach_best_mem_candidate(trc)
+            trc, placement_ctx = list(self.fusion_strat_helper.optimized_traces_time[time_result.index].values())[0]
+            self.bw_trace_candidates.attach_best_time_candidate(trc, placement_ctx)
+            trc, placement_ctx = list(self.fusion_strat_helper.optimized_traces_mem[memory_result.index].values())[0]
+            self.bw_trace_candidates.attach_best_mem_candidate(trc, placement_ctx)
 
             # Now, finally build the pair fw and bw traces
             # The current fw trace is set by the caller and we take it as is. All current bw traces optimizations are made with the fw trace set by the caller.
+
+            assert self.active_fw_trace_ctx[0] is not None and self.active_fw_trace_ctx[1] is not None
+
             for bw in self.bw_trace_candidates.iterable():
                 self.out_traces_candidates.append(
-                    OutputCandidate(fw=self.active_fw_trace_ctx[0], bw=bw, compile_opt=self.active_fw_trace_ctx[1])
+                    OutputCandidate(
+                        fw=self.active_fw_trace_ctx[0],
+                        bw=bw[0],
+                        executors_fw=self.active_fw_trace_ctx[1].placement,
+                        executors_bw=bw[1].placement,
+                        compile_opt=self.active_fw_trace_ctx[1].compile_options,
+                    )
                 )
 
         match self.trace_type:
@@ -1020,7 +1064,7 @@ class FusionPlacer_BeamSearch(PlacerBase):
             common_trace_blocks = repetead_trace_blocks(
                 trace=self.trace, min_block_size=optimize_common_blocks_min_size if optimize_common_blocks else -1
             )
-            # print(common_trace_blocks)
+            # A valid block is defined with at least 2 trace regions
             if len(common_trace_blocks) >= 2 and optimize_common_blocks:
                 logger.info(f"Running optimization with common blocks reduction. Found block indices in trace: {common_trace_blocks}")
                 reduced_trace = reduce_common_trace_blocks(trace=self.trace, common_blocks_in=common_trace_blocks)
@@ -1077,7 +1121,7 @@ class FusionPlacer_BeamSearch(PlacerBase):
                     fusion_executor_compile_options_to_activate=placement_ctx.compile_options,
                 )
                 self.fusion_strat_helper.optimized_traces_time.append(
-                    {ex.name: tuple([trc, placement_ctx.compile_options])}
+                    {ex.name: tuple([trc, placement_ctx])}
                 )
             for placement_ctx, ex in zip(
                 self.executor_placement_options.placement_options_mem, self.fusion_executors_saved_for_later
@@ -1091,7 +1135,7 @@ class FusionPlacer_BeamSearch(PlacerBase):
                     fusion_executor_compile_options_to_activate=placement_ctx.compile_options,
                 )
                 self.fusion_strat_helper.optimized_traces_mem.append(
-                    {ex.name: tuple([trc, placement_ctx.compile_options])}
+                    {ex.name: tuple([trc, placement_ctx])}
                 )
 
             # Filter out the optimal candidates for the current serach iteration
@@ -1120,9 +1164,9 @@ class FusionPlacer_BeamSearch(PlacerBase):
                     self.trace.bound_symbols = list(cached_self_trace.bound_symbols)
                     # Set the current active cached forward trace context
                     logger.info(
-                        f"Current fw cached ctx:\n{fw_trace_candidate.trace}\nOptions: {fw_trace_candidate.compile_opt.fusion_tag if fw_trace_candidate.compile_opt is not None else 'None'}"
+                        f"Current fw cached ctx:\n{fw_trace_candidate.trace}\nOptions: {fw_trace_candidate.ctx.compile_options.fusion_tag if fw_trace_candidate.ctx.compile_options is not None else 'None'}"
                     )
-                    self.active_fw_trace_ctx = fw_trace_candidate.trace, fw_trace_candidate.compile_opt
+                    self.active_fw_trace_ctx = fw_trace_candidate.trace, fw_trace_candidate.ctx
 
                     logger.debug(f"Input bw trace:\n{self.trace}")
 
@@ -1138,8 +1182,8 @@ class FusionPlacer_BeamSearch(PlacerBase):
                     self.trace = dce(self.trace)
 
                     # Enable any forward active compilation flag
-                    if fw_trace_candidate.compile_opt:
-                        wrap_fn_with_exeuctor_compile_option(fw_trace_candidate.compile_opt, _optimize)
+                    if fw_trace_candidate.ctx.compile_options:
+                        wrap_fn_with_exeuctor_compile_option(fw_trace_candidate.ctx.compile_options, _optimize)
                     else:
                         _optimize()
 
