@@ -16,8 +16,8 @@ from typing import Hashable
 from thunder.backend_optimizer.utils import benchmark_trace, BenchmarkResult, OptimizerType, TraceType
 import logging
 
-logging.basicConfig(level=logging.INFO, format="{name} {message}", style="{")
-logger = logging.getLogger("Autotuner: ")
+logging.basicConfig(level=logging.INFO, format="[{name}]: {message}", style="{")
+logger = logging.getLogger("Thunder Autotuner")
 
 
 class OptimizationAlgorithm(Enum):
@@ -1022,7 +1022,7 @@ class FusionPlacer_BeamSearch(PlacerBase):
             )
             # print(common_trace_blocks)
             if len(common_trace_blocks) >= 2 and optimize_common_blocks:
-                logger.info(f"Running optimization with common blocks reduction. Found {common_trace_blocks}")
+                logger.info(f"Running optimization with common blocks reduction. Found block indices in trace: {common_trace_blocks}")
                 reduced_trace = reduce_common_trace_blocks(trace=self.trace, common_blocks_in=common_trace_blocks)
                 logger.info(f"Operating on reduced trace (by cutting common transformer blocks):\n{reduced_trace}")
                 self.is_reduced = True

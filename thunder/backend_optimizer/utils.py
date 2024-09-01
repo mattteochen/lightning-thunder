@@ -1145,11 +1145,10 @@ def repetead_trace_blocks(
     if max_lcs < min_block_size:
         return []
 
-    print(f"\n\nMax lcs {max_lcs}")
-    # print(res)
+    from thunder.backend_optimizer.optimizer import logger
+    logger.debug(f"Max block lcs fouund: {max_lcs}")
+    logger.debug(f"{[(symbols[r[0]].output.name, symbols[r[1]].output.name) for r in res]}")
 
-    for r in res:
-        print(symbols[r[0]].output.name, symbols[r[1]].output.name)
     return [
         (original_map_indexes[symbols[t[0]].output.name], original_map_indexes[symbols[t[1]].output.name]) for t in res
     ]
