@@ -955,7 +955,11 @@ def reorder_executors_list(executors: Sequence, **kwargs):
 
 
 def symbol_hash(
-    *, bsym: BoundSymbol, ignore_returns_meta: bool = False, ignore_unpacks_meta: bool = False, ignore_unpacks: bool = False
+    *,
+    bsym: BoundSymbol,
+    ignore_returns_meta: bool = False,
+    ignore_unpacks_meta: bool = False,
+    ignore_unpacks: bool = False,
 ):
     """
     Hash a bound symbol relying on its metadata (symbol name, bound symbol inputsa and outputs).
@@ -1014,19 +1018,19 @@ def symbol_hash(
             tuple: _sequence_hash,
             list: _sequence_hash,
             Sequence: _sequence_hash,
-            CollectionProxy: _collection_hash
+            CollectionProxy: _collection_hash,
         }
 
         if ignore_returns_meta and bsym.sym.id == PrimIDs.RETURN:
-            return '{return}'
+            return "{return}"
 
-        if ignore_unpacks and bsym.sym.name.startswith('unpack'):
-            return ''
-        elif ignore_unpacks_meta and bsym.sym.name.startswith('unpack'):
+        if ignore_unpacks and bsym.sym.name.startswith("unpack"):
+            return ""
+        elif ignore_unpacks_meta and bsym.sym.name.startswith("unpack"):
             if bsym is not None and bsym.output is not None:
                 if isinstance(bsym.output, Sequence) and len(bsym.output) < 1:
-                    return ''
-            return '{general_unpack}'
+                    return ""
+            return "{general_unpack}"
 
         h = bsym.sym.name
         # Handle tensor as output or sequences
@@ -1177,6 +1181,7 @@ def repetead_trace_blocks(
         return []
 
     from thunder.backend_optimizer.optimizer import logger
+
     logger.debug(f"Max block lcs fouund: {max_lcs}")
     logger.debug(f"{[(symbols[r[0]].output.name, symbols[r[1]].output.name) for r in res]}")
 
@@ -1491,6 +1496,7 @@ def get_fw_bw_split_backends_options(bsym: BoundSymbol | None = None, **kwargs) 
 
     return options.get(bsym.sym.name, []) if bsym else options
 
+
 def trace_symbolic_hash(trace: TraceCtx) -> str:
     res = ""
     for b in trace.bound_symbols:
@@ -1499,7 +1505,9 @@ def trace_symbolic_hash(trace: TraceCtx) -> str:
     return res
 
 
-supported_file_modes = set(['json'])
+supported_file_modes = set(["json"])
+
+
 def dump_traces_placement(
     *,
     fw_trace: TraceCtx,
@@ -1508,7 +1516,7 @@ def dump_traces_placement(
     exs_bw: list[Executor],
     apply_remat: bool,
     file_name: str,
-    output_mode: str = 'json'
+    output_mode: str = "json",
 ) -> str:
     """
     Creates an output configuration file where the current forward and backward trace optimization are saved.
@@ -1524,19 +1532,20 @@ def dump_traces_placement(
     """
     assert output_mode in supported_file_modes
 
-    if output_mode == 'json':
+    if output_mode == "json":
         # We defined an unique trace by reading its bsym metadata, the proxies name are ignored as they may
         # change but the overall computation can remain the same.
         fw_hash = trace_symbolic_hash(fw_trace)
         bw_hash = trace_symbolic_hash(bw_trace)
 
-        executors_fw_name = [ex.name if (ex and ex.name != 'empty') else "None" for ex in exs_fw]
-        executors_bw_name = [ex.name if (ex and ex.name != 'empty') else "None" for ex in exs_bw]
+        executors_fw_name = [ex.name if (ex and ex.name != "empty") else "None" for ex in exs_fw]
+        executors_bw_name = [ex.name if (ex and ex.name != "empty") else "None" for ex in exs_bw]
 
         assert len(fw_trace.bound_symbols) == len(executors_fw_name)
         assert len(bw_trace.bound_symbols) == len(executors_bw_name)
 
         from thunder.backend_optimizer.optimizer import logger
+
         logger.info(
             f"Size match between len(fw_trace.bound_symbols)[{len(fw_trace.bound_symbols)}] and len(executors_fw_name)[{len(executors_fw_name)}]"
         )
@@ -1554,20 +1563,23 @@ def dump_traces_placement(
                 "hash": bw_hash,
                 "executors": executors_bw_name,
             },
-            "rematerialize": apply_remat
+            "rematerialize": apply_remat,
         }
         try:
             with open(file_name, "w") as file:
                 import json
+
                 json.dump(data, file)
         except Exception:
             from thunder.backend_optimizer.optimizer import logger
             import traceback
+
             err = traceback.format_exc()
             logger.error(f"Can not dump {file_name} file:\n{err}")
             return ""
         return file_name
     return ""
+
 
 def apply_results_from_file(
     *, fw_trace: TraceCtx, bw_trace: TraceCtx, file: str, input_mode: str = "json"
@@ -1596,23 +1608,23 @@ def apply_results_from_file(
 
     # Extend this if more executors will be added
     conversion_map: dict[str | Hashable, Executor] = {
-        'None': Executor('empty'),
+        "None": Executor("empty"),
         torch_ex.name: torch_ex,
         python_ex.name: python_ex,
         nvfuser_ex.name: nvfuser_ex,
         torch_compile_ex.name: torch_compile_ex,
         sdpa_ex.name: sdpa_ex,
         cudnn_ex.name: cudnn_ex,
-        fa3_ex.name: fa3_ex
+        fa3_ex.name: fa3_ex,
     }
 
-    if input_mode == 'json':
-        data = json.load(open(file, 'r'))
+    if input_mode == "json":
+        data = json.load(open(file, "r"))
 
         fw_hash = trace_symbolic_hash(fw_trace)
         bw_hash = trace_symbolic_hash(bw_trace)
-        assert fw_hash == data['forward']['hash']
-        assert bw_hash == data['backward']['hash']
+        assert fw_hash == data["forward"]["hash"]
+        assert bw_hash == data["backward"]["hash"]
 
         fw_executors_recovered: list[str] = data["forward"]["executors"]
         extrace_fw = assign_executors(
@@ -1630,7 +1642,8 @@ def apply_results_from_file(
             always_executors=get_always_executors(),
         )
 
-        if data['rematerialize']:
+        if data["rematerialize"]:
             from thunder.core.rematerialization import rematerialize_forward_and_backward
+
             return rematerialize_forward_and_backward(extrace_fw, extrace_bw)
         return extrace_fw, extrace_bw

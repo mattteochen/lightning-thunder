@@ -5,7 +5,7 @@ from thunder.backend_optimizer.utils import (
     map_executors_from_reduced_trace_to_complete_trace,
     operation_in_trace,
     wrap_fn_with_exeuctor_compile_option,
-    apply_results_from_file
+    apply_results_from_file,
 )
 from thunder.core.compile_data import get_compile_data
 from thunder.core.prims import PrimIDs
@@ -48,6 +48,7 @@ class FusionCompileOptionsHelper:
         self.id: PrimIDs = id
         self.impl: Callable = impl
         self.checker: Callable = checker
+
 
 class FusionExecutorsPlacementCtx:
     """
@@ -184,7 +185,7 @@ class OutputCandidate:
         executors_bw: list[Executor],
         compile_opt: FusionCompileOptionsHelper | None = None,
         cost: float = 0.0,
-        apply_remat: bool = False
+        apply_remat: bool = False,
     ) -> None:
         self.fw: TraceCtx = fw
         self.bw: TraceCtx = bw
@@ -219,6 +220,7 @@ class FusionStratHelper:
         self.optimized_traces_mem_benchmark_only: list[dict[str | Hashable, TraceCtx]] = []
         self.optimized_traces_time: list[dict[str | Hashable, tuple[TraceCtx, FusionExecutorsPlacementCtx | None]]] = []
         self.optimized_traces_time_benchmark_only: list[dict[str | Hashable, TraceCtx]] = []
+
 
 class ExecutorPlacementOptions:
     """
@@ -306,7 +308,7 @@ class PlacerBase:
         """
         pass
 
-    def attach_trace(self, *, trace: TraceCtx, trace_type: TraceType, apply_dce = True):
+    def attach_trace(self, *, trace: TraceCtx, trace_type: TraceType, apply_dce=True):
         """
         Attach a new trace for executors optimization.
 
@@ -450,7 +452,7 @@ class FusionPlacer_BeamSearch(PlacerBase):
                         executors_fw=executors_fw,
                         executors_bw=executors_bw,
                         cost=pair_cost_time,
-                        apply_remat=remat_applied
+                        apply_remat=remat_applied,
                     )
                     logger.debug(f"New best runtime pair (no remat):\n{best_pair_runtime}")
                     min_value_time = pair_cost_time
@@ -463,7 +465,7 @@ class FusionPlacer_BeamSearch(PlacerBase):
                         executors_fw=executors_fw,
                         executors_bw=executors_bw,
                         cost=pair_cost_mem,
-                        apply_remat=remat_applied
+                        apply_remat=remat_applied,
                     )
                     logger.debug(f"New best memory pair (no remat):\n{best_pair_memory}")
                     min_value_mem = pair_cost_mem
@@ -512,7 +514,9 @@ class FusionPlacer_BeamSearch(PlacerBase):
                         TraceCandidate(
                             trace=t,
                             ctx=ctx,
-                            label=(label + "_enabled_" + ctx.compile_options.fusion_tag) if ctx.compile_options is not None else label,
+                            label=(label + "_enabled_" + ctx.compile_options.fusion_tag)
+                            if ctx.compile_options is not None
+                            else label,
                         )
                     )
             self.cached_computational_trace = self.trace
@@ -1046,12 +1050,13 @@ class FusionPlacer_BeamSearch(PlacerBase):
         return [candidate.trace for candidate in self.cached_fw_traces]
 
     def get_optimal_fw_bw_traces(self) -> tuple[TraceCtx, TraceCtx]:
-        restore_file = self.compile_data.compile_options.get('autotune_restore_configuration', "")
+        restore_file = self.compile_data.compile_options.get("autotune_restore_configuration", "")
 
         # We apply the dce transform as it will be applied to the cached traces during the past optimization
         # (dce has been applied to the traces saved in the configuration).
         if restore_file:
             from thunder.core.transforms import dce
+
             fw_extrace, bw_extrace = apply_results_from_file(
                 fw_trace=dce(self.cached_computational_trace),
                 bw_trace=dce(self.cached_computational_backward_trace),
@@ -1064,7 +1069,7 @@ class FusionPlacer_BeamSearch(PlacerBase):
             else (self.best_pair_memory.fw, self.best_pair_memory.bw)
         )
 
-    def attach_trace(self, *, trace: TraceCtx, trace_type: TraceType, apply_dce: bool =True):
+    def attach_trace(self, *, trace: TraceCtx, trace_type: TraceType, apply_dce: bool = True):
         from thunder.core.transform_common import dce
 
         self.trace_type = trace_type
@@ -1076,7 +1081,7 @@ class FusionPlacer_BeamSearch(PlacerBase):
                 logger.info(f"New forward trace to optimize (strat = {self.optimizer_type}):\n{self.trace}")
             # TODO (matteochen): support bw trace optimization even though with no fw traces cached (computational trace?)
             case TraceType.BW:
-                if not self.compile_data.compile_options.get('autotune_restore_configuration', ''):
+                if not self.compile_data.compile_options.get("autotune_restore_configuration", ""):
                     if not self.cached_fw_traces:
                         raise AssertionError("Can not optimize backward traces before forward traces")
                 logger.info(f"New backward trace to optimize (strat = {self.optimizer_type}):\n{self.trace}")
@@ -1108,7 +1113,9 @@ class FusionPlacer_BeamSearch(PlacerBase):
             )
             # A valid block is defined with at least 2 trace regions
             if len(common_trace_blocks) >= 2 and optimize_common_blocks:
-                logger.info(f"Running optimization with common blocks reduction. Found block indices in trace: {common_trace_blocks}")
+                logger.info(
+                    f"Running optimization with common blocks reduction. Found block indices in trace: {common_trace_blocks}"
+                )
                 reduced_trace = reduce_common_trace_blocks(trace=self.trace, common_blocks_in=common_trace_blocks)
                 logger.info(f"Operating on reduced trace (by cutting common transformer blocks):\n{reduced_trace}")
                 self.is_reduced = True
@@ -1162,9 +1169,7 @@ class FusionPlacer_BeamSearch(PlacerBase):
                     compile_data=self.compile_data,
                     fusion_executor_compile_options_to_activate=placement_ctx.compile_options,
                 )
-                self.fusion_strat_helper.optimized_traces_time.append(
-                    {ex.name: tuple([trc, placement_ctx])}
-                )
+                self.fusion_strat_helper.optimized_traces_time.append({ex.name: tuple([trc, placement_ctx])})
             for placement_ctx, ex in zip(
                 self.executor_placement_options.placement_options_mem, self.fusion_executors_saved_for_later
             ):
@@ -1176,21 +1181,19 @@ class FusionPlacer_BeamSearch(PlacerBase):
                     compile_data=self.compile_data,
                     fusion_executor_compile_options_to_activate=placement_ctx.compile_options,
                 )
-                self.fusion_strat_helper.optimized_traces_mem.append(
-                    {ex.name: tuple([trc, placement_ctx])}
-                )
+                self.fusion_strat_helper.optimized_traces_mem.append({ex.name: tuple([trc, placement_ctx])})
 
             # Filter out the optimal candidates for the current serach iteration
             self._filter_candidates()
 
-        restore_file_name = self.compile_data.compile_options.get('autotune_restore_configuration', "")
+        restore_file_name = self.compile_data.compile_options.get("autotune_restore_configuration", "")
 
         match self.trace_type:
             case TraceType.FW:
                 # Perform optimization only if we don't restore it from a past configuration
                 if restore_file_name:
                     self.cached_computational_trace = self.trace
-                    logger.info('Skipping forward trace optimization as it will be restored from a configuration file.')
+                    logger.info("Skipping forward trace optimization as it will be restored from a configuration file.")
                     return
 
                 # Clear any previous results
@@ -1201,7 +1204,9 @@ class FusionPlacer_BeamSearch(PlacerBase):
             case TraceType.BW:
                 # Perform optimization only if we don't restore it from a past configuration
                 if restore_file_name:
-                    logger.info('Skipping backward trace optimization as it will be restored from a configuration file.')
+                    logger.info(
+                        "Skipping backward trace optimization as it will be restored from a configuration file."
+                    )
                     self.cached_computational_backward_trace = self.trace
                     return
 
@@ -1249,9 +1254,9 @@ class FusionPlacer_BeamSearch(PlacerBase):
                 )
 
                 # Save the tuning if requested
-                do_save = self.compile_data.compile_options.get('autotune_save_configuration', False)
+                do_save = self.compile_data.compile_options.get("autotune_save_configuration", False)
                 if do_save:
-                    model_name = self.compile_data.compile_options.get('model_name', "unknown")
+                    model_name = self.compile_data.compile_options.get("model_name", "unknown")
                     file_name = f"{model_name}_runtime.json"
                     dump_traces_placement(
                         fw_trace=self.cached_computational_trace,
@@ -1310,7 +1315,7 @@ class BackendOptimizer:
         """
         self.optimizer.optimize()
 
-    def attach_trace(self, *, trace: TraceCtx, trace_type: TraceType, apply_dce = True):
+    def attach_trace(self, *, trace: TraceCtx, trace_type: TraceType, apply_dce=True):
         """
         Attach a new trace for executors optimization.
 
