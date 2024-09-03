@@ -6,6 +6,7 @@ from thunder.core.dtypes import to_torch_dtype
 from thunder.core.prims import PrimIDs
 from thunder.core.proxies import (
     AnyProxy,
+    CollectionProxy,
     FloatProxy,
     IntegerProxy,
     NumberProxy,
@@ -16,7 +17,7 @@ from thunder.core.proxies import (
 )
 from thunder.core.symbol import BoundSymbol, Symbol
 from thunder.core.trace import TraceCtx, from_trace, get_tracectx, reset_tracectx, set_tracectx
-from thunder.extend import Executor, FusionExecutor, OperatorExecutor
+from thunder.extend import Executor, FusionExecutor, OperatorExecutor, get_always_executors
 from thunder.core.utils import check, safe_map_flat
 import thunder.core.transforms as transforms
 from itertools import chain
@@ -953,19 +954,27 @@ def reorder_executors_list(executors: Sequence, **kwargs):
     return reordered
 
 
-def symbol_hash(bsym: BoundSymbol):
+def symbol_hash(
+    *, bsym: BoundSymbol, ignore_returns_meta: bool = False, ignore_unpacks_meta: bool = False, ignore_unpacks: bool = False
+):
     """
     Hash a bound symbol relying on its metadata (symbol name, bound symbol inputsa and outputs).
     No hash functions will be applied in order to leave the output readable.
 
     Args:
         bsym: A bound symbol.
+        ignore_returns_meta: If True, return statement metadata will be ignored
+        ignore_unpacks_meta: If True, unpack statements metadata will be ignored
+        ignore_unpacks: If True, unpack symbols will not be included.
     """
 
     def _tensor_hash(t: TensorProxy) -> str:
         assert t.dtype
         shapes = [str(s) for s in t.shape]
-        return "{" + "-".join(shapes) + "/" + str(t.device) + t.dtype.full_name + str(t.requires_grad) + "}"
+        return "{" + "-".join(shapes) + "," + str(t.device) + "," + t.dtype.full_name + "," + str(t.requires_grad) + "}"
+
+    def _collection_hash(c: CollectionProxy) -> str:
+        return "{Collection," + c.name + "," + str((type(c.collection()))) + "," + str(len(c.collection())) + "}"
 
     def _number_hash(t: NumberProxy) -> str:
         return "{" + str(t.value) + "}"
@@ -980,7 +989,7 @@ def symbol_hash(bsym: BoundSymbol):
         ret = "["
         for e in s:
             if e is None:
-                ret += "{None}"
+                ret += "{None},"
             elif isinstance(e, TensorProxy):
                 ret += _tensor_hash(e) + ","
             elif isinstance(e, NumberProxy):
@@ -988,30 +997,52 @@ def symbol_hash(bsym: BoundSymbol):
             elif isinstance(e, Sequence):
                 ret += _sequence_hash(e) + ","
             elif isinstance(e, AnyProxy):
-                ret += _any_proxy_hash(e)
+                ret += _any_proxy_hash(e) + ","
+            elif isinstance(e, CollectionProxy):
+                ret += _collection_hash(e) + ","
             elif isinstance(e, int) or isinstance(e, float) or isinstance(e, bool):
-                ret += f"{(type(e))}"
+                ret += "{" + f"{(type(e))}" + "},"
             elif isinstance(e, dtype):
-                ret += f"{(type(e))}"
+                ret += "{" + f"{(type(e))}" + "},"
             else:
                 raise RuntimeError(f"Not implemented {type(e)}. Failed bsym: {bsym}")
         return ret + "]"
 
     def _hash(bsym: BoundSymbol) -> str:
+        match = {
+            TensorProxy: _tensor_hash,
+            tuple: _sequence_hash,
+            list: _sequence_hash,
+            Sequence: _sequence_hash,
+            CollectionProxy: _collection_hash
+        }
+
+        if ignore_returns_meta and bsym.sym.id == PrimIDs.RETURN:
+            return '{return}'
+
+        if ignore_unpacks and bsym.sym.name.startswith('unpack'):
+            return ''
+        elif ignore_unpacks_meta and bsym.sym.name.startswith('unpack'):
+            if bsym is not None and bsym.output is not None:
+                if isinstance(bsym.output, Sequence) and len(bsym.output) < 1:
+                    return ''
+            return '{general_unpack}'
+
         h = bsym.sym.name
         # Handle tensor as output or sequences
-        if not isinstance(bsym.output, TensorProxy) and not isinstance(bsym.output, Sequence):
+        if type(bsym.output) not in match.keys():
             raise RuntimeError(f"type {type(bsym.output)} not implemented")
         h += (
             "#out:"
-            + (_tensor_hash(bsym.output) if isinstance(bsym.output, TensorProxy) else _sequence_hash(bsym.output))
+            + match[type(bsym.output)](bsym.output)
             + "#in:"
             # Args is always a tuple
             + _sequence_hash(bsym.args)
         )
         return h
 
-    return _hash(bsym)
+    h = _hash(bsym)
+    return ("{" + h + "}") if h else h
 
 
 # Both lhs and rhs are included in the range
@@ -1073,7 +1104,7 @@ def repetead_trace_blocks(
         lcs = 0
         while start_indexes[0] < max_first_len and start_indexes[-1] < max_last_len:
             # Get all the hashes
-            hashes = [symbol_hash(symbols[i]) for i in start_indexes]
+            hashes = [symbol_hash(bsym=symbols[i]) for i in start_indexes]
             # Advance if all the hashes coincides
             uniques = set(hashes)
             if len(uniques) == 1:
@@ -1092,7 +1123,7 @@ def repetead_trace_blocks(
             break
         if _skip(bsym):
             continue
-        h = symbol_hash(bsym)
+        h = symbol_hash(bsym=bsym)
         if h in bsym_indexes:
             bsym_indexes[h].append(i)
         else:
@@ -1114,7 +1145,7 @@ def repetead_trace_blocks(
         if _skip(bsym):
             continue
 
-        h = symbol_hash(bsym)
+        h = symbol_hash(bsym=bsym)
         # Normally, bsym are expected to output a TensorProxy
         if not isinstance(bsym.output, Proxy) or h in seen_hashes or _range_seen(i, seen_ranges):
             continue
@@ -1459,3 +1490,147 @@ def get_fw_bw_split_backends_options(bsym: BoundSymbol | None = None, **kwargs) 
         }
 
     return options.get(bsym.sym.name, []) if bsym else options
+
+def trace_symbolic_hash(trace: TraceCtx) -> str:
+    res = ""
+    for b in trace.bound_symbols:
+        # Ignoring unpacks as when tuple has size zero, there are cases when None is given as static args/output and cases where a zero sized tuple is returned.
+        res += symbol_hash(bsym=b, ignore_returns_meta=True, ignore_unpacks_meta=True)
+    return res
+
+
+supported_file_modes = set(['json'])
+def dump_traces_placement(
+    *,
+    fw_trace: TraceCtx,
+    bw_trace: TraceCtx,
+    exs_fw: list[Executor],
+    exs_bw: list[Executor],
+    apply_remat: bool,
+    file_name: str,
+    output_mode: str = 'json'
+) -> str:
+    """
+    Creates an output configuration file where the current forward and backward trace optimization are saved.
+
+    Args:
+        fw_trace: A forward trace.
+        bw_trace: A backward trace.
+        exs_fw: Forward trace region executors.
+        exs_bw: Backward trace region executors.
+        apply_remat: If forward and backward traces are output of rematerialize_forward_and_backward
+        file_name: The output file name.
+        output_mode: The output file format. Must be one of ['json'].
+    """
+    assert output_mode in supported_file_modes
+
+    if output_mode == 'json':
+        # We defined an unique trace by reading its bsym metadata, the proxies name are ignored as they may
+        # change but the overall computation can remain the same.
+        fw_hash = trace_symbolic_hash(fw_trace)
+        bw_hash = trace_symbolic_hash(bw_trace)
+
+        executors_fw_name = [ex.name if (ex and ex.name != 'empty') else "None" for ex in exs_fw]
+        executors_bw_name = [ex.name if (ex and ex.name != 'empty') else "None" for ex in exs_bw]
+
+        assert len(fw_trace.bound_symbols) == len(executors_fw_name)
+        assert len(bw_trace.bound_symbols) == len(executors_bw_name)
+
+        from thunder.backend_optimizer.optimizer import logger
+        logger.info(
+            f"Size match between len(fw_trace.bound_symbols)[{len(fw_trace.bound_symbols)}] and len(executors_fw_name)[{len(executors_fw_name)}]"
+        )
+        logger.info(
+            f"Size match between len(bw_trace.bound_symbols)[{len(bw_trace.bound_symbols)}] and len(executors_bw_name)[{len(executors_bw_name)}]"
+        )
+        logger.info(f"Saving configuration in {file_name}")
+
+        data = {
+            "forward": {
+                "hash": fw_hash,
+                "executors": executors_fw_name,
+            },
+            "backward": {
+                "hash": bw_hash,
+                "executors": executors_bw_name,
+            },
+            "rematerialize": apply_remat
+        }
+        try:
+            with open(file_name, "w") as file:
+                import json
+                json.dump(data, file)
+        except Exception:
+            from thunder.backend_optimizer.optimizer import logger
+            import traceback
+            err = traceback.format_exc()
+            logger.error(f"Can not dump {file_name} file:\n{err}")
+            return ""
+        return file_name
+    return ""
+
+def apply_results_from_file(
+    *, fw_trace: TraceCtx, bw_trace: TraceCtx, file: str, input_mode: str = "json"
+) -> tuple[TraceCtx, TraceCtx]:
+    """
+    Generate a transformed forward and backward trace from a configuration file.
+    Compatibility check is performed on both traces.
+
+    Args:
+        fw_trace: The original augmented forward trace.
+        bw_trace: The original backward trace.
+        file: The configuration file.
+        input_mode: The configuration structure. Must be one of ['json'].
+    """
+    import json
+    from thunder.executors.torchex import ex as torch_ex
+    from thunder.executors.pythonex import ex as python_ex
+    from thunder.executors.sdpaex import sdpa_ex
+    from thunder.executors.cudnnex import cudnn_ex
+    from thunder.executors.fa3ex import fa3_ex
+    from thunder.executors.nvfuserex_impl import ex as nvfuser_ex
+    from thunder.executors.torch_compile import torch_compile_ex
+    from thunder.executors.torch_autograd import update_bw_from_forward_optimization
+
+    assert input_mode in supported_file_modes
+
+    # Extend this if more executors will be added
+    conversion_map: dict[str | Hashable, Executor] = {
+        'None': Executor('empty'),
+        torch_ex.name: torch_ex,
+        python_ex.name: python_ex,
+        nvfuser_ex.name: nvfuser_ex,
+        torch_compile_ex.name: torch_compile_ex,
+        sdpa_ex.name: sdpa_ex,
+        cudnn_ex.name: cudnn_ex,
+        fa3_ex.name: fa3_ex
+    }
+
+    if input_mode == 'json':
+        data = json.load(open(file, 'r'))
+
+        fw_hash = trace_symbolic_hash(fw_trace)
+        bw_hash = trace_symbolic_hash(bw_trace)
+        assert fw_hash == data['forward']['hash']
+        assert bw_hash == data['backward']['hash']
+
+        fw_executors_recovered: list[str] = data["forward"]["executors"]
+        extrace_fw = assign_executors(
+            in_trace=fw_trace,
+            executors_list=[conversion_map[ex] for ex in fw_executors_recovered],
+            empty_str="empty",
+            always_executors=get_always_executors(),
+        )
+        bw_executors_recovered: list[str] = data["backward"]["executors"]
+        bw_trace = update_bw_from_forward_optimization(fw=extrace_fw, bw=bw_trace)
+        extrace_bw = assign_executors(
+            in_trace=bw_trace,
+            executors_list=[conversion_map[ex] for ex in bw_executors_recovered],
+            empty_str="empty",
+            always_executors=get_always_executors(),
+        )
+
+        if data['rematerialize']:
+            from thunder.core.rematerialization import rematerialize_forward_and_backward
+            return rematerialize_forward_and_backward(extrace_fw, extrace_bw)
+        return extrace_fw, extrace_bw

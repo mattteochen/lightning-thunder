@@ -639,3 +639,77 @@ def test_reduce_common_trace_blocks():
     for b in reduced_trace.bound_symbols:
         if hasattr(b.output, "name"):
             assert b.output.name not in should_remove
+
+def test_save_configuration():
+    class _Linear(torch.nn.Module):
+        def __init__(self, a, b) -> None:
+            super().__init__()
+            self.linear = torch.nn.Linear(a, b)
+
+        def forward(self, x):
+            t0 = x * x
+            return self.linear(t0)
+
+    model = _Linear(2, 2)
+    jitted = thunder.jit(
+        model,
+        autotune_type='runtime',
+        model_name='model',
+        autotune_save_configuration=True,
+    )
+    jitted_recovered = thunder.jit(
+        model,
+        autotune_type='runtime',
+        autotune_restore_configuration='model_runtime.json',
+    )
+
+    x = torch.randn(2,2)
+    a = jitted(x)
+    b = jitted_recovered(x)
+
+    torch.testing.assert_close(a, b)
+
+    for bsym_a, bsym_b in zip(
+        thunder.last_traces(jitted)[-1].bound_symbols, thunder.last_traces(jitted_recovered)[-1].bound_symbols
+    ):
+        assert (bsym_a.sym.executor == bsym_b.sym.executor)
+
+@requiresCUDA
+def test_save_configuration_cuda():
+    class _LLaMAMLP(torch.nn.Module):
+        def __init__(self, n_embd, intermediate_size) -> None:
+            super().__init__()
+            self.fc_1 = torch.nn.Linear(n_embd, intermediate_size, bias=False)
+            self.fc_2 = torch.nn.Linear(n_embd, intermediate_size, bias=False)
+            self.proj = torch.nn.Linear(intermediate_size, n_embd, bias=False)
+
+        def forward(self, x: torch.Tensor) -> torch.Tensor:
+            x_fc_1 = self.fc_1(x)
+            x_fc_2 = self.fc_2(x)
+            x = torch.nn.functional.silu(x_fc_1) * x_fc_2
+            return self.proj(x)
+    with torch.device('cuda'):
+
+        model = _LLaMAMLP(4, 4)
+        jitted = thunder.jit(
+            model,
+            autotune_type='memory',
+            model_name='llamamlp',
+            autotune_save_configuration=True,
+        )
+        jitted_recovered = thunder.jit(
+            model,
+            autotune_type='runtime',
+            autotune_restore_configuration='llamamlp_memory.json',
+        )
+
+        x = torch.randn(4, 4)
+        a = jitted(x)
+        b = jitted_recovered(x)
+
+        torch.testing.assert_close(a, b)
+
+        for bsym_a, bsym_b in zip(
+            thunder.last_traces(jitted)[-1].bound_symbols, thunder.last_traces(jitted_recovered)[-1].bound_symbols
+        ):
+            assert (bsym_a.sym.executor == bsym_b.sym.executor)
