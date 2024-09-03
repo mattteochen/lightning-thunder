@@ -653,42 +653,6 @@ def test_reduce_common_trace_blocks():
         if hasattr(b.output, "name"):
             assert b.output.name not in should_remove
 
-
-def test_save_configuration():
-    class _Linear(torch.nn.Module):
-        def __init__(self, a, b) -> None:
-            super().__init__()
-            self.linear = torch.nn.Linear(a, b)
-
-        def forward(self, x):
-            t0 = x * x
-            return self.linear(t0)
-
-    model = _Linear(2, 2)
-    jitted = thunder.jit(
-        model,
-        autotune_type="runtime",
-        model_name="model",
-        autotune_save_configuration=True,
-    )
-    jitted_recovered = thunder.jit(
-        model,
-        autotune_type="runtime",
-        autotune_restore_configuration="model_runtime.json",
-    )
-
-    x = torch.randn(2, 2)
-    a = jitted(x)
-    b = jitted_recovered(x)
-
-    torch.testing.assert_close(a, b)
-
-    for bsym_a, bsym_b in zip(
-        thunder.last_traces(jitted)[-1].bound_symbols, thunder.last_traces(jitted_recovered)[-1].bound_symbols
-    ):
-        assert bsym_a.sym.executor == bsym_b.sym.executor
-
-
 @requiresCUDA
 def test_save_configuration_cuda():
     class _LLaMAMLP(torch.nn.Module):
