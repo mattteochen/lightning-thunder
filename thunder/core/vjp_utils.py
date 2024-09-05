@@ -255,7 +255,7 @@ def make_aug_forward_and_backward(bsym: BoundSymbol) -> tuple[Callable, Callable
         # as they are expected to work on same input size, shape and dtype).
         optmimizer_common_transformer_block = cd.compile_options.get('autotune_optimize_common_blocks', False)
         # The generated hash will rely on the operation, input args metadata and output metadata
-        h = symbol_hash(bsym)
+        h = symbol_hash(bsym=bsym)
         # Recover the cache stored in the compile data
         autotuner_bsym_with_gradfn_executor_cache = cd.autotuner_bsym_with_gradfn_executor_cache
 

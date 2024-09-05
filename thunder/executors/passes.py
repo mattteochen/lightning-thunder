@@ -157,7 +157,7 @@ def autotune_transform_for_execution(
         trace = apply_bucketing_to_grad_allreduce(trace)
 
     # Attach new trace and set the debug file name
-    optimizer_context.attach_trace(trace=trace, trace_type=trace_type)
+    optimizer_context.attach_trace(trace=trace, trace_type=trace_type, apply_dce=trace_type == TraceType.FW)
     optimizer_context.log_file_name = f"autotune_transform_for_execution_{sig_name}.log"
     # Forward traces are cached inside the context
     optimizer_context.optimize()
@@ -176,11 +176,13 @@ def autotune_transform_for_execution(
     # Assign the trace provenance
     match trace_type:
         case TraceType.FW:
-            fw_traces = optimizer_context.get_optimal_fw_traces()
-            for trc in fw_traces:
-                trc.set_provenance(
-                    TraceProvenance(f"Autotuned transform for execution (took {elapsed_time_millis} milliseconds)")
-                )
+            cd = get_compile_data()
+            if not cd or not cd.compile_options.get('autotune_restore_configuration', ""):
+                fw_traces = optimizer_context.get_optimal_fw_traces()
+                for trc in fw_traces:
+                    trc.set_provenance(
+                        TraceProvenance(f"Autotuned transform for execution (took {elapsed_time_millis} milliseconds)")
+                    )
             return None
         case TraceType.BW:
             bw_extrace.set_provenance(

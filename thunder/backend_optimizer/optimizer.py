@@ -1,9 +1,11 @@
 from collections.abc import Callable, Sequence
 from enum import Enum
 from thunder.backend_optimizer.utils import (
+    dump_traces_placement,
     map_executors_from_reduced_trace_to_complete_trace,
     operation_in_trace,
     wrap_fn_with_exeuctor_compile_option,
+    apply_results_from_file,
 )
 from thunder.core.compile_data import get_compile_data
 from thunder.core.prims import PrimIDs
@@ -48,23 +50,39 @@ class FusionCompileOptionsHelper:
         self.checker: Callable = checker
 
 
+class FusionExecutorsPlacementCtx:
+    """
+    Represents a executor placement context.
+
+    Attributes:
+        placement: A list of executors.
+        compile_options: Any compile options being used for the fusion executor contained in the placement.
+    """
+
+    def __init__(self, *, placement: list, compile_options: FusionCompileOptionsHelper | None = None) -> None:
+        self.placement: list = placement
+        self.compile_options: FusionCompileOptionsHelper | None = compile_options
+
+
 class TraceCandidate:
     """
     Represents an optimal trace candidate.
 
     Attributes:
         trace: The candidate trace.
-        compile_opt: Any compile options used for the current candidate.
-        label: A generic label.
-        symbol_tag: The symbol name
-        id: The symbol id.
-        impl: A callable implementation.
-        checker: A callable checker.
+        ctx: Trace's placement context.
+        label: A generic label to identify this candidate.
     """
 
-    def __init__(self, *, trace: TraceCtx, compile_opt: FusionCompileOptionsHelper | None = None, label: str) -> None:
+    def __init__(
+        self,
+        *,
+        trace: TraceCtx,
+        ctx: FusionExecutorsPlacementCtx,
+        label: str,
+    ) -> None:
         self.trace: TraceCtx = trace
-        self.compile_opt: FusionCompileOptionsHelper | None = compile_opt
+        self.ctx: FusionExecutorsPlacementCtx = ctx
         self.label: str = label
 
 
@@ -75,21 +93,21 @@ class TraceCandidates:
     Attributes:
         best_time: The trace with the optimal runtime.
         best_mem: The trace with the optimal peak memory consumption.
-        compile_opt_time: Any compile options used for a fusion executor regarding the first trace.
-        compile_opt_mem: Any compile options used for a fusion executor regarding the second trace.
+        placement_ctx_time: Trace placement context: exeuctors and any applied fusion compile options.
+        placement_ctx_mem: Trace placement context: exeuctors and any applied fusion compile options.
     """
 
     def __init__(
         self,
         best_time: TraceCtx | None = None,
         best_mem: TraceCtx | None = None,
-        compile_opt_time: FusionCompileOptionsHelper | None = None,
-        compile_opt_mem: FusionCompileOptionsHelper | None = None,
+        placement_ctx_time: FusionExecutorsPlacementCtx | None = None,
+        placement_ctx_mem: FusionExecutorsPlacementCtx | None = None,
     ) -> None:
         self.best_time: TraceCtx | None = best_time
         self.best_mem: TraceCtx | None = best_mem
-        self.compile_opt_time: FusionCompileOptionsHelper | None = compile_opt_time
-        self.compile_opt_mem: FusionCompileOptionsHelper | None = compile_opt_mem
+        self.placement_ctx_time: FusionExecutorsPlacementCtx | None = placement_ctx_time
+        self.placement_ctx_mem: FusionExecutorsPlacementCtx | None = placement_ctx_mem
 
     def __repr__(self) -> str:
         """
@@ -103,29 +121,45 @@ class TraceCandidates:
         """
         return False if self.best_time is None or self.best_mem is None else True
 
-    def attach_best_time_candidate(self, trace: TraceCtx):
+    def attach_best_time_candidate(self, trace: TraceCtx, ctx: FusionExecutorsPlacementCtx | None = None):
         """
         Attach a new best time trace result.
+
+        Args:
+            trace: The trace to assign.
+            ctx: The trace placement context.
         """
         self.best_time = trace
+        self.placement_ctx_time = ctx
 
-    def attach_best_mem_candidate(self, trace: TraceCtx):
+    def attach_best_mem_candidate(self, trace: TraceCtx, ctx: FusionExecutorsPlacementCtx | None = None):
         """
         Attach a new best memory trace result.
+
+        Args:
+            trace: The trace to assign.
+            ctx: The trace placement context.
         """
         self.best_mem = trace
+        self.placement_ctx_mem = ctx
 
-    def iterable(self) -> tuple[TraceCtx | None, TraceCtx | None]:
+    def iterable(self) -> tuple[tuple, tuple]:
         """
-        Returns an iterable object over the traces contained in the current object.
+        Returns an iterable object over the traces paired with their contexts.
+        """
+        return (self.best_time, self.placement_ctx_time), (self.best_mem, self.placement_ctx_mem)
+
+    def trace_ctx_iterable(self) -> tuple[TraceCtx | None, TraceCtx | None]:
+        """
+        Returns an iterable object over the traces.
         """
         return self.best_time, self.best_mem
 
-    def compile_opt_iterables(self) -> tuple[FusionCompileOptionsHelper | None, FusionCompileOptionsHelper | None]:
+    def placement_ctx_iterable(self) -> tuple[FusionExecutorsPlacementCtx | None, FusionExecutorsPlacementCtx | None]:
         """
-        Returns an iterable object over the compile options used in the traces contained in the current object.
+        Returns an iterable object over the placement contexts.
         """
-        return self.compile_opt_time, self.compile_opt_mem
+        return self.placement_ctx_time, self.placement_ctx_mem
 
 
 class OutputCandidate:
@@ -135,17 +169,31 @@ class OutputCandidate:
     Attributes:
         fw: The forward trace.
         bw: The backward trace.
-        compile_opt: Any compile options being used for a fusion executor.
+        executors_fw: The forward trace regions' executors
+        executors_bw: The backward trace regions' executors
+        compile_opt: Any compile options being used for a fusion executor in the forward trace.
         tot_cost: The total cost to execute the pair (ms for a time strategy and GB for a memory strategy).
+        apply_remat: If rematerialization has been applied.
     """
 
     def __init__(
-        self, *, fw: TraceCtx, bw: TraceCtx, compile_opt: FusionCompileOptionsHelper | None = None, cost: float = 0.0
+        self,
+        *,
+        fw: TraceCtx,
+        bw: TraceCtx,
+        executors_fw: list[Executor],
+        executors_bw: list[Executor],
+        compile_opt: FusionCompileOptionsHelper | None = None,
+        cost: float = 0.0,
+        apply_remat: bool = False,
     ) -> None:
         self.fw: TraceCtx = fw
         self.bw: TraceCtx = bw
+        self.executors_fw: list[Executor] = executors_fw
+        self.executors_bw: list[Executor] = executors_bw
         self.compile_opt: FusionCompileOptionsHelper | None = compile_opt
         self.tot_cost: float = cost
+        self.apply_remat = apply_remat
 
     def __repr__(self) -> str:
         """
@@ -168,24 +216,10 @@ class FusionStratHelper:
 
     def __init__(self) -> None:
         self.supported_executors: set = set(["nvfuser", "torchcompile"])
-        self.optimized_traces_mem: list[dict[str | Hashable, tuple[TraceCtx, FusionCompileOptionsHelper | None]]] = []
+        self.optimized_traces_mem: list[dict[str | Hashable, tuple[TraceCtx, FusionExecutorsPlacementCtx | None]]] = []
         self.optimized_traces_mem_benchmark_only: list[dict[str | Hashable, TraceCtx]] = []
-        self.optimized_traces_time: list[dict[str | Hashable, tuple[TraceCtx, FusionCompileOptionsHelper | None]]] = []
+        self.optimized_traces_time: list[dict[str | Hashable, tuple[TraceCtx, FusionExecutorsPlacementCtx | None]]] = []
         self.optimized_traces_time_benchmark_only: list[dict[str | Hashable, TraceCtx]] = []
-
-
-class FusionExecutorsPlacementCtx:
-    """
-    Represents a executor placement context.
-
-    Attributes:
-        placement: A list of executors.
-        compile_options: Any compile options being used for the fusion executor contained in the placement.
-    """
-
-    def __init__(self, *, placement: list, compile_options: FusionCompileOptionsHelper | None = None) -> None:
-        self.placement: list = placement
-        self.compile_options: FusionCompileOptionsHelper | None = compile_options
 
 
 class ExecutorPlacementOptions:
@@ -216,8 +250,10 @@ class PlacerBase:
         log_file_name: The output log file name if generated.
         produce_log: A tuning parameter to control log file generation.
         optimizer_type: The optimization target.
-        active_fw_trace_ctx: An active set forward trace (in the object scope).
-        cached_fw_traces: Cached forward traces.
+        active_fw_trace_ctx: An active forward trace set to optimize backward.
+        cached_fw_traces: Cached optimized forward traces.
+        cached_computational_trace: Original computational trace
+        cached_computational_backward_trace: Original computational backward trace
         bw_trace_candidates: An instance of trace candidates.
         best_pair_runtime: A final traace pair targetting the compute time.
         best_pair_memory: A final traace pair targetting the peak memory consumption.
@@ -251,8 +287,10 @@ class PlacerBase:
 
         self.optimizer_type: OptimizerType = optimizer_type
 
-        self.active_fw_trace_ctx: tuple[TraceCtx | None, FusionCompileOptionsHelper | None] = None, None
+        self.active_fw_trace_ctx: tuple[TraceCtx | None, FusionExecutorsPlacementCtx | None] = None, None
         self.cached_fw_traces: list[TraceCandidate] = []
+        self.cached_computational_trace: TraceCtx = TraceCtx()
+        self.cached_computational_backward_trace: TraceCtx = TraceCtx()
         self.bw_trace_candidates: TraceCandidates = TraceCandidates()
         self.out_traces_candidates: list[OutputCandidate] = []
         self.best_pair_runtime: OutputCandidate
@@ -270,7 +308,7 @@ class PlacerBase:
         """
         pass
 
-    def attach_trace(self, *, trace: TraceCtx, trace_type: TraceType):
+    def attach_trace(self, *, trace: TraceCtx, trace_type: TraceType, apply_dce=True):
         """
         Attach a new trace for executors optimization.
 
@@ -353,7 +391,7 @@ class FusionPlacer_BeamSearch(PlacerBase):
     ################################################## Internal methods ##################################################
     """
 
-    def _best_runtime_and_memory_candidates(self, candidates):
+    def _best_runtime_and_memory_candidates(self, candidates: Sequence[OutputCandidate]):
         """
         Retrive the best compute time and peak memory consumption trace pairs.
 
@@ -376,9 +414,11 @@ class FusionPlacer_BeamSearch(PlacerBase):
             else:
                 remat_fw, remat_bw = rematerialize_forward_and_backward(pair.fw, pair.bw)
             # Create pair final options by applying final optimizations: cudagraphs and rematerialization
-            pair_options: list[tuple[TraceCtx, TraceCtx]] = [
-                (pair.fw, pair.bw),
-                (remat_fw, remat_bw),
+            pair_options: list[
+                tuple[TraceCtx, TraceCtx, FusionCompileOptionsHelper | None, list[Executor], list[Executor], bool]
+            ] = [
+                (pair.fw, pair.bw, pair.compile_opt, pair.executors_fw, pair.executors_bw, False),
+                (remat_fw, remat_bw, pair.compile_opt, pair.executors_fw, pair.executors_bw, True),
             ]
             # if self.compile_data.use_cudagraphs is not None and self.compile_data.use_cudagraphs:
             #     from thunder.executors.cudagraphex import cudagraphex
@@ -391,8 +431,7 @@ class FusionPlacer_BeamSearch(PlacerBase):
             #     )
             # Select the best options
             for pair_option in pair_options:
-                fw = pair_option[0]
-                bw = pair_option[1]
+                fw, bw, compile_opt, executors_fw, executors_bw, remat_applied = pair_option
 
                 pair_cost_time = 0
                 pair_cost_mem = 0
@@ -406,12 +445,28 @@ class FusionPlacer_BeamSearch(PlacerBase):
                 pair_cost_mem = pair_cost_mem + m
 
                 if pair_cost_time < min_value_time:
-                    best_pair_runtime = OutputCandidate(fw=fw, bw=bw, cost=pair_cost_time)
+                    best_pair_runtime = OutputCandidate(
+                        fw=fw,
+                        bw=bw,
+                        compile_opt=compile_opt,
+                        executors_fw=executors_fw,
+                        executors_bw=executors_bw,
+                        cost=pair_cost_time,
+                        apply_remat=remat_applied,
+                    )
                     logger.debug(f"New best runtime pair (no remat):\n{best_pair_runtime}")
                     min_value_time = pair_cost_time
 
                 if pair_cost_mem < min_value_mem:
-                    best_pair_memory = OutputCandidate(fw=fw, bw=bw, cost=pair_cost_mem)
+                    best_pair_memory = OutputCandidate(
+                        fw=fw,
+                        bw=bw,
+                        compile_opt=compile_opt,
+                        executors_fw=executors_fw,
+                        executors_bw=executors_bw,
+                        cost=pair_cost_mem,
+                        apply_remat=remat_applied,
+                    )
                     logger.debug(f"New best memory pair (no remat):\n{best_pair_memory}")
                     min_value_mem = pair_cost_mem
 
@@ -434,8 +489,12 @@ class FusionPlacer_BeamSearch(PlacerBase):
             for pair_time, pair_mem in zip(
                 self.fusion_strat_helper.optimized_traces_time, self.fusion_strat_helper.optimized_traces_mem
             ):
-                trc_time, compile_opt_time = list(pair_time.values())[0]
-                trc_mem, compile_opt_mem = list(pair_mem.values())[0]
+                placement_ctx_time: FusionExecutorsPlacementCtx
+                placement_ctx_mem: FusionExecutorsPlacementCtx
+                trc_time: TraceCtx
+                trc_mem: TraceCtx
+                trc_time, placement_ctx_time = list(pair_time.values())[0]
+                trc_mem, placement_ctx_mem = list(pair_mem.values())[0]
                 label = list(pair_time.keys())[0]
                 # TODO (matteochen): remove the benchmark here as will done later on the bw pass
                 c, m, _ = benchmark_trace(trc_time, self.benchmark_iters)
@@ -447,13 +506,20 @@ class FusionPlacer_BeamSearch(PlacerBase):
                     f"Trace name = [{label}] - Target: MEM - Mem = {m / (2**30)} GB - Time = {c} ms\n{trc_mem}\n\n"
                 )
                 # For forward trace we cache the best placement for both runtime and memory for the current Fusion executor (represented by label)
-                for t, o in zip([trc_time, trc_mem], [compile_opt_time, compile_opt_mem]):
-                    logger.info(f"Caching fw candidate [compile option: {o.fusion_tag if o else 'None'}]")
+                for t, ctx in zip([trc_time, trc_mem], [placement_ctx_time, placement_ctx_mem]):
+                    logger.info(
+                        f"Caching fw candidate [compile option: {ctx.compile_options.fusion_tag if ctx.compile_options else 'None'}]"
+                    )
                     self.cached_fw_traces.append(
                         TraceCandidate(
-                            trace=t, compile_opt=o, label=label + "_enabled_" + o.fusion_tag if o is not None else label
+                            trace=t,
+                            ctx=ctx,
+                            label=(label + "_enabled_" + ctx.compile_options.fusion_tag)
+                            if ctx.compile_options is not None
+                            else label,
                         )
                     )
+            self.cached_computational_trace = self.trace
 
         def bw_benchmark():
             time_result = BenchmarkResult()
@@ -488,17 +554,28 @@ class FusionPlacer_BeamSearch(PlacerBase):
 
             # Here we have to recover the traces without the pass through remat in order to be compliant
             # with thunder flow as we might have request for no remat.
-            trc = list(self.fusion_strat_helper.optimized_traces_time[time_result.index].values())[0][0]
-            self.bw_trace_candidates.attach_best_time_candidate(trc)
-            trc = list(self.fusion_strat_helper.optimized_traces_mem[memory_result.index].values())[0][0]
-            self.bw_trace_candidates.attach_best_mem_candidate(trc)
+            trc, placement_ctx = list(self.fusion_strat_helper.optimized_traces_time[time_result.index].values())[0]
+            self.bw_trace_candidates.attach_best_time_candidate(trc, placement_ctx)
+            trc, placement_ctx = list(self.fusion_strat_helper.optimized_traces_mem[memory_result.index].values())[0]
+            self.bw_trace_candidates.attach_best_mem_candidate(trc, placement_ctx)
 
             # Now, finally build the pair fw and bw traces
             # The current fw trace is set by the caller and we take it as is. All current bw traces optimizations are made with the fw trace set by the caller.
+
+            assert self.active_fw_trace_ctx[0] is not None and self.active_fw_trace_ctx[1] is not None
+
             for bw in self.bw_trace_candidates.iterable():
                 self.out_traces_candidates.append(
-                    OutputCandidate(fw=self.active_fw_trace_ctx[0], bw=bw, compile_opt=self.active_fw_trace_ctx[1])
+                    OutputCandidate(
+                        fw=self.active_fw_trace_ctx[0],
+                        bw=bw[0],
+                        executors_fw=self.active_fw_trace_ctx[1].placement,
+                        executors_bw=bw[1].placement,
+                        compile_opt=self.active_fw_trace_ctx[1].compile_options,
+                    )
                 )
+
+            self.cached_computational_backward_trace = self.trace
 
         match self.trace_type:
             case TraceType.FW:
@@ -973,26 +1050,40 @@ class FusionPlacer_BeamSearch(PlacerBase):
         return [candidate.trace for candidate in self.cached_fw_traces]
 
     def get_optimal_fw_bw_traces(self) -> tuple[TraceCtx, TraceCtx]:
+        restore_file = self.compile_data.compile_options.get("autotune_restore_configuration", "")
+
+        # We apply the dce transform as it will be applied to the cached traces during the past optimization
+        # (dce has been applied to the traces saved in the configuration).
+        if restore_file:
+            from thunder.core.transforms import dce
+
+            fw_extrace, bw_extrace = apply_results_from_file(
+                fw_trace=dce(self.cached_computational_trace),
+                bw_trace=dce(self.cached_computational_backward_trace),
+                file=restore_file,
+            )
+            return fw_extrace, bw_extrace
         return (
             (self.best_pair_runtime.fw, self.best_pair_runtime.bw)
             if self.optimizer_type == OptimizerType.RUNTIME
             else (self.best_pair_memory.fw, self.best_pair_memory.bw)
         )
 
-    def attach_trace(self, *, trace: TraceCtx, trace_type: TraceType):
+    def attach_trace(self, *, trace: TraceCtx, trace_type: TraceType, apply_dce: bool = True):
         from thunder.core.transform_common import dce
 
         self.trace_type = trace_type
-        # dce for the backward trace will be passed afterwards
-        self.trace: TraceCtx = dce(trace) if trace_type == TraceType.FW else trace
+        # dce for the backward trace will be passed afterwards as we might modify it before
+        self.trace: TraceCtx = dce(trace) if apply_dce else trace
 
         match self.trace_type:
             case TraceType.FW:
                 logger.info(f"New forward trace to optimize (strat = {self.optimizer_type}):\n{self.trace}")
             # TODO (matteochen): support bw trace optimization even though with no fw traces cached (computational trace?)
             case TraceType.BW:
-                if not self.cached_fw_traces:
-                    raise AssertionError("Can not optimize backward traces before forward traces")
+                if not self.compile_data.compile_options.get("autotune_restore_configuration", ""):
+                    if not self.cached_fw_traces:
+                        raise AssertionError("Can not optimize backward traces before forward traces")
                 logger.info(f"New backward trace to optimize (strat = {self.optimizer_type}):\n{self.trace}")
 
     def optimize(self):
@@ -1020,9 +1111,11 @@ class FusionPlacer_BeamSearch(PlacerBase):
             common_trace_blocks = repetead_trace_blocks(
                 trace=self.trace, min_block_size=optimize_common_blocks_min_size if optimize_common_blocks else -1
             )
-            # print(common_trace_blocks)
+            # A valid block is defined with at least 2 trace regions
             if len(common_trace_blocks) >= 2 and optimize_common_blocks:
-                logger.info(f"Running optimization with common blocks reduction. Found block indices in trace: {common_trace_blocks}")
+                logger.info(
+                    f"Running optimization with common blocks reduction. Found block indices in trace: {common_trace_blocks}"
+                )
                 reduced_trace = reduce_common_trace_blocks(trace=self.trace, common_blocks_in=common_trace_blocks)
                 logger.info(f"Operating on reduced trace (by cutting common transformer blocks):\n{reduced_trace}")
                 self.is_reduced = True
@@ -1076,9 +1169,7 @@ class FusionPlacer_BeamSearch(PlacerBase):
                     compile_data=self.compile_data,
                     fusion_executor_compile_options_to_activate=placement_ctx.compile_options,
                 )
-                self.fusion_strat_helper.optimized_traces_time.append(
-                    {ex.name: tuple([trc, placement_ctx.compile_options])}
-                )
+                self.fusion_strat_helper.optimized_traces_time.append({ex.name: tuple([trc, placement_ctx])})
             for placement_ctx, ex in zip(
                 self.executor_placement_options.placement_options_mem, self.fusion_executors_saved_for_later
             ):
@@ -1090,21 +1181,35 @@ class FusionPlacer_BeamSearch(PlacerBase):
                     compile_data=self.compile_data,
                     fusion_executor_compile_options_to_activate=placement_ctx.compile_options,
                 )
-                self.fusion_strat_helper.optimized_traces_mem.append(
-                    {ex.name: tuple([trc, placement_ctx.compile_options])}
-                )
+                self.fusion_strat_helper.optimized_traces_mem.append({ex.name: tuple([trc, placement_ctx])})
 
             # Filter out the optimal candidates for the current serach iteration
             self._filter_candidates()
 
+        restore_file_name = self.compile_data.compile_options.get("autotune_restore_configuration", "")
+
         match self.trace_type:
             case TraceType.FW:
+                # Perform optimization only if we don't restore it from a past configuration
+                if restore_file_name:
+                    self.cached_computational_trace = self.trace
+                    logger.info("Skipping forward trace optimization as it will be restored from a configuration file.")
+                    return
+
                 # Clear any previous results
                 self.cached_fw_traces = []
                 _optimize()
             # We have multiple cached optimized fw traces, this iteration will create a fw-bw pair for
             # every cached forward trace. At the end the best one will be picked up.
             case TraceType.BW:
+                # Perform optimization only if we don't restore it from a past configuration
+                if restore_file_name:
+                    logger.info(
+                        "Skipping backward trace optimization as it will be restored from a configuration file."
+                    )
+                    self.cached_computational_backward_trace = self.trace
+                    return
+
                 # Clear any previous results
                 self.out_traces_candidates = []
 
@@ -1120,9 +1225,9 @@ class FusionPlacer_BeamSearch(PlacerBase):
                     self.trace.bound_symbols = list(cached_self_trace.bound_symbols)
                     # Set the current active cached forward trace context
                     logger.info(
-                        f"Current fw cached ctx:\n{fw_trace_candidate.trace}\nOptions: {fw_trace_candidate.compile_opt.fusion_tag if fw_trace_candidate.compile_opt is not None else 'None'}"
+                        f"Current fw cached ctx:\n{fw_trace_candidate.trace}\nOptions: {fw_trace_candidate.ctx.compile_options.fusion_tag if fw_trace_candidate.ctx.compile_options is not None else 'None'}"
                     )
-                    self.active_fw_trace_ctx = fw_trace_candidate.trace, fw_trace_candidate.compile_opt
+                    self.active_fw_trace_ctx = fw_trace_candidate.trace, fw_trace_candidate.ctx
 
                     logger.debug(f"Input bw trace:\n{self.trace}")
 
@@ -1138,8 +1243,8 @@ class FusionPlacer_BeamSearch(PlacerBase):
                     self.trace = dce(self.trace)
 
                     # Enable any forward active compilation flag
-                    if fw_trace_candidate.compile_opt:
-                        wrap_fn_with_exeuctor_compile_option(fw_trace_candidate.compile_opt, _optimize)
+                    if fw_trace_candidate.ctx.compile_options:
+                        wrap_fn_with_exeuctor_compile_option(fw_trace_candidate.ctx.compile_options, _optimize)
                     else:
                         _optimize()
 
@@ -1147,6 +1252,29 @@ class FusionPlacer_BeamSearch(PlacerBase):
                 self.best_pair_runtime, self.best_pair_memory = self._best_runtime_and_memory_candidates(
                     self.out_traces_candidates
                 )
+
+                # Save the tuning if requested
+                do_save = self.compile_data.compile_options.get("autotune_save_configuration", False)
+                if do_save:
+                    model_name = self.compile_data.compile_options.get("model_name", "unknown")
+                    file_name = f"{model_name}_runtime.json"
+                    dump_traces_placement(
+                        fw_trace=self.cached_computational_trace,
+                        bw_trace=self.cached_computational_backward_trace,
+                        file_name=file_name,
+                        apply_remat=self.best_pair_runtime.apply_remat,
+                        exs_fw=self.best_pair_runtime.executors_fw,
+                        exs_bw=self.best_pair_runtime.executors_bw,
+                    )
+                    file_name = f"{model_name}_memory.json"
+                    dump_traces_placement(
+                        fw_trace=self.cached_computational_trace,
+                        bw_trace=self.cached_computational_backward_trace,
+                        file_name=file_name,
+                        apply_remat=self.best_pair_memory.apply_remat,
+                        exs_fw=self.best_pair_memory.executors_fw,
+                        exs_bw=self.best_pair_memory.executors_bw,
+                    )
 
 
 class BackendOptimizer:
@@ -1187,7 +1315,7 @@ class BackendOptimizer:
         """
         self.optimizer.optimize()
 
-    def attach_trace(self, *, trace: TraceCtx, trace_type: TraceType):
+    def attach_trace(self, *, trace: TraceCtx, trace_type: TraceType, apply_dce=True):
         """
         Attach a new trace for executors optimization.
 

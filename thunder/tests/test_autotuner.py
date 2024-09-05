@@ -499,7 +499,16 @@ class Model_2(torch.nn.Module):
 @pytest.mark.parametrize(
     "model, tensor_shape, dtype, autotune_type, executors, expected_executors, use_cudagraphs, use_te",
     [
-        (Model_1(32, 32), (32, 32), torch.float32, "runtime", [nvfuserex], [[nvfuserex, torchex, pythonex]], True, False),
+        (
+            Model_1(32, 32),
+            (32, 32),
+            torch.float32,
+            "runtime",
+            [nvfuserex],
+            [[nvfuserex, torchex, pythonex]],
+            True,
+            False,
+        ),
         (
             Model_1(32, 32),
             (32, 32),
@@ -508,7 +517,7 @@ class Model_2(torch.nn.Module):
             [torch_compile_ex],
             [[torch_compile_ex, torchex, pythonex]],
             True,
-            False
+            False,
         ),
         (
             Model_1(4096, 4096),
@@ -518,7 +527,7 @@ class Model_2(torch.nn.Module):
             [transformer_engine_ex],
             [[transformer_engine_ex, nvfuserex, torchex, pythonex]],
             False,
-            True
+            True,
         ),
         (
             Model_2(),
@@ -541,7 +550,7 @@ class Model_2(torch.nn.Module):
                 [transformer_engine_ex, sdpa_ex, nvfuserex, torchex, pythonex],
             ],
             False,
-            True
+            True,
         ),
     ],
 )
@@ -554,14 +563,18 @@ def test_autotuner(
     executors: list,
     expected_executors: list[list],
     use_cudagraphs: bool,
-    use_te: bool
+    use_te: bool,
 ):
     def _run():
         model.to("cuda")
         x = torch.randn(tensor_shape, dtype=dtype, device="cuda")
         jitted_def = thunder.jit(model, executors=executors)
         jitted_auto = thunder.jit(
-            model, autotune_type=autotune_type, executors=executors, use_cudagraphs=use_cudagraphs, autotune_enable_te=use_te
+            model,
+            autotune_type=autotune_type,
+            executors=executors,
+            use_cudagraphs=use_cudagraphs,
+            autotune_enable_te=use_te,
         )
         y_def = jitted_def(x)
         y_auto = jitted_auto(x)
@@ -639,3 +652,43 @@ def test_reduce_common_trace_blocks():
     for b in reduced_trace.bound_symbols:
         if hasattr(b.output, "name"):
             assert b.output.name not in should_remove
+
+@requiresCUDA
+def test_save_configuration_cuda():
+    class _LLaMAMLP(torch.nn.Module):
+        def __init__(self, n_embd, intermediate_size) -> None:
+            super().__init__()
+            self.fc_1 = torch.nn.Linear(n_embd, intermediate_size, bias=False)
+            self.fc_2 = torch.nn.Linear(n_embd, intermediate_size, bias=False)
+            self.proj = torch.nn.Linear(intermediate_size, n_embd, bias=False)
+
+        def forward(self, x: torch.Tensor) -> torch.Tensor:
+            x_fc_1 = self.fc_1(x)
+            x_fc_2 = self.fc_2(x)
+            x = torch.nn.functional.silu(x_fc_1) * x_fc_2
+            return self.proj(x)
+
+    with torch.device("cuda"):
+        model = _LLaMAMLP(4, 4)
+        jitted = thunder.jit(
+            model,
+            autotune_type="memory",
+            model_name="llamamlp",
+            autotune_save_configuration=True,
+        )
+        jitted_recovered = thunder.jit(
+            model,
+            autotune_type="runtime",
+            autotune_restore_configuration="llamamlp_memory.json",
+        )
+
+        x = torch.randn(4, 4)
+        a = jitted(x)
+        b = jitted_recovered(x)
+
+        torch.testing.assert_close(a, b)
+
+        for bsym_a, bsym_b in zip(
+            thunder.last_traces(jitted)[-1].bound_symbols, thunder.last_traces(jitted_recovered)[-1].bound_symbols
+        ):
+            assert bsym_a.sym.executor == bsym_b.sym.executor
