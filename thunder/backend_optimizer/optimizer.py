@@ -35,16 +35,16 @@ class FusionCompileOptionsHelper:
     Represents compile options for a fusion executor.
 
     Attributes:
-        fusion_tag: A label representing the fusion ops regarding a compile option (e.g. nv_linear).
-        symbol_tag: The symbol name
-        id: The symbol id.
-        impl: A callable implementation.
-        checker: A callable checker.
+        fusion_tag (str): A label representing the fusion ops regarding a compile option (e.g. nv_linear).
+        symbol_tag (str): The symbol name
+        id (PrimIDs): The symbol id.
+        impl (Callable): A callable implementation.
+        checker (Callable): A callable checker.
     """
 
     def __init__(self, fusion_tag: str, symbol_tag: str, id: PrimIDs, impl: Callable, checker: Callable) -> None:
-        self.fusion_tag = fusion_tag
-        self.symbol_tag = symbol_tag
+        self.fusion_tag: str = fusion_tag
+        self.symbol_tag: str = symbol_tag
         self.id: PrimIDs = id
         self.impl: Callable = impl
         self.checker: Callable = checker
@@ -55,8 +55,8 @@ class FusionExecutorsPlacementCtx:
     Represents a executor placement context.
 
     Attributes:
-        placement: A list of executors.
-        compile_options: Any compile options being used for the fusion executor contained in the placement.
+        placement (list): A list of executors.
+        compile_options (FusionExecutorsPlacementCtx | None): Any compile options being used for the fusion executor contained in the placement.
     """
 
     def __init__(self, *, placement: list, compile_options: FusionCompileOptionsHelper | None = None) -> None:
@@ -69,9 +69,9 @@ class TraceCandidate:
     Represents an optimal trace candidate.
 
     Attributes:
-        trace: The candidate trace.
-        ctx: Trace's placement context.
-        label: A generic label to identify this candidate.
+        trace (TraceCtx): The candidate trace.
+        ctx (FusionExecutorsPlacementCtx): Trace's placement context.
+        label (str): A generic label to identify this candidate.
     """
 
     def __init__(
@@ -91,10 +91,10 @@ class TraceCandidates:
     Represents an optimal pair of trace candidates (compute time and memory consumption).
 
     Attributes:
-        best_time: The trace with the optimal runtime.
-        best_mem: The trace with the optimal peak memory consumption.
-        placement_ctx_time: Trace placement context: exeuctors and any applied fusion compile options.
-        placement_ctx_mem: Trace placement context: exeuctors and any applied fusion compile options.
+        best_time (TraceCtx): The trace with the optimal runtime.
+        best_mem (TraceCtx): The trace with the optimal peak memory consumption.
+        placement_ctx_time (FusionExecutorsPlacementCtx): Trace placement context with exeuctors and any applied fusion compile options.
+        placement_ctx_mem (FusionExecutorsPlacementCtx): Trace placement context with exeuctors and any applied fusion compile options.
     """
 
     def __init__(
@@ -112,12 +112,18 @@ class TraceCandidates:
     def __repr__(self) -> str:
         """
         Give a representation for the current object.
+
+        Returns:
+            str: A string as the representation of the current object
         """
         return f"\nBest runtime candidate:\n{self.best_time}\nBest memory candidate:\n{self.best_mem}"
 
     def is_set(self) -> bool:
         """
         Check that the optimal trace pair has been set.
+
+        Returns:
+            bool: A flag indicating if the optimal trace is not None.
         """
         return False if self.best_time is None or self.best_mem is None else True
 
@@ -126,8 +132,8 @@ class TraceCandidates:
         Attach a new best time trace result.
 
         Args:
-            trace: The trace to assign.
-            ctx: The trace placement context.
+            trace (TraceCtx): The trace to assign.
+            ctx (FusionExecutorsPlacementCtx | None): The trace placement context.
         """
         self.best_time = trace
         self.placement_ctx_time = ctx
@@ -137,8 +143,8 @@ class TraceCandidates:
         Attach a new best memory trace result.
 
         Args:
-            trace: The trace to assign.
-            ctx: The trace placement context.
+            trace (TraceCtx): The trace to assign.
+            ctx (FusionExecutorsPlacementCtx | None): The trace placement context.
         """
         self.best_mem = trace
         self.placement_ctx_mem = ctx
@@ -146,18 +152,27 @@ class TraceCandidates:
     def iterable(self) -> tuple[tuple, tuple]:
         """
         Returns an iterable object over the traces paired with their contexts.
+
+        Returns:
+            tuple: A tuple with paired values of performance metric and its context.
         """
         return (self.best_time, self.placement_ctx_time), (self.best_mem, self.placement_ctx_mem)
 
     def trace_ctx_iterable(self) -> tuple[TraceCtx | None, TraceCtx | None]:
         """
         Returns an iterable object over the traces.
+
+        Returns:
+            tuple: A tuple of traces with time and memory consumption targets.
         """
         return self.best_time, self.best_mem
 
     def placement_ctx_iterable(self) -> tuple[FusionExecutorsPlacementCtx | None, FusionExecutorsPlacementCtx | None]:
         """
         Returns an iterable object over the placement contexts.
+
+        Returns:
+            tuple: A tuple of contexes referring to traces targetting compute time and peak memory consumption.
         """
         return self.placement_ctx_time, self.placement_ctx_mem
 
@@ -167,13 +182,13 @@ class OutputCandidate:
     Represents a final output candidate: forward and backward trace pair.
 
     Attributes:
-        fw: The forward trace.
-        bw: The backward trace.
-        executors_fw: The forward trace regions' executors
-        executors_bw: The backward trace regions' executors
-        compile_opt: Any compile options being used for a fusion executor in the forward trace.
-        tot_cost: The total cost to execute the pair (ms for a time strategy and GB for a memory strategy).
-        apply_remat: If rematerialization has been applied.
+        fw (TraceCtx): The forward trace.
+        bw (TraceCtx): The backward trace.
+        executors_fw (list): The forward trace regions' executors
+        executors_bw (list): The backward trace regions' executors
+        compile_opt (FusionExecutorsPlacementCtx | None): Any compile options being used for a fusion executor in the forward trace.
+        tot_cost (float): The total cost to execute the pair (ms for a time strategy and GB for a memory strategy).
+        apply_remat (bool): If rematerialization has been applied.
     """
 
     def __init__(
@@ -193,11 +208,14 @@ class OutputCandidate:
         self.executors_bw: list[Executor] = executors_bw
         self.compile_opt: FusionCompileOptionsHelper | None = compile_opt
         self.tot_cost: float = cost
-        self.apply_remat = apply_remat
+        self.apply_remat: bool = apply_remat
 
     def __repr__(self) -> str:
         """
         Give a representation of the current object.
+
+        Returns:
+            str: A string representing the current object.
         """
         return f"Final output candidate: forward trace:\n{self.fw.__repr__()}\nFinal output candidate: backward trace:\n{self.bw.__repr__()}"
 
@@ -207,11 +225,11 @@ class FusionStratHelper:
     Represents a helper structure for the fusion strategy.
 
     Attributes:
-        supported_executors: A list of supported fusion executors.
-        optimized_traces_mem: a list of dictionaries containing informations regarding the optimized traces for peak memory consumption.
-        optimized_traces_mem_benchmark_only: a list of dictionaries containing informations regarding the optimized traces for peak memory consumption (used only for internal benchmarking).
-        optimized_traces_time: a list of dictionaries containing informations regarding the optimized traces for total compute time.
-        optimized_traces_time_benchmark_only: a list of dictionaries containing informations regarding the optimized traces for total compute time (used only for internal benchmarking).
+        supported_executors (set): A list of supported fusion executors.
+        optimized_traces_mem (list): a list of dictionaries containing informations regarding the optimized traces for peak memory consumption.
+        optimized_traces_mem_benchmark_only (list): a list of dictionaries containing informations regarding the optimized traces for peak memory consumption (used only for internal benchmarking).
+        optimized_traces_time (list): a list of dictionaries containing informations regarding the optimized traces for total compute time.
+        optimized_traces_time_benchmark_only (list): a list of dictionaries containing informations regarding the optimized traces for total compute time (used only for internal benchmarking).
     """
 
     def __init__(self) -> None:
@@ -227,8 +245,8 @@ class ExecutorPlacementOptions:
     Represents an aggregate placement options for executors combining those that targets peak memory consumption and those for total compute time.
 
     Attributes:
-        placement_options_mem: A list of placement contexts.
-        placement_options_time: A list of placement contexts.
+        placement_options_mem (list): A list of placement contexts.
+        placement_options_time (list): A list of placement contexts.
     """
 
     def __init__(self) -> None:
@@ -241,25 +259,25 @@ class PlacerBase:
     Represents a base (interface) class for a placement class.
 
     Attributes:
-        always_executors: A list of always present executors.
-        empty_executor_hashable_placeholder: A label representing en empty executor.
-        executors: A list of executors to use.
-        fusion_executors: A list of fusion executors to use.
-        fusion_executors_saved_for_later: A helper list containing maybe repeated fusion executors.
-        debug_msg: A dynamic filled log message.
-        log_file_name: The output log file name if generated.
-        produce_log: A tuning parameter to control log file generation.
-        optimizer_type: The optimization target.
-        active_fw_trace_ctx: An active forward trace set to optimize backward.
-        cached_fw_traces: Cached optimized forward traces.
-        cached_computational_trace: Original computational trace
-        cached_computational_backward_trace: Original computational backward trace
-        bw_trace_candidates: An instance of trace candidates.
-        best_pair_runtime: A final traace pair targetting the compute time.
-        best_pair_memory: A final traace pair targetting the peak memory consumption.
-        apply_bucketing_bw_trace: A distributed flag.
-        benchmark_iters: Benchmark iteration steps.
-        compile_data: Thunder compilation data.
+        always_executors (tuple): A list of always present executors.
+        empty_executor_hashable_placeholder (str): A label representing en empty executor.
+        executors (Sequence): A list of executors to use.
+        fusion_executors (Sequence): A list of fusion executors to use.
+        fusion_executors_saved_for_later (Sequence): A helper list containing maybe repeated fusion executors.
+        debug_msg (str): A dynamic filled log message.
+        log_file_name (str): The output log file name if generated.
+        produce_log (bool): A tuning parameter to control log file generation.
+        optimizer_type (OptimizerType): The optimization target.
+        active_fw_trace_ctx (tuple): An active forward trace set to optimize backward.
+        cached_fw_traces (list): Cached optimized forward traces.
+        cached_computational_trace (TraceCtx): Original computational trace
+        cached_computational_backward_trace (TraceCtx): Original computational backward trace
+        bw_trace_candidates (TraceCandidate): An instance of trace candidates.
+        best_pair_runtime (OutputCandidate): A final trace pair targetting the compute time.
+        best_pair_memory (OutputCandidate): A final trace pair targetting the peak memory consumption.
+        apply_bucketing_bw_trace (bool): A distributed flag.
+        benchmark_iters (int): Benchmark iteration steps.
+        compile_data (Any): Thunder compilation data.
     """
 
     def __init__(
