@@ -83,6 +83,7 @@ def torch_fw_bw_benchmark(models: list, labels: list, inputs: list, iters: int, 
         labels: a list of labels (names) referring to the models.
         inputs: a list of inputs to give to models' forward pass.
         iters: benchmark iterations.
+        loss_fn: a Pytorch loss function.
     """
     for m, input, label in zip(models, inputs, labels):
         # Warm up
@@ -196,6 +197,7 @@ def torch_total_benchmark(models: list, labels: list, inputs: list, iters: int, 
         labels: a list of labels (names) referring to the models.
         inputs: a list of inputs to give to models' forward pass.
         iters: benchmark iterations.
+        loss_fn: a Pytorch loss function.
     """
     for m, input, label in zip(models, inputs, labels):
         # Warm up
