@@ -1,12 +1,9 @@
 """
-This script benchmarks litGPT models in a easier way wrt to benchmark_litgpt.py with a fake training loop with no optimizers.
+This script benchmarks litGPT models in a easier way wrt thunder.benchmarks.benchmark_litgpt.py with a fake training loop with no optimizers.
 """
 
 from litgpt import GPT
 from thunder.benchmarks.utils import (
-    thunder_fw_bw_benchmark,
-    torch_fw_bw_benchmark,
-    torch_fw_bw_benchmark_nvsight,
     torch_total_benchmark,
     torch_timer_total_benchmark
 )
