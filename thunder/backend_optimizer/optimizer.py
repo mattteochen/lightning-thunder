@@ -1096,13 +1096,13 @@ class FusionPlacer_BeamSearch(PlacerBase):
 
         match self.trace_type:
             case TraceType.FW:
-                logger.info(f"New forward trace to optimize (strat = {self.optimizer_type}):\n{self.trace}")
+                logger.info(f"New forward trace to optimize (strat = {self.optimizer_type})")
             # TODO (matteochen): support bw trace optimization even though with no fw traces cached (computational trace?)
             case TraceType.BW:
                 if not self.compile_data.compile_options.get("autotune_restore_configuration", ""):
                     if not self.cached_fw_traces:
                         raise AssertionError("Can not optimize backward traces before forward traces")
-                logger.info(f"New backward trace to optimize (strat = {self.optimizer_type}):\n{self.trace}")
+                logger.info(f"New backward trace to optimize (strat = {self.optimizer_type})")
 
     def optimize(self):
         from thunder.core.transform_common import dce
@@ -1135,7 +1135,7 @@ class FusionPlacer_BeamSearch(PlacerBase):
                     f"Running optimization with common blocks reduction. Found block indices in trace: {common_trace_blocks}"
                 )
                 reduced_trace = reduce_common_trace_blocks(trace=self.trace, common_blocks_in=common_trace_blocks)
-                logger.info(f"Operating on reduced trace (by cutting common transformer blocks):\n{reduced_trace}")
+                logger.info("Operating on reduced trace (by cutting common transformer blocks)")
                 self.is_reduced = True
                 self.cached_original_trace = self.trace
                 self.trace = reduced_trace
@@ -1242,9 +1242,9 @@ class FusionPlacer_BeamSearch(PlacerBase):
                     self.trace = from_trace(cached_self_trace)
                     self.trace.bound_symbols = list(cached_self_trace.bound_symbols)
                     # Set the current active cached forward trace context
-                    logger.info(
-                        f"Current fw cached ctx:\n{fw_trace_candidate.trace}\nOptions: {fw_trace_candidate.ctx.compile_options.fusion_tag if fw_trace_candidate.ctx.compile_options is not None else 'None'}"
-                    )
+                    # logger.info(
+                    #     f"Current fw cached ctx:\n{fw_trace_candidate.trace}\nOptions: {fw_trace_candidate.ctx.compile_options.fusion_tag if fw_trace_candidate.ctx.compile_options is not None else 'None'}"
+                    # )
                     self.active_fw_trace_ctx = fw_trace_candidate.trace, fw_trace_candidate.ctx
 
                     logger.debug(f"Input bw trace:\n{self.trace}")
