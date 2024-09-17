@@ -181,7 +181,6 @@ def torch_timer_total_benchmark(
             description=l,
         )
         results.append(t.blocked_autorange(min_run_time=1))
-        print(results[-1])
     compare = Compare(results)
     compare.colorize(rowwise=True)
     compare.print()
