@@ -18,7 +18,7 @@ import torch
 torch.backends.cuda.matmul.allow_tf32 = True  # allow tf32 on matmul
 torch.backends.cudnn.allow_tf32 = True  # allow tf32 on cudnn
 
-class Test:
+class LitGPTModelThunderConfig:
     def __init__(
         self,
         layers: int,
@@ -41,7 +41,7 @@ class Test:
 
 
 to_run = [
-    Test(
+    LitGPTModelThunderConfig(
         1,
         "runtime",
         1,
@@ -96,7 +96,7 @@ for test in to_run:
             print(f"\nResults torch timer benchmark ({iters} iters):")
             torch_timer_total_benchmark(callables, labels, inputs, test.model_name, torch.nn.functional.cross_entropy)
     except Exception as e:
-        print(f"Test failed:\n{e}")
+        print(f"Benchmark failed:\n{e}")
         import traceback
 
         traceback.print_exc()
