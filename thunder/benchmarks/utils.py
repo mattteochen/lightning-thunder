@@ -26,6 +26,7 @@ class SplitFwBwBenchmarkUtils:
         self.bw_fn: Callable | None = bw_fn
         self.executor = executor
 
+
 def _run_loss(model, input, target, loss_fn):
     logits = model(input)
     logits = logits.reshape(-1, logits.size(-1))
@@ -33,9 +34,11 @@ def _run_loss(model, input, target, loss_fn):
     loss = loss_fn(logits, target)
     loss.backward()
 
+
 def _run_autograd(model, input):
     y = model(input)
     torch.autograd.grad(y, input, grad_outputs=torch.ones_like(y))
+
 
 def torch_fw_bw_benchmark_nvsight(models: list, labels: list, inputs: list, iters: int, loss) -> None:
     """
@@ -72,7 +75,9 @@ def torch_fw_bw_benchmark_nvsight(models: list, labels: list, inputs: list, iter
         torch.cuda.cudart().cudaProfilerStop()
 
 
-def torch_fw_bw_benchmark(models: list, labels: list, inputs: list, iters: int, loss_fn: Callable | None = None) -> None:
+def torch_fw_bw_benchmark(
+    models: list, labels: list, inputs: list, iters: int, loss_fn: Callable | None = None
+) -> None:
     """
     Benchmark a mock trainig loop of the given models. Time measurements will be performed by using cuda events.
     A loss function is applied to trigger backward if provided. Otherwise torch.autograd will be used.
@@ -146,6 +151,7 @@ def torch_fw_bw_benchmark(models: list, labels: list, inputs: list, iters: int, 
         print(f"{label} tot bw time: {tot_time} ms")
         print(f"{label} max bw allocated memory: {max_allocated_bytes / (2**30)} GB")
 
+
 def torch_timer_total_benchmark(
     models: list, labels: list, inputs: list, name: str = "Model", loss_fn: Callable | None = None
 ) -> None:
@@ -186,7 +192,10 @@ def torch_timer_total_benchmark(
     compare.colorize(rowwise=True)
     compare.print()
 
-def torch_total_benchmark(models: list, labels: list, inputs: list, iters: int, loss_fn: Callable | None = None) -> None:
+
+def torch_total_benchmark(
+    models: list, labels: list, inputs: list, iters: int, loss_fn: Callable | None = None
+) -> None:
     """
     Benchmark a mock trainig loop of the given models. Time measurements will be performed by using cuda events.
     A loss function is applied to trigger backward if provided. Otherwise torch.autograd will be used.
@@ -237,6 +246,7 @@ def torch_total_benchmark(models: list, labels: list, inputs: list, iters: int, 
         tot_time = sum(tot) / iters
         print(f"{label} tot time: {tot_time} ms")
         print(f"{label} max allocated memory: {max_allocated_bytes / (2**30)} GB")
+
 
 def thunder_fw_bw_benchmark(
     fw_traces: list, bw_traces: list, fw_labels: list, bw_labels: list, iters: int, nvsight: bool = False

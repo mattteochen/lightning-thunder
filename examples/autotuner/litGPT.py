@@ -3,10 +3,7 @@ This script benchmarks litGPT models in a easier way wrt thunder.benchmarks.benc
 """
 
 from litgpt import GPT
-from thunder.benchmarks.utils import (
-    torch_total_benchmark,
-    torch_timer_total_benchmark
-)
+from thunder.benchmarks.utils import torch_total_benchmark, torch_timer_total_benchmark
 from thunder.tests.litgpt_model import Config
 import thunder
 import torch
@@ -14,6 +11,7 @@ import time
 
 torch.backends.cuda.matmul.allow_tf32 = True  # allow tf32 on matmul
 torch.backends.cudnn.allow_tf32 = True  # allow tf32 on cudnn
+
 
 class LitGPTModelThunderConfig:
     def __init__(

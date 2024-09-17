@@ -24,6 +24,7 @@ logger = logging.getLogger("Thunder Autotuner")
 # Control if single trace regions or partial traces are benchmarked during OperatorExecutor tuning
 _benchmark_single_trace_region = False
 
+
 class OptimizationAlgorithm(Enum):
     """
     Represents the optimization technique used by the autotuner.
@@ -836,9 +837,9 @@ class FusionPlacer_BeamSearch(PlacerBase):
 
                         # Search for best candidate
                         for i, candidate in enumerate(candidate_executors):
-
                             if _benchmark_single_trace_region:
                                 from thunder.common import transform_for_execution
+
                                 subtrace_placed = transform_for_execution(subtrace, executors_list=[candidate])[-1]
                                 logger.debug(f"Subtrace to benchmark single symbol:\n{subtrace_placed}")
                                 t, m, _ = benchmark_trace(
