@@ -7,6 +7,7 @@ import torch
 import thunder
 from thunder.benchmarks.utils import torch_timer_total_benchmark, torch_total_benchmark
 
+
 class LLaMAMLP(torch.nn.Module):
     def __init__(self, n_embd, intermediate_size) -> None:
         super().__init__()
@@ -22,24 +23,24 @@ class LLaMAMLP(torch.nn.Module):
 
 
 with torch.device("cuda"):
-    mult = 1
+    mult = 2
     a = 4096 * mult
     b = 11008 * mult
-    x = torch.randn(2, 2048, a, requires_grad=True)
+    x = torch.randn(4, 2048, a, requires_grad=True)
 
     model = LLaMAMLP(a, b)
 
     eager = model
     torchcompile = torch.compile(model)
     jmodel_def = thunder.jit(model)
-    jmodel_auto = thunder.jit(model, autotune_type="memory", autotune_enable_te=False, autotune_nv_enable_options=True)
+    jmodel_auto = thunder.jit(model, autotune_type="runtime", autotune_enable_te=False, autotune_nv_enable_options=True)
 
     print("deviation def:", (jmodel_def(x) - model(x)).abs().max().item())
     print("deviation auto:", (jmodel_auto(x) - model(x)).abs().max().item())
 
     iters = 100
     callables = [eager, torchcompile, jmodel_def, jmodel_auto]
-    labels = ['eager', 'torchcompile', 'Thunder', 'Thunder Autotuned']
+    labels = ["eager", "torchcompile", "Thunder", "Thunder Autotuned"]
     inputs = [x, x, x, x]
     print("\nResults with torch total benchmark:")
     torch_total_benchmark(callables, labels, inputs, iters)
