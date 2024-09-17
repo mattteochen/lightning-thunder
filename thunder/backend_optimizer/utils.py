@@ -473,7 +473,7 @@ def benchmark_trace(
 
     def compute_time_cost_nsight(fn: Callable, iters: int, *args) -> tuple[float, float, Any]:
         try:
-            warm_up_iters = 50
+            warm_up_iters = 10
             torch.cuda.empty_cache()
             torch.cuda.synchronize()
             # Warm up cycles
@@ -503,7 +503,7 @@ def benchmark_trace(
     def compute_time_cost_ms(fn: Callable, repr: str, iters: int, *args) -> tuple[float, float, Any]:
         try:
             current_iter = 0
-            warm_up_iters = 50
+            warm_up_iters = 10
             out = None
 
             # Warm up cycles

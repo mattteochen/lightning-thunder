@@ -21,6 +21,8 @@ import logging
 logging.basicConfig(level=logging.INFO, format="[{name}]: {message}", style="{")
 logger = logging.getLogger("Thunder Autotuner")
 
+# Control if single trace regions or partial traces are benchmarked during OperatorExecutor tuning
+_benchmark_single_trace_region = False
 
 class OptimizationAlgorithm(Enum):
     """
@@ -316,7 +318,7 @@ class PlacerBase:
 
         self.apply_bucketing_bw_trace: bool = apply_bucketing_bw_trace
 
-        self.benchmark_iters: int = 20
+        self.benchmark_iters: int = 5
 
         self.compile_data = compile_data
 
@@ -819,9 +821,6 @@ class FusionPlacer_BeamSearch(PlacerBase):
                     else:
                         logger.debug(f"Available executors for single region:\n{candidate_executors}")
 
-                    # Define the standalone trace in order to benchmark this symbol
-                    subtrace = construct_trace()(current_bsym.sym, *current_bsym.args, **current_bsym.kwargs)
-
                     # Helpers
                     candidate_best_time = BenchmarkResult()
                     candidate_best_mem = BenchmarkResult()
@@ -831,16 +830,31 @@ class FusionPlacer_BeamSearch(PlacerBase):
                         candidate_best_time = BenchmarkResult(index=0)
                         candidate_best_mem = BenchmarkResult(index=0)
                     else:
+                        if _benchmark_single_trace_region:
+                            # Define the standalone trace in order to benchmark this symbol
+                            subtrace = construct_trace()(current_bsym.sym, *current_bsym.args, **current_bsym.kwargs)
+
                         # Search for best candidate
                         for i, candidate in enumerate(candidate_executors):
-                            from thunder.common import transform_for_execution
 
-                            subtrace_placed = transform_for_execution(subtrace, executors_list=[candidate])[-1]
-                            logger.debug(f"Subtrace to benchmark single symbol:\n{subtrace_placed}")
-                            t, m, _ = benchmark_trace(
-                                subtrace_placed, self.benchmark_iters, fw_trace=self.active_fw_trace_ctx[0]
+                            if _benchmark_single_trace_region:
+                                from thunder.common import transform_for_execution
+                                subtrace_placed = transform_for_execution(subtrace, executors_list=[candidate])[-1]
+                                logger.debug(f"Subtrace to benchmark single symbol:\n{subtrace_placed}")
+                                t, m, _ = benchmark_trace(
+                                    subtrace_placed, self.benchmark_iters, fw_trace=self.active_fw_trace_ctx[0]
+                                )
+                            else:
+                                # Match the current candidate into helper dicts to benchmark partial trace
+                                match_bsym_executor(current_bsym, [dict_time_strat, dict_mem_strat], candidate)
+                                # Retrieve partial trace and benchmark, apply remat if possible
+                                trc, _, _ = get_placed_trace(dict_time_strat, increasing_symbols)
+                                t, m, _ = benchmark_trace(
+                                    trc, self.benchmark_iters, fw_trace=self.active_fw_trace_ctx[0]
+                                )
+                            logger.info(
+                                f"Operator excutor [{candidate.name}] candidate perf (is single trace region: {_benchmark_single_trace_region}): {t} ms {m/(2**30)} GB"
                             )
-                            logger.debug(f"Operator excutor [{candidate.name}] candidate perf: {t} ms {m/(2**30)} GB")
                             # Update results
                             if t < candidate_best_time.runtime:
                                 candidate_best_time = BenchmarkResult(time=t, index=i)
