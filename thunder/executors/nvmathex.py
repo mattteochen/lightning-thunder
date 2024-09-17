@@ -1,30 +1,49 @@
-from thunder import TensorProxy
+from importlib.metadata import version
 from thunder.core.prims import PrimIDs
+import logging
 import nvmath
 import thunder
 import thunder.torch as ltorch
 import torch
 
-nvmath_ex = thunder.extend.OperatorExecutor("nvmath", version="0.1.0")
+logger = logging.getLogger("Thunder nvmath_ex")
+logger.disabled = True
+
+nvmath_ex = thunder.extend.OperatorExecutor("nvmath", version=version('nvmath-python'))
 thunder.extend.register_executor(nvmath_ex)
 
+_cache = {}
+options = nvmath.linalg.advanced.MatmulOptions(logger=logger)
+
+def _cache_key(a: torch.Tensor, b: torch.Tensor) -> str:
+    def _get_shape_str(t: tuple):
+        return '_'.join(str(num) for num in t)
+
+    return f'{_get_shape_str(a.size())}-{_get_shape_str(b.size())}'
 
 def _nvmath_linalg_advanced_matmul_impl(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
-    return nvmath.linalg.advanced.matmul(a, b)
+    # Check if these shapes have been cached
+    k = _cache_key(a, b)
+    if k in _cache:
+        algo = _cache[k]
+        with nvmath.linalg.advanced.Matmul(a, b, options=options) as mm:
+            # Provide the optimized algorithms directly to plan.
+            mm.plan(algorithms=algo)
+            # Execute the multiplication
+            return mm.execute()
 
+    # Compute a new shape and cache the result
+    with nvmath.linalg.advanced.Matmul(a, b, options=options) as mm:
+        preferences = nvmath.linalg.advanced.MatmulPlanPreferences(limit=25)
+        mm.plan(preferences=preferences)
+        mm.autotune(iterations=10)
+        # Execute the multiplication
+        result = mm.execute()
+        _cache[k] = mm.algorithms
+        return result
 
-def _nvmath_linalg_advanced_matmul_checker(a: TensorProxy, b: TensorProxy) -> bool:
-    if len(a.shape) < 2 or len(b.shape) < 2:
-        return False
-    if a.shape[-1] != b.shape[-2]:
-        return False
-    if a.device != b.device:
-        return False
-    if a.dtype != b.dtype:
-        return False
-    # Handle distribuited
+def _nvmath_linalg_advanced_matmul_checker(*args, **kwargs) -> bool:
     return True
-
 
 nvmath_linalg_advanced_matmul = nvmath_ex.register_operator(
     "nvmath_linalg_advanced_matmul",

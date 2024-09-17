@@ -1,6 +1,7 @@
 from collections.abc import Callable
 import torch
 from thunder.backend_optimizer.utils import benchmark_trace
+from torch.utils.benchmark import Timer, Compare
 
 warm_up_iters = 50
 
@@ -25,8 +26,18 @@ class SplitFwBwBenchmarkUtils:
         self.bw_fn: Callable | None = bw_fn
         self.executor = executor
 
+def _run_loss(model, input, target, loss_fn):
+    logits = model(input)
+    logits = logits.reshape(-1, logits.size(-1))
+    target = target.reshape(-1)
+    loss = loss_fn(logits, target)
+    loss.backward()
 
-def torch_fw_bw_benchmark_nvsight(models: list, labels: list, inputs: list, iters: int) -> None:
+def _run_autograd(model, input):
+    y = model(input)
+    torch.autograd.grad(y, input, grad_outputs=torch.ones_like(y))
+
+def torch_fw_bw_benchmark_nvsight(models: list, labels: list, inputs: list, iters: int, loss) -> None:
     """
     Benchmark a mock trainig loop of the given models. The loss function is defined as a naive torch.sum().
     This util will generate nvsight system profiles.
@@ -61,10 +72,11 @@ def torch_fw_bw_benchmark_nvsight(models: list, labels: list, inputs: list, iter
         torch.cuda.cudart().cudaProfilerStop()
 
 
-def torch_fw_bw_benchmark(models: list, labels: list, inputs: list, iters: int) -> None:
+def torch_fw_bw_benchmark(models: list, labels: list, inputs: list, iters: int, loss_fn: Callable | None = None) -> None:
     """
-    Benchmark a mock trainig loop of the given models. The loss function is defined as a naive torch.sum().
-    Forward and backward pass will be both recorded.
+    Benchmark a mock trainig loop of the given models. Time measurements will be performed by using cuda events.
+    A loss function is applied to trigger backward if provided. Otherwise torch.autograd will be used.
+    Forward and backward pass will be recorded separately.
 
     Args:
         models: a list of Callable models to benchmark.
@@ -74,9 +86,12 @@ def torch_fw_bw_benchmark(models: list, labels: list, inputs: list, iters: int) 
     """
     for m, input, label in zip(models, inputs, labels):
         # Warm up
+        target = torch.ones_like(input)
         for _ in range(warm_up_iters):
-            y = m(input)
-            y.sum().backward()
+            if loss_fn is not None:
+                _run_loss(m, input, target, loss_fn)
+            else:
+                _run_autograd(m, input)
 
         start_events = [torch.cuda.Event(enable_timing=True) for _ in range(iters)]
         end_events = [torch.cuda.Event(enable_timing=True) for _ in range(iters)]
@@ -106,14 +121,20 @@ def torch_fw_bw_benchmark(models: list, labels: list, inputs: list, iters: int) 
         max_allocated_bytes = 0
         torch.cuda.synchronize()
         for i in range(iters):
+            target = torch.ones_like(input)
             torch.cuda.empty_cache()
             torch.cuda._sleep(1_000_000)
 
             y = m(input)
-            loss = y.sum()
             torch.cuda.reset_peak_memory_stats(torch.cuda.current_device())
             start_events[i].record(stream)
-            loss.backward()
+            if loss_fn is not None:
+                y = y.reshape(-1, y.size(-1))
+                target = target.reshape(-1)
+                loss = loss_fn(y, target)
+                loss.backward()
+            else:
+                torch.autograd.grad(y, input, grad_outputs=torch.ones_like(y))
             end_events[i].record(stream)
 
             max_allocated_bytes = max(max_allocated_bytes, torch.cuda.max_memory_allocated(torch.cuda.current_device()))
@@ -124,10 +145,51 @@ def torch_fw_bw_benchmark(models: list, labels: list, inputs: list, iters: int) 
         print(f"{label} tot bw time: {tot_time} ms")
         print(f"{label} max bw allocated memory: {max_allocated_bytes / (2**30)} GB")
 
-
-def torch_total_benchmark(models: list, labels: list, inputs: list, iters: int) -> None:
+def torch_timer_total_benchmark(
+    models: list, labels: list, inputs: list, name: str = "Model", loss_fn: Callable | None = None
+) -> None:
     """
-    Benchmark a mock trainig loop of the given models. The loss function is defined as a naive torch.sum().
+    Benchmark a mock trainig loop time of the given models. Measurements will be computed by using torch.utils.benchmark.Timer.
+    A loss function is applied to trigger backward if provided. Otherwise torch.autograd will be used.
+
+    Args:
+        models: a list of Callable models to benchmark.
+        labels: a list of labels (names) referring to the models.
+        inputs: a list of inputs to give to models' forward pass.
+        name: the model name
+        loss_fn: a Pytorch loss function
+    """
+    results = []
+    for m, l, i in zip(models, labels, inputs):
+        t = Timer(
+            stmt="""
+            _run_loss(m, i, target, loss_fn)
+            """
+            if loss_fn is not None
+            else """
+            _run_atograd(m, i)
+            """,
+            globals={
+                "i": i,
+                "m": m,
+                "target": torch.zeros_like(i),
+                "_run_loss": _run_loss,
+                "_run_autograd": _run_autograd,
+                "loss_fn": loss_fn,
+            },
+            label=name,
+            description=l,
+        )
+        results.append(t.blocked_autorange(min_run_time=1))
+        print(results[-1])
+    compare = Compare(results)
+    compare.colorize(rowwise=True)
+    compare.print()
+
+def torch_total_benchmark(models: list, labels: list, inputs: list, iters: int, loss_fn: Callable | None = None) -> None:
+    """
+    Benchmark a mock trainig loop of the given models. Time measurements will be performed by using cuda events.
+    A loss function is applied to trigger backward if provided. Otherwise torch.autograd will be used.
     The complete time will be recorded with no split between forward pass and backward pass.
 
     Args:
@@ -138,9 +200,12 @@ def torch_total_benchmark(models: list, labels: list, inputs: list, iters: int) 
     """
     for m, input, label in zip(models, inputs, labels):
         # Warm up
+        target = torch.ones_like(input)
         for _ in range(warm_up_iters):
-            y = m(input)
-            y.sum().backward()
+            if loss_fn is not None:
+                _run_loss(m, input, target, loss_fn)
+            else:
+                _run_autograd(m, input)
 
         start_events = [torch.cuda.Event(enable_timing=True) for _ in range(iters)]
         end_events = [torch.cuda.Event(enable_timing=True) for _ in range(iters)]
@@ -148,14 +213,20 @@ def torch_total_benchmark(models: list, labels: list, inputs: list, iters: int) 
         max_allocated_bytes = 0
         torch.cuda.synchronize()
         for i in range(iters):
+            target = torch.ones_like(input)
             torch.cuda.empty_cache()
             torch.cuda._sleep(1_000_000)
             torch.cuda.reset_peak_memory_stats(torch.cuda.current_device())
 
             start_events[i].record(stream)
             y = m(input)
-            loss = y.sum()
-            loss.backward()
+            if loss_fn is not None:
+                y = y.reshape(-1, y.size(-1))
+                target = target.reshape(-1)
+                loss = loss_fn(y, target)
+                loss.backward()
+            else:
+                torch.autograd.grad(y, input, grad_outputs=torch.ones_like(y))
             end_events[i].record(stream)
 
             max_allocated_bytes = max(max_allocated_bytes, torch.cuda.max_memory_allocated(torch.cuda.current_device()))
@@ -165,7 +236,6 @@ def torch_total_benchmark(models: list, labels: list, inputs: list, iters: int) 
         tot_time = sum(tot) / iters
         print(f"{label} tot time: {tot_time} ms")
         print(f"{label} max allocated memory: {max_allocated_bytes / (2**30)} GB")
-
 
 def thunder_fw_bw_benchmark(
     fw_traces: list, bw_traces: list, fw_labels: list, bw_labels: list, iters: int, nvsight: bool = False
