@@ -305,6 +305,13 @@ def jit(
         interpretation: (deprecated: don't use this, use the thunder.functional.jit entry point to get the functional jit)
 
         transforms: List of transforms to be applied. It should be an instance :class:`thunder.core.transforms.Transform`. Default: ``None``
+
+        autotune_type: string representing the required autotuner performance target (``"runtime"`` or ``"memory"``).
+        autotune_nv_enable_options: boolean to enable nvFuser compilation options autotuning. Currently at most one option will be used. Default: ``"False"``
+        autotune_enable_te: boolean to enable TransformerEngineFP8 executor autotuning. Default: ``"False"``
+        autotune_optimize_common_blocks: boolean to enable trace's common block optimization during the compilation (for example transformer layers). This optimization can be used if you are working with a model with repeated block structures as transformer based models. You don't need to know
+                                         where a block starts or ends as it's handled automatically. Default: ``"False"``
+        autotune_optimize_common_blocks_min_size: integer to control the minimum block length to trigger the common block optimization. Default: ``-1``
     """
     from thunder.backend_optimizer.optimizer import OptimizerType
 
