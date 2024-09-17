@@ -1,12 +1,11 @@
 """
-This benchmark script is intended to demonstrate the optimizer on a generic model.
-No executor are given leaving full responsibility to the engine.
+This benchmark script is intended to demonstrate the autotuner on a generic model.
+No executor are given leaving full responsibility to Thunder.
 """
 
 import torch
 import thunder
-from thunder.benchmarks.utils import thunder_fw_bw_benchmark, torch_fw_bw_benchmark, torch_total_benchmark
-
+from thunder.benchmarks.utils import torch_timer_total_benchmark, torch_total_benchmark
 
 class LLaMAMLP(torch.nn.Module):
     def __init__(self, n_embd, intermediate_size) -> None:
@@ -30,30 +29,19 @@ with torch.device("cuda"):
 
     model = LLaMAMLP(a, b)
 
+    eager = model
+    torchcompile = torch.compile(model)
     jmodel_def = thunder.jit(model)
-    jmodel_auto = thunder.jit(model, autotune_type="runtime", autotune_enable_te=True)
+    jmodel_auto = thunder.jit(model, autotune_type="memory", autotune_enable_te=False, autotune_nv_enable_options=True)
 
     print("deviation def:", (jmodel_def(x) - model(x)).abs().max().item())
     print("deviation auto:", (jmodel_auto(x) - model(x)).abs().max().item())
 
     iters = 100
-    print("Results with thunder benchmark:")
-    fw_traces = [
-        thunder.last_traces(jmodel_def)[-1],
-        thunder.last_traces(jmodel_auto)[-1],
-    ]
-    bw_traces = [
-        thunder.last_backward_traces(jmodel_def)[-1],
-        thunder.last_backward_traces(jmodel_auto)[-1],
-    ]
-    fw_labels = ["fw_def", "fw_auto"]
-    bw_labels = ["bw_def", "bw_auto"]
-    thunder_fw_bw_benchmark(fw_traces, bw_traces, fw_labels, bw_labels, iters)
-
-    callables = [jmodel_def, jmodel_auto]
-    labels = ["def", "auto"]
-    inputs = [x, x]
-    print("\nResults with torch fw bw benchmark:")
-    torch_fw_bw_benchmark(callables, labels, inputs, iters)
+    callables = [eager, torchcompile, jmodel_def, jmodel_auto]
+    labels = ['eager', 'torchcompile', 'Thunder', 'Thunder Autotuned']
+    inputs = [x, x, x, x]
     print("\nResults with torch total benchmark:")
     torch_total_benchmark(callables, labels, inputs, iters)
+    print("\nResults with torch timer benchmark:")
+    torch_timer_total_benchmark(callables, labels, inputs, "LlamaMLP")

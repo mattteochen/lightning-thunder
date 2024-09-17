@@ -10,7 +10,7 @@ from thunder.benchmarks.utils import (
 from thunder.tests.litgpt_model import Config
 import thunder
 import torch
-# import time
+import time
 
 torch.backends.cuda.matmul.allow_tf32 = True  # allow tf32 on matmul
 torch.backends.cudnn.allow_tf32 = True  # allow tf32 on cudnn
@@ -78,11 +78,11 @@ for test in to_run:
                 autotune_optimize_common_blocks=test.optimize_transformer_blocks,
                 autotune_optimize_common_blocks_min_size=test.optimize_transformer_min_block_size,
             )
-            # print("deviation def:", (jmodel_def(x) - model(x)).abs().max().item())
-            # s = time.time_ns()
-            # print("deviation auto:", (jmodel_auto(x) - model(x)).abs().max().item())
-            # e = time.time_ns()
-            # print("Compilation time:", {(e - s) / 1000000000}, "s")
+            print("deviation def:", (jmodel_def(x) - model(x)).abs().max().item())
+            s = time.time_ns()
+            print("deviation auto:", (jmodel_auto(x) - model(x)).abs().max().item())
+            e = time.time_ns()
+            print("Compilation time:", {(e - s) / 1000000000}, "s")
 
             iters = 100
             callables = [eager, torch_compile, jmodel_def, jmodel_auto]

@@ -168,7 +168,7 @@ def torch_timer_total_benchmark(
             """
             if loss_fn is not None
             else """
-            _run_atograd(m, i)
+            _run_autograd(m, i)
             """,
             globals={
                 "i": i,
