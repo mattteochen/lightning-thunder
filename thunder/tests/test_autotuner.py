@@ -497,7 +497,7 @@ class Model_2(torch.nn.Module):
 
 
 @pytest.mark.parametrize(
-    "model, tensor_shape, dtype, autotune_type, executors, expected_executors, use_cudagraphs, use_te",
+    "model, tensor_shape, dtype, autotune_type, executors, expected_executors, use_te",
     [
         (
             Model_1(32, 32),
@@ -506,7 +506,6 @@ class Model_2(torch.nn.Module):
             "runtime",
             [nvfuserex],
             [[nvfuserex, torchex, pythonex]],
-            True,
             False,
         ),
         (
@@ -516,7 +515,6 @@ class Model_2(torch.nn.Module):
             "memory",
             [torch_compile_ex],
             [[torch_compile_ex, torchex, pythonex]],
-            True,
             False,
         ),
         (
@@ -526,7 +524,6 @@ class Model_2(torch.nn.Module):
             "runtime",
             [transformer_engine_ex],
             [[transformer_engine_ex, nvfuserex, torchex, pythonex]],
-            False,
             True,
         ),
         (
@@ -536,7 +533,6 @@ class Model_2(torch.nn.Module):
             "runtime",
             [sdpa_ex, cudnn_ex],
             [[sdpa_ex, nvfuserex, torchex, pythonex], [cudnn_ex, nvfuserex, torchex, pythonex]],
-            False,
             False,
         ),
         (
@@ -549,7 +545,6 @@ class Model_2(torch.nn.Module):
                 [sdpa_ex, transformer_engine_ex, nvfuserex, torchex, pythonex],
                 [transformer_engine_ex, sdpa_ex, nvfuserex, torchex, pythonex],
             ],
-            False,
             True,
         ),
     ],
@@ -562,7 +557,6 @@ def test_autotuner(
     autotune_type: str,
     executors: list,
     expected_executors: list[list],
-    use_cudagraphs: bool,
     use_te: bool,
 ):
     def _run():
@@ -573,7 +567,6 @@ def test_autotuner(
             model,
             autotune_type=autotune_type,
             executors=executors,
-            use_cudagraphs=use_cudagraphs,
             autotune_enable_te=use_te,
         )
         y_def = jitted_def(x)

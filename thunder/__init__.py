@@ -330,12 +330,11 @@ def jit(
         # Default the executors list to all_executors if no options are given
         # Otherwise the user restricted choice will be used
         from thunder.executors.transformer_engineex import transformer_engine_ex
-        from thunder.executors.cudagraphex import cudagraphex
         from thunder.executors.pythonex import ex as python_ex
         if not executors:
             executors = get_all_executors()
-            # Remove python and cudagraph
-            executors = [ex for ex in executors if ex != python_ex and ex != cudagraphex]
+            # Remove pythonex
+            executors = [ex for ex in executors if ex != python_ex]
             # Remove transformer_engine if not requested
             executors = [
                 ex

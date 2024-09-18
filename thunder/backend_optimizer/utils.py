@@ -869,7 +869,7 @@ def transform_proxies_to_real(sequence: Sequence, level=0, **kwargs) -> tuple | 
 
     res = []
     for e in sequence:
-        if type(e) is tuple:
+        if isinstance(e, Sequence):
             res.append(transform_proxies_to_real(e, level + 1, **kwargs))
         else:
             if isinstance(e, TensorProxy):
