@@ -1,13 +1,30 @@
+from __future__ import annotations
 from contextlib import contextmanager
 import itertools
-from typing import Any
-from collections.abc import Mapping
+from typing import TYPE_CHECKING
 import collections
 
 import torch as pytorch
+from torch.utils.weak import WeakTensorKeyDictionary
 
 import thunder
 from thunder.core.compile_data import get_compile_data
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
+    from typing import Any
+    from thunder.core.transform_common import Transform
+
+
+def _convert_state_dict_to_per_module(state_dict: dict[str, Any], module_names: set[str]) -> dict[str, dict[str, Any]]:
+    state_dict_per_module = collections.defaultdict(dict)
+    for k, v in state_dict.items():
+        prefix, sep, _ = k.rpartition(".")
+        # not great but should not happen too often / deep
+        while prefix not in module_names:
+            prefix, sep, _ = prefix.rpartition(".")
+        state_dict_per_module[prefix][k[len(prefix) + len(sep) :]] = v
+    return state_dict_per_module
 
 
 class ThunderModule(pytorch.nn.Module):
@@ -105,50 +122,77 @@ class ThunderModule(pytorch.nn.Module):
             remove_duplicate=remove_duplicate,
         )
 
+    def _get_shared_names(self):
+        parameters_to_names = WeakTensorKeyDictionary()
+        for name, v in itertools.chain(
+            self.named_parameters(remove_duplicate=False), self.named_buffers(remove_duplicate=False)
+        ):
+            parameters_to_names.setdefault(v, set()).add(name)
+        shared_names: dict[str, set[str]] = {}
+        for s in parameters_to_names.values():
+            for n in s:
+                shared_names[n] = s
+        return shared_names
+
     def load_original_state_dict(self, state_dict):
         # this loads the state dict incrementally to not exhaust memory
-        module_names = {n for n, _ in self._model.named_modules()}
-        sd_per_module = collections.defaultdict(dict)
-        for k, v in state_dict.items():
-            prefix, sep, _ = k.rpartition(".")
-            # not great but should not happen too often / deep
-            while prefix not in module_names:
-                prefix, sep, _ = prefix.rpartition(".")
-            sd_per_module[prefix][k[len(prefix) + len(sep) :]] = v
+        sd_per_module = _convert_state_dict_to_per_module(state_dict, {n for n, _ in self._model.named_modules()})
+
+        shared_names = self._get_shared_names()
+        processed_names = set()
 
         for submodule_name, sd_part in sd_per_module.items():
-            prefix = submodule_name + ("." if submodule_name else "")
-            for transform in self._lc_transforms:
-                sd_part = transform.transform_state_dict_for_submodule(self, submodule_name, sd_part)
-            for k, v in sd_part.items():
-                full_k = prefix + k
-                if full_k in self._overrides_parameters:
-                    p = self._overrides_parameters[full_k]
-                    if p.dtype == v.dtype and p.shape == v.shape:
-                        with pytorch.no_grad():
-                            p.copy_(v)
-                    else:
-                        with pytorch.no_grad():
-                            self._overrides_parameters[full_k] = pytorch.nn.Parameter(
-                                v.to(p.device), requires_grad=p.requires_grad
-                            )
+            self._transform_and_load_for_submodule(submodule_name, sd_part, shared_names, processed_names)
 
+    def _transform_and_load_for_submodule(self, submodule_name, sd_part, shared_names, processed_names):
+        prefix = submodule_name + ("." if submodule_name else "")
+        for transform in self._lc_transforms:
+            sd_part = transform.transform_state_dict_for_submodule(self, submodule_name, sd_part)
+
+        for k, v in sd_part.items():
+            full_k = prefix + k
+
+            # cater for shared parameters
+            processed_copies = shared_names[full_k] & processed_names
+            if processed_copies:
+                copy_name = next(iter(processed_copies))
+                if full_k in self._overrides_parameters:
+                    self._overrides_parameters[full_k] = self._overrides_parameters[copy_name]
                 elif full_k in self._overrides_buffers:
-                    if p.dtype == v.dtype and p.shape == v.shape:
-                        with pytorch.no_grad():
-                            self._overrides_buffers[full_k].copy_(v)
-                    else:
-                        with pytorch.no_grad():
-                            self._overrides_parameters[full_k] = v.to(p.device).requires_grad_(p.requires_grad)
+                    self._overrides_buffers[full_k] = self._overrides_buffers[copy_name]
                 else:
                     raise NotImplementedError(f"don't know how to handle {full_k}")
+                processed_names.add(full_k)
+                continue
+
+            if full_k in self._overrides_parameters:
+                p = self._overrides_parameters[full_k]
+                if p.dtype == v.dtype and p.shape == v.shape:
+                    with pytorch.no_grad():
+                        p.copy_(v)
+                else:
+                    with pytorch.no_grad():
+                        self._overrides_parameters[full_k] = pytorch.nn.Parameter(
+                            v.to(p.device), requires_grad=p.requires_grad
+                        )
+            elif full_k in self._overrides_buffers:
+                b = self._overrides_buffers[full_k]
+                if b.dtype == v.dtype and b.shape == v.shape:
+                    with pytorch.no_grad():
+                        b.copy_(v)
+                else:
+                    with pytorch.no_grad():
+                        self._overrides_parameters[full_k] = v.to(b.device).requires_grad_(b.requires_grad)
+            else:
+                raise NotImplementedError(f"don't know how to handle {full_k}")
+            processed_names.add(full_k)
 
     def state_dict(self, *, destination=None, prefix="", keep_vars=False):
         """
         Returns the state dict of the (transformed) Thunder module.
 
         Args:
-            destination: if given, use this mutuable mapping as the dict container.
+            destination: if given, use this mutable mapping as the dict container.
             prefix: a prefix for the keys.
             keep_vars: do not detach
 
@@ -179,6 +223,43 @@ class ThunderModule(pytorch.nn.Module):
                 is not pytorch.nn.Module.get_extra_state
             ):
                 destination[extra_state_key] = self.get_extra_state()
+        return destination
+
+    def original_state_dict(
+        self,
+        *,
+        destination: dict[str, Any] | None = None,
+        prefix: str = "",
+        keep_vars: bool = False,
+    ) -> dict[str, Any]:
+        """Returns the state dict of the transformed :class:`ThunderModule` with reverse transform applied.
+
+        For example, :func:`ThunderModule.state_dict` returns a state dict of sharded tensors if
+        a model is :func:`thunder.distributed.fsdp` applied while :func:`ThunderModule.original_state_dict`
+        returns a state dict of unsharded tensors.
+
+        Args:
+            destination: if given, use this mutable mapping as the dict container.
+            prefix: a prefix for the keys.
+            keep_vars: do not detach
+
+        """
+        module_names = {name for name, _ in self._model.named_modules()}
+        state_dict_per_submodule = _convert_state_dict_to_per_module(self.state_dict(), module_names)
+
+        if destination is None:
+            destination = collections.OrderedDict()
+            destination._metadata = collections.OrderedDict()
+
+        transform: Transform
+        for submodule_name, submodule_state_dict in state_dict_per_submodule.items():
+            for transform in reversed(self._lc_transforms):
+                submodule_state_dict = transform.reverse_transform_state_dict_for_submodule(
+                    self,
+                    submodule_name,
+                    submodule_state_dict,
+                )
+            destination.update({f"{prefix}{submodule_name}.{k}": v for k, v in submodule_state_dict.items()})
         return destination
 
     def load_state_dict(self, state_dict: Mapping[str, Any], strict: bool = True, assign: bool = False):
