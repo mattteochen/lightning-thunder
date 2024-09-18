@@ -118,8 +118,8 @@ def torch_fw_bw_benchmark(
         torch.cuda.synchronize()
         tot = [s.elapsed_time(e) for s, e in zip(start_events, end_events)]
         tot_time = sum(tot) / iters
-        print(f"{label} tot fw time: {tot_time} ms")
-        print(f"{label} max fw allocated memory: {max_allocated_bytes / (2**30)} GB")
+        print(f"{label} forward mean time: {tot_time} ms")
+        print(f"{label} peak forward allocated memory: {max_allocated_bytes / (2**30)} GB")
 
         start_events = [torch.cuda.Event(enable_timing=True) for _ in range(iters)]
         end_events = [torch.cuda.Event(enable_timing=True) for _ in range(iters)]
@@ -148,15 +148,15 @@ def torch_fw_bw_benchmark(
         torch.cuda.synchronize()
         tot = [s.elapsed_time(e) for s, e in zip(start_events, end_events)]
         tot_time = sum(tot) / iters
-        print(f"{label} tot bw time: {tot_time} ms")
-        print(f"{label} max bw allocated memory: {max_allocated_bytes / (2**30)} GB")
+        print(f"{label} backward mean time: {tot_time} ms")
+        print(f"{label} peak backward allocated memory: {max_allocated_bytes / (2**30)} GB")
 
 
 def torch_timer_total_benchmark(
     models: list, labels: list, inputs: list, name: str = "Model", loss_fn: Callable | None = None
 ) -> None:
     """
-    Benchmark a mock trainig loop time of the given models. Measurements will be computed by using torch.utils.benchmark.Timer.
+    Benchmark a mock trainig loop time of the given models. Measurements will be computed by using torch.utils.benchmark.Timer, median times will be provided.
     A loss function is applied to trigger backward if provided. Otherwise torch.autograd will be used.
 
     Args:
@@ -244,8 +244,8 @@ def torch_total_benchmark(
         torch.cuda.synchronize()
         tot = [s.elapsed_time(e) for s, e in zip(start_events, end_events)]
         tot_time = sum(tot) / iters
-        print(f"{label} tot time: {tot_time} ms")
-        print(f"{label} max allocated memory: {max_allocated_bytes / (2**30)} GB")
+        print(f"{label} forward+backward mean time: {tot_time} ms")
+        print(f"{label} peak forward+backward allocated memory: {max_allocated_bytes / (2**30)} GB")
 
 
 def thunder_fw_bw_benchmark(
