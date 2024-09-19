@@ -479,7 +479,7 @@ def benchmark_trace(
             new_args = clone_args_if_needed(args)
             fn(*new_args)
 
-    def memory_snapshot(fn: Callable, args: Sequence, file_name:str):
+    def memory_snapshot(fn: Callable, args: Sequence, file_name: str):
         new_args = clone_args_if_needed(args)
         torch.cuda.empty_cache()
         torch.cuda.synchronize()
@@ -584,10 +584,7 @@ def benchmark_trace(
                 stmt="""
                 fn(*new_args)
                 """,
-                globals={
-                    "fn": fn,
-                    "new_args": new_args
-                },
+                globals={"fn": fn, "new_args": new_args},
             )
             t = t.blocked_autorange(min_run_time=1)
             return t.median, max_allocated_bytes, out
@@ -695,7 +692,7 @@ def benchmark_trace(
 
     # Can not parse input args (usually due to OOM errors in upstream calls)
     if input_args is None:
-        return float('inf'), float('inf'), None
+        return float("inf"), float("inf"), None
 
     # Obtain the python executable string
     executable_str = trace.python()
