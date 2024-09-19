@@ -1,10 +1,16 @@
 from importlib.metadata import version
 from thunder.core.prims import PrimIDs
 import logging
-import nvmath
 import thunder
 import thunder.torch as ltorch
 import torch
+
+try:
+    import nvmath
+    HAS_NVMATH = True
+except:
+    pass
+    HAS_NVMATH = False
 
 logger = logging.getLogger("Thunder nvmath_ex")
 logger.disabled = True
@@ -43,7 +49,7 @@ def _nvmath_linalg_advanced_matmul_impl(a: torch.Tensor, b: torch.Tensor) -> tor
         return result
 
 def _nvmath_linalg_advanced_matmul_checker(*args, **kwargs) -> bool:
-    return True
+    return HAS_NVMATH
 
 nvmath_linalg_advanced_matmul = nvmath_ex.register_operator(
     "nvmath_linalg_advanced_matmul",
