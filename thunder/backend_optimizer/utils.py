@@ -22,6 +22,7 @@ from thunder.core.utils import check, safe_map_flat
 import thunder.core.transforms as transforms
 from itertools import chain
 import torch
+from torch.utils.benchmark import Timer, Compare
 from thunder.core.dtypes import dtype
 from enum import Enum
 
@@ -451,6 +452,8 @@ def benchmark_trace(
     from thunder.executors.passes import del_last_used
     import inspect
 
+    warm_up_iters = 10
+
     torch.compiler.reset()
 
     # TODO: If TE is used inside the trace we have to clone the input arguments as
@@ -471,15 +474,28 @@ def benchmark_trace(
                     res.append(arg)
         return tuple(res)
 
+    def warm_up(fn: Callable, args: Sequence):
+        for _ in range(warm_up_iters):
+            new_args = clone_args_if_needed(args)
+            fn(*new_args)
+
+    def memory_snapshot(fn: Callable, args: Sequence, file_name:str):
+        new_args = clone_args_if_needed(args)
+        torch.cuda.empty_cache()
+        torch.cuda.synchronize()
+        torch.cuda.memory._record_memory_history()
+        fn(*new_args)
+        torch.cuda.memory._dump_snapshot(file_name + "_benchmark.pickle")
+        torch.cuda.memory._record_memory_history(enabled=None)
+
     def compute_time_cost_nsight(fn: Callable, iters: int, *args) -> tuple[float, float, Any]:
         try:
-            warm_up_iters = 10
             torch.cuda.empty_cache()
             torch.cuda.synchronize()
+
             # Warm up cycles
-            for _ in range(warm_up_iters):
-                new_args = clone_args_if_needed(args)
-                fn(*new_args)
+            warm_up(fn, args)
+
             # Benchmark
             torch.cuda.empty_cache()
             torch.cuda.synchronize()
@@ -497,28 +513,21 @@ def benchmark_trace(
             import inspect
 
             trc = inspect.getsource(fn)
-            print(f"#Trace execution failed for nsight (error: {e}):\n{trc}")
+            print(f"Trace execution failed for nsight (error: {e}):\n\nTrace executed:\n{trc}")
             raise e
 
     def compute_time_cost_ms(fn: Callable, repr: str, iters: int, *args) -> tuple[float, float, Any]:
         try:
             current_iter = 0
-            warm_up_iters = 10
             out = None
 
             # Warm up cycles
-            for _ in range(warm_up_iters):
-                new_args = clone_args_if_needed(args)
-                out = fn(*new_args)
+            warm_up(fn, args)
+
             # Snapshot request
             if snapshot:
-                new_args = clone_args_if_needed(args)
-                torch.cuda.empty_cache()
-                torch.cuda.synchronize()
-                torch.cuda.memory._record_memory_history()
-                fn(*new_args)
-                torch.cuda.memory._dump_snapshot(snapshot_name + "_benchmark.pickle")
-                torch.cuda.memory._record_memory_history(enabled=None)
+                memory_snapshot(fn, args, snapshot_name)
+
             # Benchmark
             stream = torch.cuda.current_stream()
             max_allocated_bytes = 0
@@ -543,7 +552,43 @@ def benchmark_trace(
             tot_time = sum(times) / iters
             return tot_time, max_allocated_bytes, out
         except Exception as e:
-            print(f"#Trace execution failed at iter {current_iter} (error: {e})\n{repr}")
+            print(f"Trace execution failed at iter {current_iter} (error: {e})\n\nTrace executed:\n{repr}")
+            raise e
+
+    def compute_time_cost_ms_torchtimer(fn: Callable, repr: str, *args) -> tuple[float, float, Any]:
+        try:
+            out = None
+
+            # Warm up cycles
+            warm_up(fn, args)
+
+            # Snapshot request
+            if snapshot:
+                memory_snapshot(fn, args, snapshot_name)
+
+            # Measure memory consumption
+            torch.cuda.reset_peak_memory_stats(torch.cuda.current_device())
+            new_args = clone_args_if_needed(args)
+            # Cache the output
+            out = fn(*new_args)
+            max_allocated_bytes = torch.cuda.max_memory_allocated(torch.cuda.current_device())
+
+            # Benchmark
+            new_args = clone_args_if_needed(args)
+            # Omit any labels as we are not going to print the Timer result
+            t = Timer(
+                stmt="""
+                fn(*new_args)
+                """,
+                globals={
+                    "fn": fn,
+                    "new_args": new_args
+                },
+            )
+            t = t.blocked_autorange(min_run_time=1)
+            return t.median, max_allocated_bytes, out
+        except Exception as e:
+            print(f"Trace execution failed (error: {e})\n\nTrace executed:\n{repr}")
             raise e
 
     def build_static_args(sequence: Sequence, **kwargs) -> list:
@@ -663,7 +708,8 @@ def benchmark_trace(
         if nsight:
             t, m, answer = compute_time_cost_nsight(executable, iters, *input_args)
         else:
-            t, m, answer = compute_time_cost_ms(executable, executable_str, iters, *input_args)
+            t, m, answer = compute_time_cost_ms_torchtimer(executable, executable_str, *input_args)
+            # t, m, answer = compute_time_cost_ms(executable, executable_str, iters, *input_args)
     except Exception:
         import traceback
 
