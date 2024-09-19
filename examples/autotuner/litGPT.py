@@ -8,6 +8,7 @@ from thunder.tests.litgpt_model import Config
 import thunder
 import torch
 import time
+from pprint import pprint
 
 torch.backends.cuda.matmul.allow_tf32 = True  # allow tf32 on matmul
 torch.backends.cudnn.allow_tf32 = True  # allow tf32 on cudnn
@@ -58,12 +59,12 @@ for test in to_run:
         if test.seq_len != -1:
             cfg.block_size = test.seq_len
         torch.set_default_dtype(torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16)
-        print(cfg)
+        pprint(cfg)
+        print("Batch size:", test.batch_size)
         with torch.device("cuda"):
             model = GPT(cfg)
             x = torch.randint(1, model.config.vocab_size, (test.batch_size, cfg.block_size))
             target = torch.ones_like(x)
-            print(f"Input size: {x.size()}")
 
             eager = model
             torch_compile = torch.compile(model)
