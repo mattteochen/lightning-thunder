@@ -709,13 +709,14 @@ def benchmark_trace(
         if nsight:
             t, m, answer = compute_time_cost_nsight(executable, iters, *input_args)
         else:
-            # By default torch.utils.benchmark.Timer is employed for measurement but if TE FP8 is being used we have to used our custom measurer.
-            # https://github.com/mattteochen/lightning-thunder/blob/b728ab6416aca9a6fd621101a4fc68842b3ed60e/thunder/backend_optimizer/utils.py#L459
-            if is_te_used(trace):
-                t, m, answer = compute_time_cost_ms(executable, executable_str, iters, *input_args)
-            else:
-                t, m, answer = compute_time_cost_ms_torchtimer(executable, executable_str, *input_args)
-                # t, m, answer = compute_time_cost_ms(executable, executable_str, iters, *input_args)
+            # # By default torch.utils.benchmark.Timer is employed for measurement but if TE FP8 is being used we have to used our custom measurer.
+            # # https://github.com/mattteochen/lightning-thunder/blob/b728ab6416aca9a6fd621101a4fc68842b3ed60e/thunder/backend_optimizer/utils.py#L459
+            # if is_te_used(trace):
+            #     t, m, answer = compute_time_cost_ms(executable, executable_str, iters, *input_args)
+            # else:
+            #     t, m, answer = compute_time_cost_ms_torchtimer(executable, executable_str, *input_args)
+
+            t, m, answer = compute_time_cost_ms(executable, executable_str, iters, *input_args)
     except Exception:
         import traceback
 
