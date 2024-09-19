@@ -8,18 +8,19 @@ import torch
 try:
     import nvmath
     HAS_NVMATH = True
+    version = version('nvmath-python')
 except:
     pass
     HAS_NVMATH = False
+    version = None
 
 logger = logging.getLogger("Thunder nvmath_ex")
 logger.disabled = True
 
-nvmath_ex = thunder.extend.OperatorExecutor("nvmath", version=version('nvmath-python'))
+nvmath_ex = thunder.extend.OperatorExecutor("nvmath", version=version)
 thunder.extend.register_executor(nvmath_ex)
 
 _cache = {}
-options = nvmath.linalg.advanced.MatmulOptions(logger=logger)
 
 def _cache_key(a: torch.Tensor, b: torch.Tensor) -> str:
     def _get_shape_str(t: tuple):
@@ -28,6 +29,7 @@ def _cache_key(a: torch.Tensor, b: torch.Tensor) -> str:
     return f'{_get_shape_str(a.size())}-{_get_shape_str(b.size())}'
 
 def _nvmath_linalg_advanced_matmul_impl(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+    options = nvmath.linalg.advanced.MatmulOptions(logger=logger)
     # Check if these shapes have been cached
     k = _cache_key(a, b)
     if k in _cache:
