@@ -549,7 +549,7 @@ def benchmark_trace(
     def build_static_args(sequence: Sequence, **kwargs) -> list:
         return transform_proxies_to_real(sequence, level=0, **kwargs)
 
-    def backward_trace_args_preprocess() -> list:
+    def backward_trace_args_preprocess() -> list | None:
         if "fw_trace" not in kwargs:
             raise RuntimeError(
                 "Set the associated forward trace in order to benchmark backward pass with sdpa executor"
@@ -559,6 +559,9 @@ def benchmark_trace(
             raise AssertionError(f"forward trace is not a TraceCtx. Received: {type(fw_trace)}")
         # Run the fw trace and get the outputs
         fw_output = benchmark_trace(fw_trace, apply_del_last_used=False)[2]
+        # If any issue with the forward trace benchmark we have to stop this backward benchmark too (usually OOM errors)
+        if fw_output is None:
+            return None
 
         # Check if the fw trace is a final trace or an intermediate one (used for single trace region benchmarks)
         sig = fw_trace.signature_with_no_ctx()
@@ -639,7 +642,11 @@ def benchmark_trace(
         input_args = backward_trace_args_preprocess()
     # Forward or computational trace, parse the compile time input args...
     else:
-        input_args: list = build_static_args(trace.args, te_used=te_used)
+        input_args = build_static_args(trace.args, te_used=te_used)
+
+    # Can not parse input args (usually due to OOM errors in upstream calls)
+    if input_args is None:
+        return float('inf'), float('inf'), None
 
     # Obtain the python executable string
     executable_str = trace.python()
