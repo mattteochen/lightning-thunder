@@ -15,6 +15,7 @@ except:
     version = None
 
 logger = logging.getLogger("Thunder nvmath_ex")
+# Disable nvmath logs
 logger.disabled = True
 
 nvmath_ex = thunder.extend.OperatorExecutor("nvmath", version=version)
