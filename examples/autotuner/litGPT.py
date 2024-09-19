@@ -90,6 +90,8 @@ for test in to_run:
             torch_total_benchmark(callables, labels, inputs, iters, torch.nn.functional.cross_entropy)
             print(f"\nResults torch timer benchmark ({iters} iters):")
             torch_timer_total_benchmark(callables, labels, inputs, test.model_name, torch.nn.functional.cross_entropy)
+
+            print(f'Executors employed: {thunder.executors_applied(jmodel_auto)}')
     except Exception as e:
         print(f"Benchmark failed:\n{e}")
         import traceback
