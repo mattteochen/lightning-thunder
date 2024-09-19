@@ -33,7 +33,14 @@ with torch.device("cuda"):
     eager = model
     torchcompile = torch.compile(model)
     jmodel_def = thunder.jit(model)
-    jmodel_auto = thunder.jit(model, autotune_type="runtime", autotune_enable_te=False, autotune_nv_enable_options=True)
+    jmodel_auto = thunder.jit(
+        model,
+        autotune_type="runtime",
+        autotune_enable_te=True,
+        autotune_nv_enable_options=True,
+        model_name="LLaMAMLP",
+        autotune_save_configuration=True,
+    )
 
     print("deviation def:", (jmodel_def(x) - model(x)).abs().max().item())
     print("deviation auto:", (jmodel_auto(x) - model(x)).abs().max().item())

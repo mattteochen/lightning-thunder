@@ -528,6 +528,10 @@ def benchmark_trace(
             if snapshot:
                 memory_snapshot(fn, args, snapshot_name)
 
+            # Save output
+            new_args = clone_args_if_needed(args)
+            out = fn(*new_args)
+
             # Benchmark
             stream = torch.cuda.current_stream()
             max_allocated_bytes = 0
@@ -708,8 +712,13 @@ def benchmark_trace(
         if nsight:
             t, m, answer = compute_time_cost_nsight(executable, iters, *input_args)
         else:
-            t, m, answer = compute_time_cost_ms_torchtimer(executable, executable_str, *input_args)
-            # t, m, answer = compute_time_cost_ms(executable, executable_str, iters, *input_args)
+            # By default torch.utils.benchmark.Timer is employed for measurement but if TE FP8 is being used we have to used our custom measurer.
+            # https://github.com/mattteochen/lightning-thunder/blob/b728ab6416aca9a6fd621101a4fc68842b3ed60e/thunder/backend_optimizer/utils.py#L459
+            if is_te_used(trace):
+                t, m, answer = compute_time_cost_ms(executable, executable_str, iters, *input_args)
+            else:
+                t, m, answer = compute_time_cost_ms_torchtimer(executable, executable_str, *input_args)
+                # t, m, answer = compute_time_cost_ms(executable, executable_str, iters, *input_args)
     except Exception:
         import traceback
 
@@ -720,7 +729,6 @@ def benchmark_trace(
     # Restore the autocast value to not mess up the input trace
     if te_used:
         trace._include_te_fp8_autocast = cached_te_fp8_autocast_value
-
     return t, m, answer
 
 
@@ -1037,7 +1045,8 @@ def symbol_hash(
         return "{" + str(t.value) + "}"
 
     def _any_proxy_hash(p: AnyProxy) -> str:
-        return "{" + p.__repr__() + "}"
+        # We are not using class' __repr__ as it might contain memory addresses and those could change during different iterations
+        return "{AnyProxy}"
 
     def _sequence_hash(s: Sequence | None) -> str:
         if s is None:
