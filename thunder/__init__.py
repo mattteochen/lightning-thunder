@@ -300,6 +300,9 @@ def jit(
         autotune_optimize_common_blocks: boolean to enable trace's common block optimization during the compilation (for example transformer layers). This optimization can be used if you are working with a model with repeated block structures as transformer based models. You don't need to know
                                          where a block starts or ends as it's handled automatically. Default: ``"False"``
         autotune_optimize_common_blocks_min_size: integer to control the minimum block length to trigger the common block optimization. Default: ``-1``
+        autotune_save_configuration: boolean to produce a configuration file for the current model. This configuration can be loaded afterwards with ``"autotune_restore_configuration"``. Default ``"False"``
+        autotune_restore_configuration: string containing the cached configuration file name with the relative path to the script invocation.
+        model_name: string containing the current model name used during the configuration file creation in ``"autotune_save_configuration"``. A default one is used if this is not provided.
     """
     from thunder.backend_optimizer.optimizer import OptimizerType
 
