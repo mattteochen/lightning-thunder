@@ -889,7 +889,6 @@ class FusionPlacer_BeamSearch(PlacerBase):
                 best_res_time = BenchmarkResult()
                 best_res_mem = BenchmarkResult()
 
-                # TODO (matteochen): Aggregate them
                 best_placement_time = None
                 best_keys_time = None
                 best_placement_mem = None
@@ -1050,6 +1049,7 @@ class FusionPlacer_BeamSearch(PlacerBase):
             )
 
         # If any compile options is used we will need to have duplicated executors inside the executors list to maintain the matching.
+        # TODO: integrate torchcompile_cat alongside with nvFuser. This should speed up the autotuner too.
         self.fusion_executors_saved_for_later = []
         ex: FusionExecutor
         for ex in self.fusion_executors:
@@ -1122,7 +1122,6 @@ class FusionPlacer_BeamSearch(PlacerBase):
         match self.trace_type:
             case TraceType.FW:
                 logger.info(f"New forward trace to optimize (strat = {self.optimizer_type})")
-            # TODO (matteochen): support bw trace optimization even though with no fw traces cached (computational trace?)
             case TraceType.BW:
                 if not self.compile_data.compile_options.get("autotune_restore_configuration", ""):
                     if not self.cached_fw_traces:
