@@ -685,3 +685,30 @@ def test_save_configuration_cuda():
             thunder.last_traces(jitted)[-1].bound_symbols, thunder.last_traces(jitted_recovered)[-1].bound_symbols
         ):
             assert bsym_a.sym.executor == bsym_b.sym.executor
+
+
+def test_no_autograd_trace_autotuning():
+    def _fn(a, b):
+        t0 = a + b
+        t1 = a + t0
+        t2 = t1 * t1
+        t3 = b - t2
+        return b @ t3
+
+    executors = ['torch', 'torchcompile']
+    jfn_def = thunder.jit(_fn, executors=executors)
+    jfn_auto = thunder.jit(_fn, autotune_type='runtime', disable_torch_autograd=True, exeuctors=executors)
+    a = torch.randn(4,4)
+    b = torch.randn(4,4)
+
+    y_def = jfn_def(a, b)
+    y_auto = jfn_auto(a, b)
+
+    applied = set()
+    trace = thunder.last_traces(jfn_auto)[-1]
+    for b in trace.bound_symbols:
+        if b.sym.executor is not None:
+            applied.add(b.sym.executor.name)
+
+    assert (applied == set(['torch']) or applied == set(['torchcompile', 'torch']))
+    torch.testing.assert_close(y_def, y_auto)

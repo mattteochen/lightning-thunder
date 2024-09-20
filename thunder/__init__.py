@@ -686,8 +686,10 @@ def jit(
 
             if backward_trc is None:
                 from thunder.executors.passes import transform_for_execution as transform_for_execution_pass
+                from thunder.executors.passes import autotune_transform_for_execution
                 from thunder.executors.passes import _transform_for_operator_executor_execution
                 from thunder.distributed.utils import maybe_sort_waits
+                from thunder.backend_optimizer.optimizer import BackendOptimizer, TraceType
 
                 tmp_comp_trc = _transform_for_operator_executor_execution(computation_trc, cd.executors_list)
                 is_transformed, tmp_comp_trc = maybe_sort_waits(tmp_comp_trc)
@@ -695,11 +697,28 @@ def jit(
                     computation_trc = tmp_comp_trc
                     computation_traces.append(computation_trc)
 
-                extraces = transform_for_execution(
-                    computation_trc,
-                    executors_list=cd.executors_list,
-                    use_del_last_used=False,
-                )
+                autotune = cd.compile_options.get('autotune_type', None)
+                if autotune is None:
+                    extraces = transform_for_execution(
+                        computation_trc,
+                        executors_list=cd.executors_list,
+                        use_del_last_used=False,
+                    )
+                else:
+                    optimizer_ctx = BackendOptimizer(
+                        priority_executors=cd.executors_list,
+                        apply_bucketing_bw_trace=False,
+                        produce_log=False,
+                        optimizer_type=autotune,
+                        compile_data=cd,
+                    )
+                    extrace = autotune_transform_for_execution(
+                        optimizer_context=optimizer_ctx,
+                        trace=computation_trc,
+                        trace_type=TraceType.FW,
+                        is_computational=True
+                    )
+                    extraces = [extrace]
                 computation_traces.extend(extraces)
                 computation_trc = computation_traces[-1]
 

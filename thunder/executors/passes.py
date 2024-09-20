@@ -141,8 +141,8 @@ def _transform_for_operator_executor_execution(trace: TraceCtx, executors_list: 
 
 # Autotuned transform_for_execution version
 def autotune_transform_for_execution(
-    *, optimizer_context: BackendOptimizer, trace: TraceCtx, trace_type: TraceType
-) -> tuple[TraceCtx, TraceCtx] | None:
+        *, optimizer_context: BackendOptimizer, trace: TraceCtx, trace_type: TraceType, is_computational: bool = False
+) -> tuple[TraceCtx, TraceCtx] | TraceCtx | None:
     import torch
 
     start_time_ns = time.perf_counter_ns()
@@ -161,10 +161,16 @@ def autotune_transform_for_execution(
     optimizer_context.log_file_name = f"autotune_transform_for_execution_{sig_name}.log"
     # Forward traces are cached inside the context
     optimizer_context.optimize()
+
+    # Retrive the optimized traces. If backward trace is requested then the forward trace will be given only together with the backward one.
+    # This is because the optimal forward does not always lead to an optimal backward.
+    # If this is a computational trace (no autograd) then the forward (computational) trace will be ready and returned.
     match trace_type:
         case TraceType.FW:
-            # Nothing more left
-            pass
+            if not is_computational:
+                pass
+            else:
+                fw_trace: TraceCtx = optimizer_context.get_optimal_fw_traces(is_computational)
         # When optimizing the backward pass, the optimizer will return the best fw and bw traces based on the requested autotune_type, no need to choose the fw pass manually
         case TraceType.BW:
             fw_extrace, bw_extrace = optimizer_context.get_optimal_fw_bw_traces()
@@ -176,14 +182,21 @@ def autotune_transform_for_execution(
     # Assign the trace provenance
     match trace_type:
         case TraceType.FW:
-            cd = get_compile_data()
-            if not cd or not cd.compile_options.get('autotune_restore_configuration', ""):
-                fw_traces = optimizer_context.get_optimal_fw_traces()
-                for trc in fw_traces:
-                    trc.set_provenance(
-                        TraceProvenance(f"Autotuned transform for execution (took {elapsed_time_millis} milliseconds)")
-                    )
-            return None
+            if not is_computational:
+                cd = get_compile_data()
+                # Only for fresh tuning
+                if not cd or not cd.compile_options.get('autotune_restore_configuration', ""):
+                    # We are assigning the provenance to all the possible candidates as at this stage we
+                    # don't know which trace will be returned at the end of the optimization
+                    fw_traces: list = optimizer_context.get_optimal_fw_traces()
+                    for trc in fw_traces:
+                        trc.set_provenance(
+                            TraceProvenance(f"Autotuned transform for execution (took {elapsed_time_millis} milliseconds)")
+                        )
+                return None
+            else:
+                fw_trace.set_provenance(TraceProvenance(f"Autotuned transform for execution (took {elapsed_time_millis} milliseconds)"))
+                return fw_trace
         case TraceType.BW:
             bw_extrace.set_provenance(
                 TraceProvenance(f"Autotuned transform for execution (took {elapsed_time_millis} milliseconds)")

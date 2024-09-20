@@ -273,6 +273,7 @@ class PlacerBase:
         optimizer_type (OptimizerType): The optimization target.
         active_fw_trace_ctx (tuple): An active forward trace set to optimize backward.
         cached_fw_traces (list): Cached optimized forward traces.
+        best_comp_trace (TraceCtx): The optimized computational trace.
         cached_computational_trace (TraceCtx): Original computational trace
         cached_computational_backward_trace (TraceCtx): Original computational backward trace
         bw_trace_candidates (TraceCandidate): An instance of trace candidates.
@@ -310,6 +311,7 @@ class PlacerBase:
 
         self.active_fw_trace_ctx: tuple[TraceCtx | None, FusionExecutorsPlacementCtx | None] = None, None
         self.cached_fw_traces: list[TraceCandidate] = []
+        self.best_comp_trace: TraceCtx = TraceCtx()
         self.cached_computational_trace: TraceCtx = TraceCtx()
         self.cached_computational_backward_trace: TraceCtx = TraceCtx()
         self.bw_trace_candidates: TraceCandidates = TraceCandidates()
@@ -339,9 +341,12 @@ class PlacerBase:
         """
         pass
 
-    def get_optimal_fw_traces(self) -> Sequence[TraceCtx]:
+    def get_optimal_fw_traces(self, is_computational=False) -> Sequence[TraceCtx] | TraceCtx:
         """
         Retrive the optimal forward traces that the object has tuned.
+
+        Args:
+            is_computational: The requested forward trace is a computational trace (autograd is disabled).
         """
         return []
 
@@ -496,6 +501,8 @@ class FusionPlacer_BeamSearch(PlacerBase):
         # Number of fw traces to cached are: #fusion_executors * 2
         def fw_benchmark():
             # The optimizer builds the results in order following the self.fusion_executors list order
+            best_time = BenchmarkResult()
+            best_mem = BenchmarkResult()
             pair_time: dict
             pair_mem: dict
             for pair_time, pair_mem in zip(
@@ -508,12 +515,15 @@ class FusionPlacer_BeamSearch(PlacerBase):
                 trc_time, placement_ctx_time = list(pair_time.values())[0]
                 trc_mem, placement_ctx_mem = list(pair_mem.values())[0]
                 label = list(pair_time.keys())[0]
-                # TODO (matteochen): remove the benchmark here as will done later on the bw pass
                 c, m, _ = benchmark_trace(trc_time, self.benchmark_iters)
+                if c < best_time.runtime:
+                    best_time = BenchmarkResult(time=c, trace=trc_time)
                 self.debug_msg += (
                     f"Trace name = [{label}] - Target: TIME - Time = {c} ms - Mem = {m / (2**30)} GB\n{trc_time}\n\n"
                 )
                 c, m, _ = benchmark_trace(trc_mem, self.benchmark_iters)
+                if m < best_mem.memory:
+                    best_mem = BenchmarkResult(memory=m, trace=trc_mem)
                 self.debug_msg += (
                     f"Trace name = [{label}] - Target: MEM - Mem = {m / (2**30)} GB - Time = {c} ms\n{trc_mem}\n\n"
                 )
@@ -531,6 +541,10 @@ class FusionPlacer_BeamSearch(PlacerBase):
                             else label,
                         )
                     )
+            # Assign best computational trace
+            self.best_comp_trace = best_time.trace if self.optimizer_type == OptimizerType.RUNTIME else best_mem.trace
+
+            # Cache the original fw trace
             self.cached_computational_trace = self.trace
 
         def bw_benchmark():
@@ -587,6 +601,7 @@ class FusionPlacer_BeamSearch(PlacerBase):
                     )
                 )
 
+            # Cache original backward trace
             self.cached_computational_backward_trace = self.trace
 
         match self.trace_type:
@@ -1070,10 +1085,12 @@ class FusionPlacer_BeamSearch(PlacerBase):
     ################################################## Public methods ##################################################
     """
 
-    def get_optimal_fw_traces(self) -> Sequence[TraceCtx]:
+    def get_optimal_fw_traces(self, is_computational=False) -> Sequence[TraceCtx] | TraceCtx:
         if not self.cached_fw_traces:
             raise AssertionError("Failed to obtain optimal fw traces")
-        return [candidate.trace for candidate in self.cached_fw_traces]
+        if not is_computational:
+            return [candidate.trace for candidate in self.cached_fw_traces]
+        return self.best_comp_trace
 
     def get_optimal_fw_bw_traces(self) -> tuple[TraceCtx, TraceCtx]:
         restore_file = self.compile_data.compile_options.get("autotune_restore_configuration", "")
@@ -1351,11 +1368,14 @@ class BackendOptimizer:
         """
         self.optimizer.attach_trace(trace=trace, trace_type=trace_type)
 
-    def get_optimal_fw_traces(self) -> Sequence[TraceCtx]:
+    def get_optimal_fw_traces(self, is_computational=False) -> Sequence[TraceCtx] | TraceCtx:
         """
         Retrive the optimal forward traces that the object has tuned.
+
+        Args:
+            is_computational: The requested forward trace is a computational trace (autograd is disabled).
         """
-        return self.optimizer.get_optimal_fw_traces()
+        return self.optimizer.get_optimal_fw_traces(is_computational)
 
     def get_optimal_fw_bw_traces(self) -> tuple[TraceCtx, TraceCtx]:
         """
