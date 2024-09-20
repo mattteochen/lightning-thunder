@@ -621,6 +621,7 @@ class Benchmark_litGPT:
                         autotune_type=self.autotune_type,
                         executors=executors,
                         autotune_optimize_common_blocks=True,
+                        autotune_optimize_common_blocks_min_size=20, # This is quite low for a traced transformer block but will do the job
                         autotune_save_configuration=self.save_autotune_cfg,
                         autotune_enable_te="transformerengine" in self.compile
                     )
