@@ -921,6 +921,7 @@ class FusionPlacer_BeamSearch(PlacerBase):
 
                 n_missing_bsyms = len(group) - start_idx
                 # Tune a single fusion group.
+                # NOTE: currently this is disabled for backward traces
                 for i in range(0, n_missing_bsyms, n_missing_bsyms - 1 if self.trace_type == TraceType.BW else 1):
                     if ex.name == "torchcompile":
                         import torch
@@ -938,6 +939,7 @@ class FusionPlacer_BeamSearch(PlacerBase):
                             group[k],
                             [dict_time_strat, dict_mem_strat],
                             # In order to benchmark the fusion placecement, we can use any executor for the excluded bsym from the fusion region
+                            # TODO: consider tuning the single trace regions removed from the fusion one
                             get_first_available_operator_executor(
                                 bsym=group[k],
                                 executors=self.executors,
@@ -1032,7 +1034,7 @@ class FusionPlacer_BeamSearch(PlacerBase):
                 FusionExecutorsPlacementCtx(placement=executors_mem, compile_options=executor_compile_option)
             )
 
-        # If any compile options will be used we will need to have duplicated executors inside the executors list to maintain the matching.
+        # If any compile options is used we will need to have duplicated executors inside the executors list to maintain the matching.
         self.fusion_executors_saved_for_later = []
         ex: FusionExecutor
         for ex in self.fusion_executors:
@@ -1048,7 +1050,7 @@ class FusionPlacer_BeamSearch(PlacerBase):
             )
             self.fusion_executors_saved_for_later.append(ex)
 
-            # Always search with option disabled -> standard flow
+            # Always search with option disabled (standard flow)
             _search(ex)
 
             # Currently we are enabling one compile option at the time as testing all the permutations might need too much time.

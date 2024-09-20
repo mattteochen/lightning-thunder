@@ -159,7 +159,7 @@ def get_not_used_intermediate_outsputs(trace_in: TraceCtx) -> list[Proxy]:
     This can be usefull if we want to force a specific TensorProxy to be returned in a modfied trace to avoid the dce.
 
     Args:
-        in_trace: A generic trace.
+        trace_in: A generic trace.
     """
 
     def is_in_sequence(seq: Sequence[Any], t: Proxy):
