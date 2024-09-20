@@ -362,6 +362,7 @@ def get_all_executors() -> tuple[Executor, ...]:
         torchex,
         transformer_engineex,
         triton_crossentropy,
+        nvmathex
     )
 
     return tuple(_executor_map.values())

@@ -238,6 +238,8 @@ class Benchmark_litGPT:
         use_torchao_fp8_linear: bool = False,
         use_torchao_fp8_allgather: bool = False,
         use_torchao_fp8_precompute_scale_for_fsdp: bool = False,
+        autotune: str = "",
+        save_autotune_cfg: bool = False
     ):
         seed = 1337
         torch.manual_seed(seed)
@@ -357,6 +359,13 @@ class Benchmark_litGPT:
         self.nsys_enabled = nsys_enabled
         self.profiler_start = profiler_start
         self.profiler_stop = profiler_stop
+
+        # Autotuner
+        supported_autotuning = set(['runtime', 'memory', ''])
+        if autotune not in supported_autotuning:
+            raise AssertionError(f"Autotuning configuration not supported. Available ones are: {[a for a in supported_autotuning if a]}")
+        self.autotune_type = autotune
+        self.save_autotune_cfg = save_autotune_cfg
 
         if n_layers is not None:
             self.config.n_layer = n_layers
@@ -569,6 +578,16 @@ class Benchmark_litGPT:
 
                 executors.insert(0, transformer_engine_ex)
 
+            if "fa3" in self.compile:
+                from thunder.executors.fa3ex import fa3_ex
+
+                executors.insert(0, fa3_ex)
+
+            if "nvmath" in self.compile:
+                from thunder.executors.nvmathex import nvmath_ex
+
+                executors.insert(0, nvmath_ex)
+
             if "dynamo" in self.compile:
                 if self.distributed_mode == "fsdp2":
                     print("Resetting cache size for when fsdp2 and using thunder as backend torch.compile")
@@ -595,7 +614,19 @@ class Benchmark_litGPT:
                 # so we are using the lower level torch._dynamo.optimize function
                 model = torch._dynamo.optimize(backend=backend)(model)
             else:
-                model = thunder.jit(model, executors=executors)
+                if self.autotune_type:
+                    # nvFuser compile options to be enabled if wanted with: autotune_nv_enable_options=True
+                    model = thunder.jit(
+                        model,
+                        autotune_type=self.autotune_type,
+                        executors=executors,
+                        autotune_optimize_common_blocks=True,
+                        autotune_optimize_common_blocks_min_size=20, # This is quite low for a traced transformer block but will do the job
+                        autotune_save_configuration=self.save_autotune_cfg,
+                        autotune_enable_te="transformerengine" in self.compile
+                    )
+                else:
+                    model = thunder.jit(model, executors=executors)
 
         elif self.compile != "eager":
             raise ValueError(f"Invalid compile option: {self.compile}")

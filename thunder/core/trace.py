@@ -340,6 +340,11 @@ class TraceCtx:
         self._current_source_filename = filename
         self._current_source_positions = positions
 
+    def signature_with_no_ctx(self) -> str:
+        si = self.siginfo()
+        signature_str = si.prettyprint(trace=self)
+        return signature_str
+
     # TODO Account for multi-line signatures
     # TODO issue "Add type annotations to Python function produced by traces"
     #   Consider extending the signature with type information, in particular the

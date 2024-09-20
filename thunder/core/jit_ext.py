@@ -1577,6 +1577,7 @@ def thunder_general_jit(
         process_group_for_ddp=process_group_for_ddp,
         executor_lookasides=executor_lookasides,
     )
+
     jfn = interpret(
         fn,
         fn_lookaside=general_jit_lookaside,

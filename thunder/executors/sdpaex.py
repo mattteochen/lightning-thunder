@@ -321,6 +321,7 @@ def _scaled_dot_product_efficient_attention_backward_impl(
     )
 
 
+sdpaex_scaled_dot_product_efficient_attention_backward_name = "sdpaex_scaled_dot_product_efficient_attention_backward"
 sdpea_bwd = sdpa_ex.register_operator(
     "sdpaex_scaled_dot_product_efficient_attention_backward",
     meta=_scaled_dot_product_efficient_attention_backward_meta,
@@ -401,8 +402,9 @@ def _scaled_dot_product_flash_attention_backward_impl(
     return (_sdpa_slice_head_dimension(g, value.shape[-1]) for g in grads)
 
 
+sdpafx_scaled_dot_product_efficient_attention_backward_name = "sdpafx_scaled_dot_product_efficient_attention_backward"
 sdpfa_bwd = sdpa_ex.register_operator(
-    "sdpafx_scaled_dot_product_efficient_attention_backward",
+    sdpafx_scaled_dot_product_efficient_attention_backward_name,
     meta=_scaled_dot_product_flash_attention_backward_meta,
     fn=_scaled_dot_product_flash_attention_backward_impl,
 )

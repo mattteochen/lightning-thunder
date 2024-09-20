@@ -266,6 +266,7 @@ def jit(
     disable_torch_autograd: bool = False,  # TODO Revisit this UX for RC1
     transforms: list[Transform] | None = None,
     record_history: bool = False,
+    # autotune_type: Any | None = None,
     **compile_options,  # TODO RC1 Make this explicit -- dict of options
 ) -> Callable:
     """Just-in-time compile a callable (function or model).
@@ -292,7 +293,18 @@ def jit(
                - ``"same input"`` - don't check, but just assume that a cached function works if it exists.
 
         transforms: List of transforms to be applied. It should be an instance :class:`thunder.core.transforms.Transform`. Default: ``None``
+
+        autotune_type: string representing the required autotuner performance target (``"runtime"`` or ``"memory"``).
+        autotune_nv_enable_options: boolean to enable nvFuser compilation options autotuning. Currently at most one option will be used. Default: ``"False"``
+        autotune_enable_te: boolean to enable TransformerEngineFP8 executor autotuning. Default: ``"False"``
+        autotune_optimize_common_blocks: boolean to enable trace's common block optimization during the compilation (for example transformer layers). This optimization can be used if you are working with a model with repeated block structures as transformer based models. You don't need to know
+                                         where a block starts or ends as it's handled automatically. Default: ``"False"``
+        autotune_optimize_common_blocks_min_size: integer to control the minimum block length to trigger the common block optimization. Default: ``-1``
+        autotune_save_configuration: boolean to produce a configuration file for the current model. This configuration can be loaded afterwards with ``"autotune_restore_configuration"``. Default ``"False"``
+        autotune_restore_configuration: string containing the cached configuration file name with the relative path to the script invocation.
+        model_name: string containing the current model name used during the configuration file creation in ``"autotune_save_configuration"``. A default one is used if this is not provided.
     """
+    from thunder.backend_optimizer.optimizer import OptimizerType
 
     if "executors_list" in compile_options:
         warnings.warn("outdated argument executors_list= in call, please use executors=")
@@ -307,6 +319,41 @@ def jit(
 
     if transforms is None:
         transforms = []
+
+    required_autotune = compile_options.get("autotune_type", None)
+    if required_autotune is not None:
+        if required_autotune not in ["runtime", "memory"]:
+            raise AssertionError(f"Not supported optimization: {required_autotune}")
+
+        compile_options |= {
+            "autotune_type": OptimizerType.RUNTIME if required_autotune == "runtime" else OptimizerType.MEMORY,
+            "autotune_executors_placed_by_fw_bw_split": set(),
+        }
+
+        # Default the executors list to all_executors if no options are given
+        # Otherwise the user restricted choice will be used
+        from thunder.executors.transformer_engineex import transformer_engine_ex
+        from thunder.executors.pythonex import ex as python_ex
+        if not executors:
+            executors = get_all_executors()
+            # Remove pythonex
+            executors = [ex for ex in executors if ex != python_ex]
+            # Remove transformer_engine if not requested
+            executors = [
+                ex
+                for ex in executors
+                if ex != transformer_engine_ex
+                or (ex == transformer_engine_ex and compile_options.get("autotune_enable_te", False))
+            ]
+        else:
+            # If TE is in executors list we have to enable the compilation option
+            if transformer_engine_ex in executors:
+                compile_options['autotune_enable_te'] = True
+
+        from thunder.backend_optimizer.utils import reorder_executors_list
+        executors = reorder_executors_list(
+            executors, autotune_enable_te=compile_options.get("autotune_enable_te", False)
+        )
 
     # Resolve names of executors
     executors = resolve_executors(executors)
@@ -450,6 +497,7 @@ def jit(
                     cs.last_traces = comp_traces
                     cs.last_interpreted_instructions = None
                     cs.last_interpreter_log = None
+                    cs.last_executors = cd.executors_list
                     cs.last_prologue_traces = pro_traces
                     cs.last_prologue = pro
                     cs.last_prologue_transformation_start = 0
@@ -485,6 +533,7 @@ def jit(
                 cs.last_traces = comp_traces
                 cs.last_interpreted_instructions = None
                 cs.last_interpreter_log = None
+                cs.last_executors = cd.executors_list
                 cs.last_prologue_traces = pro_traces
                 cs.last_prologue = pro
 
@@ -605,6 +654,7 @@ def jit(
             cs.last_prologue_traces = prologue_traces
             cs.last_prologue = pro
             cs.last_traces = computation_traces
+            cs.last_executors = cd.executors_list
             backward_traces = []
             cs.last_backward_traces = backward_traces
             cs.last_interpreter_log = last_interpreter_log
@@ -631,10 +681,15 @@ def jit(
                     # Note computation_trc and backward_trc have been appended to cs.last_(backward_)traces
                     # by split_forward_backward
 
+                    # Reset the cache for the next compilation
+                    cd.autotuner_bsym_with_gradfn_executor_cache = {}
+
             if backward_trc is None:
                 from thunder.executors.passes import transform_for_execution as transform_for_execution_pass
+                from thunder.executors.passes import autotune_transform_for_execution
                 from thunder.executors.passes import _transform_for_operator_executor_execution
                 from thunder.distributed.utils import maybe_sort_waits
+                from thunder.backend_optimizer.optimizer import BackendOptimizer, TraceType
 
                 tmp_comp_trc = _transform_for_operator_executor_execution(computation_trc, cd.executors_list)
                 is_transformed, tmp_comp_trc = maybe_sort_waits(tmp_comp_trc)
@@ -642,11 +697,28 @@ def jit(
                     computation_trc = tmp_comp_trc
                     computation_traces.append(computation_trc)
 
-                extraces = transform_for_execution(
-                    computation_trc,
-                    executors_list=cd.executors_list,
-                    use_del_last_used=False,
-                )
+                autotune = cd.compile_options.get('autotune_type', None)
+                if autotune is None:
+                    extraces = transform_for_execution(
+                        computation_trc,
+                        executors_list=cd.executors_list,
+                        use_del_last_used=False,
+                    )
+                else:
+                    optimizer_ctx = BackendOptimizer(
+                        priority_executors=cd.executors_list,
+                        apply_bucketing_bw_trace=False,
+                        produce_log=False,
+                        optimizer_type=autotune,
+                        compile_data=cd,
+                    )
+                    extrace = autotune_transform_for_execution(
+                        optimizer_context=optimizer_ctx,
+                        trace=computation_trc,
+                        trace_type=TraceType.FW,
+                        is_computational=True
+                    )
+                    extraces = [extrace]
                 computation_traces.extend(extraces)
                 computation_trc = computation_traces[-1]
 
@@ -832,6 +904,19 @@ def last_prologue_traces(fn) -> TraceCtx:
     if cs.last_prologue_traces is None:
         raise TypeError(f"{fn} doesn't seem to have been called yet.")
     return cs.last_prologue_traces
+
+
+def executors_applied(fn) -> Sequence[Executor]:
+    """Obtains the list of executors that have been applied to the computational trace.
+    If the backward trace is not None, the list will include also executors used in the backward trace.
+
+    """
+    cs = compile_stats(fn)
+    if cs is None:
+        raise TypeError(f"{fn} doesn't seem to be a thunder compiled function.")
+    if cs.last_executors is None:
+        raise TypeError(f"{fn} doesn't seem to have been called yet.")
+    return cs.last_executors
 
 
 def cache_option(fn) -> CACHE_OPTIONS:

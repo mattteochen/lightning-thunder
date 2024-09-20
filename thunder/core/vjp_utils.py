@@ -4,13 +4,16 @@ from functools import wraps
 from inspect import Parameter, Signature
 from itertools import chain
 
+from thunder.backend_optimizer.utils import symbol_hash
 from thunder.core import prims, utils
+from thunder.core.compile_data import get_compile_data
 from thunder.core.prims import PrimIDs
 from thunder.core.proxies import Proxy, variableify, TensorProxy
 from thunder.core.pytree import tree_flatten, tree_map
 from thunder.core.symbol import BoundSymbol
 from thunder.core.trace import from_trace, TraceCtx
 from thunder.core.transform_common import dce
+from thunder.extend import Executor
 
 
 _cache = {}
@@ -49,146 +52,258 @@ def make_aug_forward_and_backward(bsym: BoundSymbol) -> tuple[Callable, Callable
     from thunder.common import _make_cache_key
     from thunder.core.transforms import _get_gradfn_and_executor, eval_trace
 
-    joint_forward_backward, executor = _get_gradfn_and_executor(bsym)
-    utils.check(
-        joint_forward_backward is not None,
-        lambda: f"Cannot generate forward and backward functions for {bsym.sym.name}",
-    )
-    key = (bsym.sym, executor, subkey := _make_cache_key(bsym.args, bsym.kwargs))
-    cached_result = _cache.get(key, None) if subkey is not None else None
-    if cached_result is not None and not getattr(joint_forward_backward, "_disable_caching", False):
-        return cached_result
-
-    joint_trace = thunder.trace(inline_trace=False, use_dce=False)(joint_forward_backward, *bsym.args, **bsym.kwargs)
-    consumers = utils.consumers(joint_trace)
-
-    def find_backward_input(forward_output):
-        output_consumers = consumers.get(forward_output, None)
-        if output_consumers is None or not output_consumers:
-            return None
-        get_grad_bsym = next(
-            filter(lambda bsym: bsym.sym.id == PrimIDs.GET_GRAD, output_consumers),
-            None,
+    def _make_aug_forward_and_backward(*, return_traces=False, update_cache=True) -> tuple:
+        joint_forward_backward, executor = _get_gradfn_and_executor(bsym)
+        utils.check(
+            joint_forward_backward is not None,
+            lambda: f"Cannot generate forward and backward functions for {bsym.sym.name}",
         )
-        return get_grad_bsym.output if get_grad_bsym is not None else None
+        key = (bsym.sym, executor, subkey := _make_cache_key(bsym.args, bsym.kwargs))
+        # If we update the cache we are not using the autotuner hence cache values for the key entry generated above is valid.
+        # If autotuner is used, each bsym has an unique key id hence this cache entry is not valid anymore.
+        if update_cache:
+            cached_result = _cache.get(key, None) if subkey is not None else None
+            if cached_result is not None and not getattr(joint_forward_backward, "_disable_caching", False):
+                return cached_result
 
-    def find_backward_output(forward_input):
-        forward_input_consumers = consumers.get(forward_input, None)
-        if forward_input_consumers is None or not forward_input_consumers:
-            return None
-        put_grad_bsym = next(
-            filter(lambda bsym: bsym.sym.id == PrimIDs.PUT_GRAD, forward_input_consumers),
-            None,
+        joint_trace = thunder.trace(inline_trace=False, use_dce=False)(
+            joint_forward_backward, *bsym.args, **bsym.kwargs
         )
-        return put_grad_bsym.args[1] if put_grad_bsym is not None else None
+        consumers = utils.consumers(joint_trace)
 
-    bw_inputs = tree_map(find_backward_input, utils.sequencify(joint_trace.output))
-    bw_outputs_args = tree_map(find_backward_output, joint_trace.args)
-    bw_outputs_kwargs = tree_map(find_backward_output, joint_trace.kwargs)
-    meta_parameters = inspect.signature(bsym.sym.meta).parameters
-    meta_parameters = {
-        name: param
-        for name, param in meta_parameters.items()
-        if param.kind in (Parameter.POSITIONAL_OR_KEYWORD, Parameter.POSITIONAL_ONLY)
-    }
-    bw_outputs = {name: bw_output for name, bw_output in utils.safe_zip(meta_parameters, bw_outputs_args)}
-    bw_outputs = bw_outputs | bw_outputs_kwargs
-    flat_bw_outputs, _ = tree_flatten(bw_outputs)
+        def find_backward_input(forward_output):
+            output_consumers = consumers.get(forward_output, None)
+            if output_consumers is None or not output_consumers:
+                return None
+            get_grad_bsym = next(
+                filter(lambda bsym: bsym.sym.id == PrimIDs.GET_GRAD, output_consumers),
+                None,
+            )
+            return get_grad_bsym.output if get_grad_bsym is not None else None
 
-    backward_bsyms = utils.find_producer_symbols(joint_trace, flat_bw_outputs, tree_flatten(bw_inputs)[0])
-    skip = (
-        prims.PrimIDs.UNPACK_EMPTY_DICT,
-        prims.PrimIDs.UNPACK_KEY,
-        prims.PrimIDs.UNPACK_SEQUENCE,
-        prims.PrimIDs.UNPACK_TRIVIAL,
-        prims.PrimIDs.GET_GRAD,
-    )
-    backward_bsyms = [bsym for bsym in backward_bsyms if bsym.sym.id not in skip]
-    backward_bsyms.append(prims.python_return.bind(bw_outputs, output=()))
+        def find_backward_output(forward_input):
+            forward_input_consumers = consumers.get(forward_input, None)
+            if forward_input_consumers is None or not forward_input_consumers:
+                return None
+            put_grad_bsym = next(
+                filter(lambda bsym: bsym.sym.id == PrimIDs.PUT_GRAD, forward_input_consumers),
+                None,
+            )
+            return put_grad_bsym.args[1] if put_grad_bsym is not None else None
 
-    forward_input_proxies = tree_flatten((joint_trace.args, joint_trace.kwargs))[0]
-    forward_input_proxies = [arg for arg in forward_input_proxies if isinstance(arg, Proxy)]
-    forward_bsyms = utils.find_producer_symbols(joint_trace, tree_flatten(joint_trace.output)[0], forward_input_proxies)
-    backward_bsyms = [bsym for bsym in backward_bsyms if bsym not in forward_bsyms]
+        bw_inputs = tree_map(find_backward_input, utils.sequencify(joint_trace.output))
+        bw_outputs_args = tree_map(find_backward_output, joint_trace.args)
+        bw_outputs_kwargs = tree_map(find_backward_output, joint_trace.kwargs)
+        meta_parameters = inspect.signature(bsym.sym.meta).parameters
+        meta_parameters = {
+            name: param
+            for name, param in meta_parameters.items()
+            if param.kind in (Parameter.POSITIONAL_OR_KEYWORD, Parameter.POSITIONAL_ONLY)
+        }
+        bw_outputs = {name: bw_output for name, bw_output in utils.safe_zip(meta_parameters, bw_outputs_args)}
+        bw_outputs = bw_outputs | bw_outputs_kwargs
+        flat_bw_outputs, _ = tree_flatten(bw_outputs)
 
-    # Find required info from forward trace for backward trace
-    backward_producers = utils.producers(backward_bsyms)
-    saved_for_backward = []
-    for backward_bsym in backward_bsyms:
-        for arg in backward_bsym.flat_args:
-            if not isinstance(arg, Proxy):
-                continue
-            if arg not in backward_producers and variableify(arg) not in map(variableify, tree_flatten(bw_inputs)[0]):
-                saved_for_backward.append(arg)
+        backward_bsyms = utils.find_producer_symbols(joint_trace, flat_bw_outputs, tree_flatten(bw_inputs)[0])
+        skip = (
+            prims.PrimIDs.UNPACK_EMPTY_DICT,
+            prims.PrimIDs.UNPACK_KEY,
+            prims.PrimIDs.UNPACK_SEQUENCE,
+            prims.PrimIDs.UNPACK_TRIVIAL,
+            prims.PrimIDs.GET_GRAD,
+        )
+        backward_bsyms = [bsym for bsym in backward_bsyms if bsym.sym.id not in skip]
+        backward_bsyms.append(prims.python_return.bind(bw_outputs, output=()))
 
-    saved_for_backward = list({variableify(arg): arg for arg in saved_for_backward}.values())
+        forward_input_proxies = tree_flatten((joint_trace.args, joint_trace.kwargs))[0]
+        forward_input_proxies = [arg for arg in forward_input_proxies if isinstance(arg, Proxy)]
+        forward_bsyms = utils.find_producer_symbols(
+            joint_trace, tree_flatten(joint_trace.output)[0], forward_input_proxies
+        )
+        backward_bsyms = [bsym for bsym in backward_bsyms if bsym not in forward_bsyms]
 
-    # Augment forward trace to include saved_for_backward as output
-    augmented_forward_trace = from_trace(joint_trace)
-    augmented_forward_trace.bound_symbols = [
-        b for b in joint_trace.bound_symbols if b.sym.id not in (PrimIDs.PUT_GRAD, PrimIDs.GET_GRAD)
-    ]
-    return_bsym = augmented_forward_trace.bound_symbols[-1]
-    assert return_bsym.sym.id == PrimIDs.RETURN
-    augmented_forward_trace.bound_symbols[-1] = prims.python_return.bind(
-        (joint_trace.output, saved_for_backward), output=()
-    )
-    # Remove put/get grad and backward symbols from augmented forward trace
-    augmented_forward_trace = dce(augmented_forward_trace)
+        # Find required info from forward trace for backward trace
+        backward_producers = utils.producers(backward_bsyms)
+        saved_for_backward = []
+        for backward_bsym in backward_bsyms:
+            for arg in backward_bsym.flat_args:
+                if not isinstance(arg, Proxy):
+                    continue
+                if arg not in backward_producers and variableify(arg) not in map(
+                    variableify, tree_flatten(bw_inputs)[0]
+                ):
+                    saved_for_backward.append(arg)
 
-    # Check that the number of outputs of the original forward function is the
-    # same as the number of primal outputs of the augmented forward trace
-    utils.check(
-        len(utils.sequencify(bsym.output)) == len(utils.sequencify(augmented_forward_trace.output[0])),
-        lambda: f"While generating forward and backward functions for {bsym.sym.name}, encountered an error.\n"
-        "The number of outputs of the original forward function must be the same as the number of primal outputs of the augmented forward trace.\n"
-        f"Number of outputs of the original forward function: {len(utils.sequencify(bsym.output))}\n"
-        f"Number of primal outputs of the augmented forward trace: {len(utils.sequencify(augmented_forward_trace.output[0]))}\n"
-        "Please check the forward function and the augmented forward trace to ensure that they have the same number of outputs.",
-    )
+        saved_for_backward = list({variableify(arg): arg for arg in saved_for_backward}.values())
 
-    # Check if any of the bound symbols in the backward trace are also in the
-    # augmented forward trace
-    # If so, remove them from the backward trace
-    same_bsyms = set(augmented_forward_trace.bound_symbols) & set(backward_bsyms)
-    if same_bsyms:
-        backward_bsyms = [bsym for bsym in backward_bsyms if bsym not in same_bsyms]
-        additional_saved = [o for bsym in same_bsyms for o in bsym.flat_proxy_outs]
-        saved_for_backward += list({variableify(arg): arg for arg in additional_saved}.values())
+        # Augment forward trace to include saved_for_backward as output
+        augmented_forward_trace = from_trace(joint_trace)
+        augmented_forward_trace.bound_symbols = [
+            b for b in joint_trace.bound_symbols if b.sym.id not in (PrimIDs.PUT_GRAD, PrimIDs.GET_GRAD)
+        ]
+        return_bsym = augmented_forward_trace.bound_symbols[-1]
+        assert return_bsym.sym.id == PrimIDs.RETURN
         augmented_forward_trace.bound_symbols[-1] = prims.python_return.bind(
             (joint_trace.output, saved_for_backward), output=()
         )
+        # Remove put/get grad and backward symbols from augmented forward trace
+        augmented_forward_trace = dce(augmented_forward_trace)
 
-    backward_params = [
-        Parameter(getattr(x, "name", f"arg{i}"), Parameter.POSITIONAL_OR_KEYWORD)
-        for i, x in enumerate(chain(saved_for_backward, bw_inputs))
-    ]
-    backward_signature = Signature(backward_params)
+        # Check that the number of outputs of the original forward function is the
+        # same as the number of primal outputs of the augmented forward trace
+        utils.check(
+            len(utils.sequencify(bsym.output)) == len(utils.sequencify(augmented_forward_trace.output[0])),
+            lambda: f"While generating forward and backward functions for {bsym.sym.name}, encountered an error.\n"
+            "The number of outputs of the original forward function must be the same as the number of primal outputs of the augmented forward trace.\n"
+            f"Number of outputs of the original forward function: {len(utils.sequencify(bsym.output))}\n"
+            f"Number of primal outputs of the augmented forward trace: {len(utils.sequencify(augmented_forward_trace.output[0]))}\n"
+            "Please check the forward function and the augmented forward trace to ensure that they have the same number of outputs.",
+        )
 
-    def backward_fn():
-        pass
+        # Check if any of the bound symbols in the backward trace are also in the
+        # augmented forward trace
+        # If so, remove them from the backward trace
+        same_bsyms = set(augmented_forward_trace.bound_symbols) & set(backward_bsyms)
+        if same_bsyms:
+            backward_bsyms = [bsym for bsym in backward_bsyms if bsym not in same_bsyms]
+            additional_saved = [o for bsym in same_bsyms for o in bsym.flat_proxy_outs]
+            saved_for_backward += list({variableify(arg): arg for arg in additional_saved}.values())
+            augmented_forward_trace.bound_symbols[-1] = prims.python_return.bind(
+                (joint_trace.output, saved_for_backward), output=()
+            )
 
-    backward_fn.__signature__ = backward_signature
-    backward_fn.__name__ = bsym.sym.name + "_backward"
+        backward_params = [
+            Parameter(getattr(x, "name", f"arg{i}"), Parameter.POSITIONAL_OR_KEYWORD)
+            for i, x in enumerate(chain(saved_for_backward, bw_inputs))
+        ]
+        backward_signature = Signature(backward_params)
 
-    # Finally, build the backward trace
-    backward_trace = TraceCtx(backward_fn)
-    backward_trace.args = (*saved_for_backward, *bw_inputs)
-    backward_trace.kwargs = {}
-    backward_trace.bound_symbols = backward_bsyms
+        def backward_fn():
+            pass
 
-    # Creating new functions instead of using partial to avoid limitations in
-    # codeutils.get_siginfo
-    # https://github.com/Lightning-AI/lightning-thunder/blob/main/thunder/core/codeutils.py#L349-L353
-    def fw_fn(*args, **kwargs):
-        return eval_trace(augmented_forward_trace, *args, **kwargs)
+        backward_fn.__signature__ = backward_signature
+        backward_fn.__name__ = bsym.sym.name + "_backward"
 
-    def bw_fn(*args, **kwargs):
-        return eval_trace(backward_trace, *args, **kwargs)
+        # Finally, build the backward trace
+        backward_trace = TraceCtx(backward_fn)
+        backward_trace.args = (*saved_for_backward, *bw_inputs)
+        backward_trace.kwargs = {}
+        backward_trace.bound_symbols = backward_bsyms
 
-    _cache[key] = fw_fn, bw_fn
+        # Creating new functions instead of using partial to avoid limitations in
+        # codeutils.get_siginfo
+        # https://github.com/Lightning-AI/lightning-thunder/blob/main/thunder/core/codeutils.py#L349-L353
+        def fw_fn(*args, **kwargs):
+            return eval_trace(augmented_forward_trace, *args, **kwargs)
 
-    return fw_fn, bw_fn
+        def bw_fn(*args, **kwargs):
+            return eval_trace(backward_trace, *args, **kwargs)
+
+        if update_cache:
+            _cache[key] = fw_fn, bw_fn
+
+        if not return_traces:
+            return fw_fn, bw_fn
+        return fw_fn, bw_fn, augmented_forward_trace, backward_trace
+
+    cd = get_compile_data()
+    # No autotuning
+    if not cd or not cd.compile_options.get("autotune_type", None):
+        return _make_aug_forward_and_backward()
+
+    # This search will be performed on the requested executors list
+    is_backend_available: bool = _get_gradfn_and_executor(bsym)[1] is not None
+    if not is_backend_available:
+        key = (bsym.sym, None, subkey := _make_cache_key(bsym.args, bsym.kwargs))
+        # Cached will be checked in the inner fn if not miss
+        fw_fn, bw_fn = _make_aug_forward_and_backward()
+        return fw_fn, bw_fn
+    # We have a backend
+    else:
+        from thunder.backend_optimizer.optimizer import OptimizerType
+        from thunder.backend_optimizer.optimizer import logger
+        from thunder.backend_optimizer.utils import benchmark_trace
+        from thunder.backend_optimizer.utils import get_fw_bw_split_backends_options
+        from thunder.benchmarks.utils import SplitFwBwBenchmarkUtils
+
+        # In order define this unique trace region we need an unique id
+        key = (bsym.sym, Executor(f"{id(bsym)}-autotuned"), subkey := _make_cache_key(bsym.args, bsym.kwargs))
+        # We do check the cache here as the key in the inner fn does not know about this special id
+        cached_result = _cache.get(key, None) if subkey is not None else None
+        # NOTE: cache is always enabled here
+        if cached_result is not None:
+            return cached_result
+
+        # Get the possible backends for the current bsym
+        backends = get_fw_bw_split_backends_options(
+            bsym, autotune_enable_te=cd.compile_options.get("autotune_enable_te", False)
+        )
+        if not backends:
+            raise AssertionError(
+                f"No enabled backends found for {bsym.sym.name} but an executor for that symbol it is present in the executors list. Either remove that from the executors list or enable at least one backend for {bsym.sym.name} inside 'get_fw_bw_split_backends_options'."
+            )
+
+        cached_executors_list = list(cd.executors_list)
+        # Retrieve all the executors which are requested to be used
+        requested_executors_list_for_bsym = [ex for ex in cached_executors_list if ex in backends]
+
+        best = SplitFwBwBenchmarkUtils()
+
+        # Do we have a common transformer block optimization enabled?
+        # If yes we have to restrict the same executor on every bsym
+        # in the transformer block (e.g. every scaled_dot_product in every transformer block will have the same executor
+        # as they are expected to work on same input size, shape and dtype).
+        optmimizer_common_transformer_block = cd.compile_options.get('autotune_optimize_common_blocks', False)
+        # The generated hash will rely on the operation, input args metadata and output metadata
+        h = symbol_hash(bsym=bsym)
+        # Recover the cache stored in the compile data
+        autotuner_bsym_with_gradfn_executor_cache = cd.autotuner_bsym_with_gradfn_executor_cache
+
+        # Run the search only if not already visited before
+        if h in autotuner_bsym_with_gradfn_executor_cache and optmimizer_common_transformer_block:
+            best = autotuner_bsym_with_gradfn_executor_cache[h]
+        else:
+            # Restrict the search space
+            backends = list(requested_executors_list_for_bsym)
+
+            logger.info(f"Search space for bsym {bsym.sym.name}: {backends}")
+            for b in backends:
+                logger.info(f"Benchmarking executor {b.name} for {bsym.sym.name}")
+                # Let downstream fn to pick up this
+                requested_executors_list_for_bsym.remove(b)
+                requested_executors_list_for_bsym.insert(0, b)
+                cd.executors_list = requested_executors_list_for_bsym
+                fw_fn, bw_fn, fw_trace, bw_trace = _make_aug_forward_and_backward(return_traces=True, update_cache=False)
+                # What should be the optimal iter?
+                # TODO: make benchmark info taken from an autotuner config
+                fw_time, fw_mem, _ = benchmark_trace(fw_trace, iters=100, apply_del_last_used=False)
+                bw_time, bw_mem, _ = benchmark_trace(bw_trace, iters=100, apply_del_last_used=False, fw_trace=fw_trace)
+                cost = (
+                    fw_time + bw_time if cd.compile_options["autotune_type"] == OptimizerType.RUNTIME else fw_mem + bw_mem
+                )
+                if cost < best.cost:
+                    best = SplitFwBwBenchmarkUtils(cost=cost, fw_fn=fw_fn, bw_fn=bw_fn, executor=b)
+
+        assert best.cost != float("inf")
+
+        logger.info(f"Best executor for symbol [{bsym.output.name} = {bsym.sym.name}]: {best.executor.name}")
+
+        # Cache the bsym result for common trace's common block reductions
+        # At this stage we are tuning trace regions for these symbols name: linear and scaled_dot_product_attention
+        if bsym.sym.name in get_fw_bw_split_backends_options().keys() and optmimizer_common_transformer_block:
+            autotuner_bsym_with_gradfn_executor_cache[h] = best
+
+        # Update the compile options
+        cd.compile_options["autotune_executors_placed_by_fw_bw_split"].add(best.executor)
+        from thunder.executors.transformer_engineex import transformer_engine_ex
+
+        cd.compile_options |= {"te_used": True if best.executor == transformer_engine_ex else False}
+        # Restore executor list for downstream optimizations
+        cd.executors_list = cached_executors_list
+        # The executors used in this pass will be updated after the termination of the forward_and_backward_from_trace call
+
+        _cache[key] = best.fw_fn, best.bw_fn
+        return best.fw_fn, best.bw_fn
 
 
 def get_saved_for_backward_tensors(trace: TraceCtx) -> tuple[TensorProxy]:

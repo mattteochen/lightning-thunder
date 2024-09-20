@@ -71,6 +71,7 @@ class CompileStats:
         last_prologue_traces (Sequence[TraceCtx]):
         last_interpreted_instructions (Generator[dist.Instruction, None, None] | None):
         last_interpreter_log (list[InterpreterLogItem] | None):
+        last_executors (Sequence[Executor] | None):
         last_backward_traces (Sequence[TraceCtx]):
         last_trace_host_start (int):
         last_trace_host_stop (int):
@@ -102,6 +103,7 @@ class CompileStats:
         self.last_prologue_traces = None
         self.last_interpreted_instructions: Generator[dis.Instruction, None, None] | None = None
         self.last_interpreter_log: list[InterpreterLogItem] | None = None
+        self.last_executors: Sequence[Executor] | None = None
 
         # torch.autograd.Function specific data
         self.last_backward_traces = None
@@ -267,6 +269,8 @@ class CompileData:
         self.additional_param_values = None
         self.additional_return_names = None
         self.num_constant_args = 0
+
+        self.autotuner_bsym_with_gradfn_executor_cache: dict = {}
 
         assert disable_preprocessing, "please use thunder.compile if you need preprocessing"
 

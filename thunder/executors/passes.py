@@ -1,3 +1,4 @@
+from pprint import pprint
 from typing import Dict, Any, List, Tuple, Optional
 from collections.abc import Callable
 from collections.abc import Sequence
@@ -7,20 +8,23 @@ from itertools import chain
 from functools import partial
 import time
 
-from thunder.core.trace import TraceCtx, from_trace, TraceProvenance, VariableInterface
+from thunder.core.compile_data import get_compile_data
+from thunder.core.trace import TraceCtx, from_trace, TraceProvenance, VariableInterface, reset_tracectx, set_tracectx
+from thunder.core.codeutils import SigInfo
 import thunder.core.dtypes as dtypes
 import thunder.core.utils as cutils
 from thunder.core.utils import ProxyDict, check, safe_map_flat
 from thunder.core.symbol import BoundSymbol
 from thunder.core.pytree import tree_flatten, tree_unflatten, tree_map
 import thunder.core.prims as prims
-from thunder.core.proxies import Proxy, variableify, unvariableify, Variable, CollectionProxy
+from thunder.core.proxies import Proxy, TensorProxy, variableify, unvariableify, Variable, CollectionProxy
 import thunder.core.transforms as transforms
 from thunder.core.transform_common import dce
 from thunder.core.trace import get_tracectx
 from thunder.executors.pythonex import clear_mutable_collection
 
-from thunder.extend import Executor, get_always_executors, OperatorExecutor, FusionExecutor
+from thunder.extend import Executor, get_all_executors, get_always_executors, OperatorExecutor, FusionExecutor
+from thunder.backend_optimizer.optimizer import BackendOptimizer, OptimizerType, TraceCandidates, TraceType
 
 comment_symbols = {prims.PrimIDs.COMMENT, prims.PrimIDs.UNPACK_TRIVIAL}
 
@@ -69,6 +73,7 @@ def _transform_for_operator_executor_execution(trace: TraceCtx, executors_list: 
         for ex in executors_list:
             # TODO Consider allowing operator executors to claim portions of operations
             # TODO Should FusionExecutors be allowed to claim bsym with bsym.sym.executor?
+
             if (isinstance(ex, OperatorExecutor) and ex.can_execute(bsym)) or (
                 isinstance(ex, FusionExecutor) and ex.can_fuse(bsym)
             ):
@@ -91,6 +96,7 @@ def _transform_for_operator_executor_execution(trace: TraceCtx, executors_list: 
                     raise AssertionError("Unknown executor")
 
                 safe_map_flat(update_swapmap, bsym.output, out)
+
                 return True
 
         if bsym.sym.executor is not None:
@@ -131,6 +137,71 @@ def _transform_for_operator_executor_execution(trace: TraceCtx, executors_list: 
         TraceProvenance(f"Transform for operator executor execution (took {elapsed_time_millis} milliseconds)")
     )
     return extrace
+
+
+# Autotuned transform_for_execution version
+def autotune_transform_for_execution(
+        *, optimizer_context: BackendOptimizer, trace: TraceCtx, trace_type: TraceType, is_computational: bool = False
+) -> tuple[TraceCtx, TraceCtx] | TraceCtx | None:
+    import torch
+
+    start_time_ns = time.perf_counter_ns()
+
+    # Recover the function name
+    sig_name = cutils.get_siginfo_name(trace)
+
+    if torch.distributed.is_available():
+        # Apply AllReduce bucketing if possible & needed
+        from thunder.distributed.transforms.ddp import apply_bucketing_to_grad_allreduce
+
+        trace = apply_bucketing_to_grad_allreduce(trace)
+
+    # Attach new trace and set the debug file name
+    optimizer_context.attach_trace(trace=trace, trace_type=trace_type, apply_dce=trace_type == TraceType.FW)
+    optimizer_context.log_file_name = f"autotune_transform_for_execution_{sig_name}.log"
+    # Forward traces are cached inside the context
+    optimizer_context.optimize()
+
+    # Retrive the optimized traces. If backward trace is requested then the forward trace will be given only together with the backward one.
+    # This is because the optimal forward does not always lead to an optimal backward.
+    # If this is a computational trace (no autograd) then the forward (computational) trace will be ready and returned.
+    match trace_type:
+        case TraceType.FW:
+            if not is_computational:
+                pass
+            else:
+                fw_trace: TraceCtx = optimizer_context.get_optimal_fw_traces(is_computational)
+        # When optimizing the backward pass, the optimizer will return the best fw and bw traces based on the requested autotune_type, no need to choose the fw pass manually
+        case TraceType.BW:
+            fw_extrace, bw_extrace = optimizer_context.get_optimal_fw_bw_traces()
+
+    end_time_ns = time.perf_counter_ns()
+    elapsed_time_ns = end_time_ns - start_time_ns
+    elapsed_time_millis = elapsed_time_ns // 1000000
+
+    # Assign the trace provenance
+    match trace_type:
+        case TraceType.FW:
+            if not is_computational:
+                cd = get_compile_data()
+                # Only for fresh tuning
+                if not cd or not cd.compile_options.get('autotune_restore_configuration', ""):
+                    # We are assigning the provenance to all the possible candidates as at this stage we
+                    # don't know which trace will be returned at the end of the optimization
+                    fw_traces: list = optimizer_context.get_optimal_fw_traces()
+                    for trc in fw_traces:
+                        trc.set_provenance(
+                            TraceProvenance(f"Autotuned transform for execution (took {elapsed_time_millis} milliseconds)")
+                        )
+                return None
+            else:
+                fw_trace.set_provenance(TraceProvenance(f"Autotuned transform for execution (took {elapsed_time_millis} milliseconds)"))
+                return fw_trace
+        case TraceType.BW:
+            bw_extrace.set_provenance(
+                TraceProvenance(f"Autotuned transform for execution (took {elapsed_time_millis} milliseconds)")
+            )
+            return fw_extrace, bw_extrace
 
 
 def transform_for_execution(trace: TraceCtx, executors_list: Sequence[Executor]) -> TraceCtx:
@@ -297,21 +368,32 @@ def del_last_used(trace: TraceCtx, *, clear_mutable_collections=False) -> TraceC
     Returns:
         list: transformed trace
     """
+
+    # If dce is disabled, we have to disable this pass also
+    cd = get_compile_data()
+    disabled = not (not cd or (cd and not cd.compile_options.get("disable_dce", None)))
+
     start_time_ns = time.perf_counter_ns()
 
-    del_trace = from_trace(trace)
+    if not disabled:
+        del_trace = from_trace(trace)
+        outs = cutils.sequencify(trace.output)
+        flat_outs, _ = tree_flatten(outs)
 
-    outs = cutils.sequencify(trace.output)
-    flat_outs, _ = tree_flatten(outs)
-
-    del_trace.bound_symbols = _del_last_used(
-        trace.bound_symbols, flat_outs, clear_mutable_collections=clear_mutable_collections
-    )
+        del_trace.bound_symbols = _del_last_used(
+            trace.bound_symbols, flat_outs, clear_mutable_collections=clear_mutable_collections
+        )
+    else:
+        del_trace = trace
 
     end_time_ns = time.perf_counter_ns()
     elapsed_time_ns = end_time_ns - start_time_ns
     elapsed_time_millis = elapsed_time_ns // 1000000
 
-    del_trace.set_provenance(TraceProvenance(f"Delete Last Used (took {elapsed_time_millis} milliseconds)"))
+    del_trace.set_provenance(
+        TraceProvenance(
+            f"Delete Last Used{' Skipped Per Compile Options' if disabled else ''} (took {elapsed_time_millis} milliseconds)"
+        )
+    )
 
     return del_trace

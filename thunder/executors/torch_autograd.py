@@ -107,12 +107,44 @@ class ThunderFunction(torch.autograd.Function):
             return (None, None, None, None, None, *([None] * n_grads))
 
 
+def update_bw_from_forward_optimization(*, fw: TraceCtx, bw: TraceCtx) -> TraceCtx:
+    # Some of the optimization passes change proxies in the trace and
+    # any change in the forward trace must be reflected in the backward
+    # trace.
+    original_bw_saved_tensors_for_backward = bw.args[0][0]
+    new_fw_saved_tensors_for_backward = get_saved_for_backward_tensors(fw)
+    swap_map = {
+        variableify(x): y
+        for x, y in zip(original_bw_saved_tensors_for_backward, new_fw_saved_tensors_for_backward)
+        if variableify(x) != variableify(y)
+    }
+    new_bsyms = replace_redundant_inputs(swap_map, bw.bound_symbols)
+    # replace_redundant_inputs doesn't replace the output of
+    # UNPACK_SEQUENCE so we do it manually. Here we have certain
+    # assumptions about the structure of the backward trace.
+    assert bw.bound_symbols[0].sym.id == PrimIDs.UNPACK_TRIVIAL
+    assert bw.bound_symbols[0].kwargs["name"] == "saved_for_backward"
+    assert bw.bound_symbols[4].sym.id == PrimIDs.UNPACK_SEQUENCE
+    assert bw.bound_symbols[4].args[0].name == "C0"
+    new_bsyms[4] = new_bsyms[4].from_bsym_swap_proxies(
+        swap_map,
+        skip_inputs=False,
+        skip_output=False,
+        skip_subsymbols=False,
+    )
+    bw.bound_symbols = new_bsyms
+
+    return bw
+
+
 def split_forward_backward(computation_trc: TraceCtx, compile_data, compile_stats, /, *flat_args):
+    from thunder.backend_optimizer.optimizer import TraceType, BackendOptimizer
+    from thunder.backend_optimizer.utils import update_compile_options_executor_list_after_fw_bw_split
     from thunder.core.rematerialization import rematerialize_all_gather, rematerialize_forward_and_backward
     from thunder.core.transforms import forward_and_backward_from_trace
     from thunder.distributed.transforms import FSDPCommBucketing
     from thunder.distributed.utils import sort_data_parallel_syncs, sort_waits, sort_communication_ops
-    from thunder.executors.passes import del_last_used, transform_for_execution
+    from thunder.executors.passes import del_last_used, transform_for_execution, autotune_transform_for_execution
 
     utils.check(compile_data is not None, lambda: "`compile_data` is required")
     # NOTE: This function is rather slow, so it's intended to be used
@@ -123,9 +155,12 @@ def split_forward_backward(computation_trc: TraceCtx, compile_data, compile_stat
     if not any(requires_grad_mask):
         raise RuntimeError("PyTorch's Autograd interface requires at least one tensor input with requires_grad=True")
 
+    autotune_type = compile_data.compile_options.get("autotune_type", None)
+
     primal_trace = computation_trc
     primal_trace = sort_data_parallel_syncs(primal_trace)
 
+    # Handled by the caller if autotune is not None
     if compile_stats is not None:
         compile_stats.last_traces.append(primal_trace)
 
@@ -135,6 +170,10 @@ def split_forward_backward(computation_trc: TraceCtx, compile_data, compile_stat
     # not any other container type. So we need to flatten the outputs of
     # the forward trace and inputs of the backward trace.
     fw_trace, bw_trace = forward_and_backward_from_trace(primal_trace, torch_autograd=True)
+
+    # Update the autotuned executors list
+    if autotune_type:
+        update_compile_options_executor_list_after_fw_bw_split()
 
     fw_traces = [fw_trace]
     bw_traces = [bw_trace]
@@ -164,73 +203,60 @@ def split_forward_backward(computation_trc: TraceCtx, compile_data, compile_stat
         _fsdp_comm_bucketing = FSDPCommBucketing(compile_data, computation_trc)
         fw_trace = _fsdp_comm_bucketing.apply_bucketing_to_forward_trace(fw_trace)
 
+    do_apply_bucketing_bw_trace: bool = getattr(compile_data.fn, "use_fsdp", False)
+
     # Now we can run the optimization passes on the forward trace
-    # TODO Restore request for no rematerialization
-    fw_extrace = transform_for_execution(
-        fw_trace,
-        executors_list=compile_data.executors_list,
+    backend_optimizer_ctx: BackendOptimizer | None = (
+        None
+        if autotune_type is None
+        else BackendOptimizer(
+            priority_executors=compile_data.executors_list,
+            apply_bucketing_bw_trace=do_apply_bucketing_bw_trace,
+            produce_log=False,
+            optimizer_type=autotune_type,
+            compile_data=compile_data,
+        )
     )
-    fw_traces.append(fw_extrace)
 
-    # Some of the optimization passes change proxies in the trace and
-    # any change in the forward trace must be reflected in the backward
-    # trace.
-    original_bw_saved_tensors_for_backward = bw_trace.args[0][0]
-    new_fw_saved_tensors_for_backward = get_saved_for_backward_tensors(fw_extrace)
-
-    # saved meta data (this could also contain proxies)
-    original_bw_saved_meta_for_backward = bw_trace.args[0][1]
-    new_fw_saved_meta_for_backward = fw_extrace.output[1][1]
-
-    saved_tensors_swap_map = {
-        variableify(x): y
-        for x, y in zip(original_bw_saved_tensors_for_backward, new_fw_saved_tensors_for_backward)
-        if variableify(x) != variableify(y)
-    }
-
-    saved_metadata_swap_map = {
-        variableify(x): y
-        for x, y in zip(original_bw_saved_meta_for_backward, new_fw_saved_meta_for_backward)
-        if variableify(x) != variableify(y)
-    }
-    swap_map = saved_tensors_swap_map | saved_metadata_swap_map
-
-    new_bsyms = replace_redundant_inputs(swap_map, bw_trace.bound_symbols)
-    # replace_redundant_inputs doesn't replace the output of
-    # UNPACK_SEQUENCE so we do it manually. Here we have certain
-    # assumptions about the structure of the backward trace.
-    assert bw_trace.bound_symbols[0].sym.id == PrimIDs.UNPACK_TRIVIAL
-    assert bw_trace.bound_symbols[0].kwargs["name"] == "saved_for_backward"
-    assert bw_trace.bound_symbols[4].sym.id == PrimIDs.UNPACK_SEQUENCE
-    assert bw_trace.bound_symbols[4].args[0].name == "C0"
-    assert bw_trace.bound_symbols[5].sym.id == PrimIDs.UNPACK_SEQUENCE
-    assert bw_trace.bound_symbols[5].args[0].name == "C1"
-    new_bsyms[4] = new_bsyms[4].from_bsym_swap_proxies(
-        swap_map,
-        skip_inputs=False,
-        skip_output=False,
-        skip_subsymbols=False,
+    # Get optimzied fw trace
+    fw_extrace = (
+        transform_for_execution(fw_trace, executors_list=compile_data.executors_list)
+        if autotune_type is None
+        else autotune_transform_for_execution(
+            optimizer_context=backend_optimizer_ctx, trace=fw_trace, trace_type=TraceType.FW
+        )
     )
-    new_bsyms[5] = new_bsyms[5].from_bsym_swap_proxies(
-        swap_map,
-        skip_inputs=False,
-        skip_output=False,
-        skip_subsymbols=False,
-    )
-    bw_trace.bound_symbols = new_bsyms
 
-    if getattr(compile_data.fn, "use_fsdp", False):
-        bw_trace = _fsdp_comm_bucketing.apply_bucketing_to_backward_trace(bw_trace)
+    # If in default mode, otherwise the best fw will be returned only at the end
+    if autotune_type is None:
+        # Here fw_extrace is not None
+
+        fw_traces.append(fw_extrace)
+
+        # If autotuning is activated, it will take care of the following 2 calls
+        bw_trace = update_bw_from_forward_optimization(fw=fw_extrace, bw=bw_trace)
+        if do_apply_bucketing_bw_trace:
+            bw_trace = _fsdp_comm_bucketing.apply_bucketing_to_backward_trace(bw_trace)
 
     # Now we can run the optimization passes on the backward trace
-    # TODO Restore request for no rematerialization
-    bw_extrace = transform_for_execution(
-        bw_trace,
-        executors_list=compile_data.executors_list,
-    )
+    if autotune_type is not None:
+        fw_extrace, bw_extrace = autotune_transform_for_execution(
+            optimizer_context=backend_optimizer_ctx, trace=bw_trace, trace_type=TraceType.BW
+        )
+        fw_traces.append(fw_extrace)
+    else:
+        bw_extrace = transform_for_execution(
+            bw_trace,
+            executors_list=compile_data.executors_list,
+        )
     bw_traces.append(bw_extrace)
 
-    fw_extrace, bw_extrace = rematerialize_forward_and_backward(fw_extrace, bw_extrace)
+    if autotune_type is None:
+        # TODO Restore request for no rematerialization
+        fw_extrace, bw_extrace = rematerialize_forward_and_backward(fw_extrace, bw_extrace)
+    # Autotuner has been taken care of remat
+    else:
+        pass
     fw_traces.append(fw_extrace)
     bw_traces.append(bw_extrace)
 
@@ -296,9 +322,11 @@ def split_forward_backward(computation_trc: TraceCtx, compile_data, compile_stat
 
     bw_trace = rename_bwd_trace_outputs(bw_extrace, fw_extrace)
 
+    # This is moved to the caller if autotune is enabled
     if compile_stats is not None:
         compile_stats.last_traces += fw_traces
         compile_stats.last_backward_traces += bw_traces
+        compile_stats.last_executors = compile_data.executors_list
 
     # Enable wrapping with `te.fp8_autocast`.
     fw_extrace._include_te_fp8_autocast = True
