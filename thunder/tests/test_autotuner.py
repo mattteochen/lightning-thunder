@@ -687,6 +687,8 @@ def test_save_configuration_cuda():
             assert bsym_a.sym.executor == bsym_b.sym.executor
 
 
+@requiresCUDA
+# Currently inside the autotuner flow nvfuser will be imported which will lead to import errors
 def test_no_autograd_trace_autotuning():
     def _fn(a, b):
         t0 = a + b
