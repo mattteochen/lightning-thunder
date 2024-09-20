@@ -987,6 +987,7 @@ class FusionPlacer_BeamSearch(PlacerBase):
             executors_mem = []
             for bsym in self.trace.bound_symbols:
                 if bsym.sym.id == PrimIDs.RETURN:
+                # TODO (matteochen): Aggregate them
                     if "return" not in dict_time_strat or "return" not in dict_mem_strat:
                         raise AssertionError(f"Expected key return in mapping {dict_time_strat} and {dict_mem_strat}")
                     executors_time.append(dict_time_strat["return"])
