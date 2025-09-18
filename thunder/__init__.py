@@ -2,7 +2,7 @@ from collections import defaultdict, namedtuple
 from collections.abc import Callable, Sequence
 from contextvars import ContextVar
 from functools import wraps
-from typing import Any
+from typing import Any, List
 import dis
 import os
 import time
@@ -56,6 +56,7 @@ from thunder.core.transform_common import (
     wrap_return_value_together_with_arguments,
 )
 from thunder.core.update_aliases import insert_alias_updates
+from thunder.dev_utils.static_estimates import TraceMemoryUsage
 from thunder.executors.torch_autograd import connect_to_autograd
 import thunder.extend as extend
 from thunder.extend import Executor, add_default_executor
@@ -267,6 +268,46 @@ CacheEntry = namedtuple(
         "return_none_instead_of_grads",
     ],
 )
+
+
+def estimate(fn: Callable, *args, type: str = "memory", **kwargs) -> TraceMemoryUsage | List[TraceMemoryUsage]:
+    """Estimate the memory footprint of a Thunder-optimized computation trace.
+
+    This function analyzes the memory usage of a Thunder-compiled function by examining
+    its computation traces and performing static liveness analysis to estimate peak
+    memory consumption and per-step memory usage.
+
+    Args:
+        fn: A Thunder-compiled callable function to analyze
+        *args: Input arguments to pass to the function for trace analysis
+        type: Type of estimation to perform. Currently only 'memory' is supported
+        **kwargs: Additional keyword arguments:
+            - strategy: Analysis strategy, either 'last_step' (default) to analyze
+                       only the final trace, or 'all' to analyze all traces
+
+    Returns:
+        TraceMemoryUsage: Memory usage analysis for a single trace (when strategy='last_step')
+        List[TraceMemoryUsage]: Memory usage analyses for all traces (when strategy='all')
+
+    Raises:
+        ValueError: If an unsupported estimation type is specified
+
+    Example:
+        >>> import thunder
+        >>> model = thunder.compile(my_model)
+        >>> x = torch.randn(64, 2048)
+        >>> print(thunder.estimate(model, x, type="memory", strategy="last_step"))
+    """
+    if type == "memory":
+        _ = fn._lc_cd._get_computation_and_inputs(*args)
+        traces = thunder.last_traces(fn)
+        if kwargs.get("strategy", "last_step") == "last_step":
+            report = traces[-1].static_liveness_memory(*args, **kwargs)
+        else:
+            report = [trc.static_liveness_memory(*args, **kwargs) for trc in traces]
+        return report
+    else:
+        raise ValueError(f"Invalid type: {type}")
 
 
 def compile(

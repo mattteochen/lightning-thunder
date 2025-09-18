@@ -513,6 +513,14 @@ class TraceCtx:
         with open(filename, "w") as f:
             f.write(str(self))
 
+    def static_liveness_memory(self, *args, **kwargs):
+        """Compute a coarse static liveness peak on a Thunder computation trace.
+
+        Returns: Object with per-step bytes, peak info, and per-proxy live ranges.
+        """
+        from thunder.dev_utils.static_estimates import estimate_memory_usage
+        return estimate_memory_usage(self)
+
 
 # Constructs a new trace by shallow copying parts of an existing trace
 # NOTE Bound symbols and provenance are not copied
