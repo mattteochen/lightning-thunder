@@ -346,6 +346,21 @@ class TransformerEngineTransform(Transform):
         self.rhs_to_bsym_map: dict[BoundSymbolRHS, BoundSymbol] = {}
         self.redundant_map: dict[Variable, Proxy] = {}
         self.new_saved_for_backward = None
+        # Initialize TE v2 state holders
+        self._tev2_recipe_states = set()
+        self._tev2_quantizer_states = set()
+        self._tev2_recipe_handles = set()
+
+    def transform_module(self, model) -> None:
+        # Pre-create a user-facing container on the ThunderModule for TE v2 state
+        # so tests and users can access attributes even before first run.
+        if not hasattr(model, "te_v2"):
+            model.te_v2 = SimpleNamespace(
+                recipes=[],
+                forward_states=[],
+                backward_states=[],
+                quantizers=[],
+            )
 
     def reset(self):
         self.fp8_recipe = None
