@@ -3,6 +3,7 @@ from typing import TYPE_CHECKING
 
 import torch.distributed as torch_dist
 
+from thunder.core.compile_data import get_compile_data
 from thunder.core.prims import linear as linear_prim
 from thunder.core.prims import get_grad, put_grad
 from thunder.core.proxies import AnyProxy, TensorProxy
@@ -38,6 +39,8 @@ from transformer_engine.pytorch.fp8 import (
 from transformer_engine.pytorch.ops import BasicLinear
 from transformer_engine.pytorch.tensor import Quantizer
 from transformer_engine.pytorch.utils import check_dim_for_fp8_exec
+from thunder.core.module import get_thunder_module
+from types import SimpleNamespace
 
 
 transformer_engine_ex = StatefulExecutor("transformer_engine")
@@ -351,6 +354,54 @@ class TransformerEngineTransform(Transform):
         self.redundant_map = {}
         self.new_saved_for_backward = None
 
+        self._tev2_recipe_states = set()
+        self._tev2_quantizer_states = set()
+        self._tev2_recipe_handles = set()
+
+    def _collect_te_states_from_trace(self, tr):
+        for bsym in tr.bound_symbols:
+            call_ctx = getattr(bsym, "_call_ctx", None)
+            if not call_ctx:
+                continue
+            state_obj = next(iter(call_ctx.values()))
+            name = bsym.sym.name
+            if "get_te_fp8_recipe" in name:
+                self._tev2_recipe_handles.add(state_obj)  # TERecipe
+            elif "get_te_fp8_state" in name:
+                st = getattr(state_obj, "state", None)
+                if st is not None:
+                    self._tev2_recipe_states.add(st)
+            elif "get_te_fp8_quantizers" in name:
+                self._tev2_quantizer_states.add(state_obj)
+    
+    def _export_te_states_to_module(self):
+        cd = get_compile_data()
+        if cd is None or not getattr(cd, "is_module", False):
+            return
+        tm = get_thunder_module(cd.fn)
+        # Build a stable, user-friendly view; values may be None until after first invocation
+        recipes = []
+        for h in self._tev2_recipe_handles:
+            recipes.append(getattr(h, "fp8_recipe", None))
+        forward_states, backward_states = [], []
+        for rs in self._tev2_recipe_states:
+            if getattr(rs, "mode", None) == "forward":
+                forward_states.append(rs)
+            elif getattr(rs, "mode", None) == "backward":
+                backward_states.append(rs)
+        quantizers = []
+        for qst in self._tev2_quantizer_states:
+            qs = getattr(qst, "quantizers", None)
+            if qs:
+                quantizers.extend(qs)
+
+        tm.te_v2 = SimpleNamespace(
+            recipes=recipes,
+            forward_states=forward_states,
+            backward_states=backward_states,
+            quantizers=quantizers,
+        )
+
     def transform_trace_post_optimization(self, computation_trace, **kwargs):
         """
         Finds and replaces TE executor recipe calls and replaces them with one.
@@ -421,6 +472,9 @@ class TransformerEngineTransform(Transform):
             _update_forward_with_new_saved_for_backward(new_trace, self.new_saved_for_backward)
 
         sync_trace = del_last_used(new_trace)
+
+        self._collect_te_states_from_trace(sync_trace)
+        self._export_te_states_to_module()
 
         end_time_ns = time.perf_counter_ns()
         elapsed_time_ns = end_time_ns - start_time_ns
