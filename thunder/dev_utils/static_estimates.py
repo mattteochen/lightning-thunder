@@ -67,7 +67,7 @@ class TraceMemoryUsage:
         mem_after: List[MemoryUsageStep],
         peak_bytes: int,
         peak_step: int,
-        live_ranges: List[Tuple[int, int, int]],
+        live_ranges: List[Tuple[int, int, int]] = [],
     ):
         self.trace = trace
         self.mem_after = mem_after
